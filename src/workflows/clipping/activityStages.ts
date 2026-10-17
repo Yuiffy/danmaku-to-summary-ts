@@ -7,6 +7,20 @@ type StagePlan = {
 type ManifestClip = { reviewIndex: number; metadataPath: string };
 type VerifiedEvent = ActivityEvent & { id: string; verification?: { decision?: string }; boundaryFeedback?: any };
 
+/** Explicit editorial selection changes the pending package, never detection evidence or media bytes. */
+export function selectActivitySubmission(row: any, ids: string[], note: string): any {
+  if (!note?.trim() || !ids.length || new Set(ids).size !== ids.length
+    || row.uploadReady || row.activityReview?.status === 'approved') throw new Error('Select pending activities with an explicit note');
+  if (ids.some(id => !row.activities.some((event: any) => event.id === id))) throw new Error('Unknown selected activity');
+  const activities = row.activities.filter((event: any) => ids.includes(event.id));
+  const parts = row.output.parts.filter((part: any) => ids.includes(part.activityId));
+  if (!parts.length || activities.some((event: any) => !parts.some((part: any) => part.activityId === event.id))) throw new Error('Selected activity has no rendered media');
+  return { ...row, activities, output: { ...row.output, parts, mediaPath: parts[0].mediaPath },
+    window: { start: parts[0].start, end: parts.at(-1).end, duration: parts.reduce((sum: number, part: any) => sum + part.duration, 0) },
+    activitySelection: { version: 1, ids, note, previousActivities: row.activities, previousSelection: row.activitySelection },
+    uploadReady: false, activityReview: { version: 1, status: 'pending' } };
+}
+
 /** Resume an early stage only after its shared prerequisite recovered. No generation retry loop. */
 export async function runArchiveStages(run: (kind: string, reuseSummaryOnly?: boolean) => Promise<any>,
   completed: (kind: string, result: any) => void, failed: (kind: string, error: any) => void): Promise<void> {

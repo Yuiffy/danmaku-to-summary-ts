@@ -64,6 +64,18 @@ def load_payload():
 
 def main():
     payload = load_payload()
+    # Supervisor must keep the original device/policy; only its CPU model child
+    # applies CUDA hiding. Existing unsupported backend routes remain unchanged.
+    from asr_handoff_policy import supported
+    if supported(payload):
+        from asr_device_handoff import transcribe_handoff
+        with contextlib.redirect_stdout(sys.stderr):
+            result = transcribe_handoff(payload)
+        print(json.dumps(result, ensure_ascii=False, default=str))
+        return
+    from asr_cpu_fallback import apply_cpu_fallback
+    if apply_cpu_fallback(payload):
+        log_progress('GPU 繁忙：使用低优先级 CPU ASR（2 线程）')
     audio_path = payload.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         fail("输入音频不存在", audio_path or "未提供 audio_path")
@@ -142,7 +154,7 @@ def main():
         use_segmented_paraformer = (
             gpu_throttle.enabled and gpu_throttle.segment_paraformer and not is_finetuned_paraformer
         )
-        if backend_name == "paraformer" and not use_segmented_paraformer:
+        if backend_name == "paraformer" and (not use_segmented_paraformer or (payload.get('live_asr') or {}).get('reuse')):
             raw_result = transcribe_paraformer_builtin(
                 payload,
                 audio_path,

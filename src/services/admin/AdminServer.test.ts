@@ -69,6 +69,23 @@ function fixture() {
 }
 afterEach(() => { roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })); });
 
+it('shows an evidenced no-clip reason before technical errors on legacy candidates without changing their files', async () => {
+  const f = fixture(), registryPath = path.join(f.root, 'data/runtime/clip_upload_registry.json');
+  const registry = readJson(registryPath), record = registry.clips['1'];
+  record.reviewIssues = ['selection_rejected:detail_generation_failed', 'publication_review_unavailable:Missing rendered cover'];
+  atomicJson(registryPath, registry);
+  fs.writeFileSync(f.srt, '1\n00:00:00,000 --> 00:00:02,000\n这段别切了\n');
+  atomicJson(record.metadataPath, { source: { srtPath: f.srt }, window: { start: 0, end: 2 }, output: { srtPath: f.srt } });
+  const before = fs.readFileSync(registryPath, 'utf8');
+  const list = (await request(f.app).get('/clips').set(headers).expect(200)).body;
+  expect(list.clips[0].issues[0]).toContain('ASR疑似识别到主播要求别切');
+  expect(list.clips[0].issues).toContain('selection_rejected:detail_generation_failed');
+  const detail = f.clips.detail('1');
+  expect(detail.evidence.clipIntent).toMatchObject({ needsHumanReview: true });
+  expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+  expect(f.run).not.toHaveBeenCalled();
+});
+
 it('authenticates every endpoint and keeps masked credentials while atomically saving a reviewed config revision', async () => {
   const f = fixture();
   await request(f.app).get('/configs').expect(403);

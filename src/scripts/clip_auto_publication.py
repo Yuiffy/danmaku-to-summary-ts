@@ -147,6 +147,8 @@ def _validate_topic_review(metadata, review):
 
 
 def _validate_unresolved_signals(metadata, review):
+    if (metadata.get("clipIntent") or {}).get("needsHumanReview"):
+        raise ValueError("检测到别切意图，需人工核对语境后决定是否切片")
     proof = metadata.get("subtitleProofreading") or {}
     groups = proof.get("reviewGroups", [])
     resolutions = review.get("resolvedSubtitleAdvisories", [])

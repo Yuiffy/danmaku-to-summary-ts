@@ -476,6 +476,24 @@ it('holds a candidate changed during the plan repair and never continues with st
   expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('已变化') });
 });
 
+it('limits multipart activity feedback to each activity context while preserving absolute source indices', () => {
+  const f = fixture(), metadata = readJson(f.metadataPath);
+  fs.writeFileSync(f.srt, '1\n00:00:10,000 --> 00:00:12,000\n第一首前文\n\n'
+    + '2\n01:00:00,000 --> 01:00:02,000\n' + '无关聊天'.repeat(40000) + '\n\n'
+    + '3\n02:00:00,000 --> 02:00:02,000\n第二首前文\n');
+  metadata.type = 'stream_activity_submission'; metadata.source = { srtPath: f.srt };
+  metadata.activities = [{ id: 'song-1', start: 10, end: 20 }, { id: 'song-2', start: 7200, end: 7210 }];
+  atomicJson(f.metadataPath, metadata);
+  const registry = readJson(f.registryPath); registry.clips['3354'].srtPath = '';
+  registry.clips['3354'].start = '00:00:10'; registry.clips['3354'].duration = '02:00:00';
+  atomicJson(f.registryPath, registry);
+  const detail = f.clips.feedbackDetail('3354');
+  expect(detail.source.subtitles).toContain('第一首前文');
+  expect(detail.source.subtitles).toContain('3\n02:00:00,000');
+  expect(detail.source.subtitles).not.toContain('无关聊天');
+  expect(detail.evidence.titleContext.map((row: any) => row.index)).toEqual([1, 3]);
+});
+
 it('binds a reviewed song name to its source activity and restyles the existing bundle before approval', async () => {
   const f = fixture({ activityTitles: [{ activityId: 'activity-1', name: '屑屑', sourceAlias: '谢谢', segmentIndices: [1], note: '用户确认此首歌曲名称' }] });
   fs.writeFileSync(f.srt, '1\n00:00:00,000 --> 00:00:02,000\n我唱过谢谢吗\n');

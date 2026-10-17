@@ -1,11 +1,30 @@
 """Replace one reviewed page of an existing archive without creating another submission."""
 import copy
+import hashlib
 import datetime as dt
 import json
 import re
 import sys
 import uuid
 from pathlib import Path
+
+
+def validate_replacement_revision(metadata, clip_id):
+    if metadata.get('uploadId') != clip_id or metadata.get('ownStreamHumanReview'):
+        raise ValueError('A same-ID independently reviewed revision is required')
+    if metadata.get('renderedTimingRepair'):
+        return
+    revision = metadata.get('renderedSubtitles') or {}
+    output = metadata.get('output') or {}
+    if (metadata.get('rebuildRequired') or revision.get('clipId') != clip_id
+            or not isinstance(revision.get('revision'), int) or revision['revision'] < 1
+            or revision.get('renderedRevision') != revision['revision']
+            or not revision.get('edits') or not revision.get('sha256')
+            or revision.get('renderedSha256') != revision['sha256']):
+        raise ValueError('A completed same-ID subtitle revision is required')
+    for file in (revision.get('path'), output.get('srtPath')):
+        if not file or hashlib.sha256(Path(file).read_bytes()).hexdigest() != revision['sha256']:
+            raise ValueError('Rendered subtitle revision changed; rebuild before replacement')
 
 
 def edit_payload(detail, uploaded, cover, metadata):
@@ -121,8 +140,7 @@ def run(args, api):
                 or clip['uploadState']['bvid'] != args.expected_bvid or clip.get('pendingRebuild')):
             raise ValueError('A published original ID/BV and completed local rebuild are required')
         metadata = api.load_json(Path(clip['metadataPath']), {})
-        if metadata.get('uploadId') != args.id or not metadata.get('renderedTimingRepair') or metadata.get('ownStreamHumanReview'):
-            raise ValueError('A same-ID independently reviewed timing revision is required')
+        validate_replacement_revision(metadata, args.id)
         validate_publication_review(metadata)
         if not args.note.strip():
             raise ValueError('A substantive replacement note is required')

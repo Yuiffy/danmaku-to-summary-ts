@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ClipDetail, ClipSummary } from '../../core/admin/contracts';
 import { AdminError, atomicJson, digest, readJson, readText, redact } from './AdminFiles';
-import { sourceWindowSubtitles, subtitleRows, timeSeconds } from '../../core/admin/subtitles';
+import { sourceWindowSubtitles, subtitleRows, timeSeconds, formatSubtitleTime } from '../../core/admin/subtitles';
+import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons, ClipIntent } from '../../core/clipping/ClipIntent';
 
 export type AssetKind = 'media' | 'preview' | 'cover' | 'subtitles' | 'preview-subtitles' | 'media-subtitles' | 'source';
 export class AdminClipStore {
@@ -67,6 +68,9 @@ export class AdminClipStore {
   }
   private presentation(clip: any, metadata: any): ClipSummary {
     const summary = this.summary(clip);
+    if (metadata.ownStreamHumanReview?.status !== 'approved' && !['uploaded', 'queued', 'uploading', 'cancelled'].includes(clip.status)) {
+      summary.issues = [...clipIntentReasons(this.intent(clip, metadata)), ...summary.issues];
+    }
     if (clip.publicCopyPending || !clip.title || /^(?:待复核候选|被剔除候选|初选话题)\s*[\d?]+$/u.test(clip.title)) {
       summary.reviewTitle = String(metadata.reviewPresentation?.title || '').trim();
       const file = this.resolveAsset(clip, metadata, 'subtitles');
@@ -75,6 +79,14 @@ export class AdminClipStore {
         || (metadata.reviewPresentation?.recallSubtitles || metadata.grounding?.subtitles || []).map((cue: any) => cue.text || '').join(' ').slice(0, 240);
     }
     return summary;
+  }
+  private intent(clip: any, metadata: any): ClipIntent | undefined {
+    if (metadata.clipIntent?.signals?.length) return metadata.clipIntent;
+    if (['stream_activity_submission', 'stream_game_submission'].includes(metadata.type) || metadata.output?.parts?.length) return undefined;
+    const window = this.sourceWindow(clip, metadata);
+    if (!window) return undefined;
+    const rows = subtitleRows(this.sourceSubtitles(clip, metadata, 30)).map(row => ({ ...row, start: row.at }));
+    return clipIntentForWindow(collectClipIntentSignals(rows, []), window);
   }
   asset(id: string, kind: AssetKind, part = 1): string | undefined {
     const clip = this.record(id), metadata = this.metadata(clip);
@@ -130,7 +142,7 @@ export class AdminClipStore {
           start: cue.start, end: cue.end, text: cue.text, speakerEvidence: cue.speakerEvidence ? {
             status: cue.speakerEvidence.status, label: cue.speakerEvidence.label, identityVerified: cue.speakerEvidence.identityVerified
           } : undefined })), aiReview: metadata.aiReview, attributionReview: metadata.attributionReview, grounding: metadata.grounding,
-        publicationReview: metadata.publicationReview, candidate: metadata.candidate, subtitleProofreading: metadata.subtitleProofreading,
+        publicationReview: metadata.publicationReview, clipIntent: this.intent(clip, metadata), candidate: metadata.candidate, subtitleProofreading: metadata.subtitleProofreading,
         humanReview: metadata.humanReview, corrections: metadata.candidateSubtitles?.corrections || metadata.renderedSubtitles?.corrections,
         reviewPreview: metadata.reviewPreview, editorial: metadata.editorial, diagnostics: clip.failureReason,
         activityReview: metadata.activityReview, gameReview: metadata.gameReview, source: metadata.source, kind: metadata.kind, parts })
@@ -149,6 +161,10 @@ export class AdminClipStore {
       const transcript = this.checkedPath(metadata.transcript?.path || metadata.source?.srtPath);
       const rows = transcript && path.extname(transcript).toLowerCase() === '.srt'
         ? subtitleRows(readText(transcript)).map((row, index) => ({ ...row, index: index + 1 })) : [];
+      // Multipart activities may be hours apart; the enclosing window includes unrelated stream text.
+      detail.source.subtitles = rows.filter(row => (metadata.activities || []).some((event: any) =>
+        row.end > event.start - 180 && row.at < event.end + 180))
+        .map(row => `${row.id}\n${row.time} --> ${formatSubtitleTime(row.end)}\n${row.text}\n`).join('\n');
       detail.evidence.activities = (metadata.activities || []).map((event: any) => ({ id: event.id, kind: event.kind,
         name: event.name, start: event.start, end: event.end, reviewIssues: event.reviewIssues,
         verification: { decision: event.verification?.decision, reason: event.verification?.reason,

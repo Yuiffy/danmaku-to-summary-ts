@@ -96,6 +96,14 @@
     }
   },
   "asr": {
+    "device_handoff": { "enabled": false, "idle_s": 45, "min_remaining_s": 600 },
+    "cpu_fallback": { "enabled": false, "min_available_memory_gb": 10 },
+    "live": {
+      "enabled": false,
+      "room_ids": [],
+      "room_roots": {},
+      "idle_release_s": 120
+    },
     "participantDiscovery": {
       "enabled": true,
       "visual": {
@@ -111,7 +119,7 @@
     "default_backend": "paraformer",
     "subtitleProofreading": {
       "enabled": true,
-      "roomIds": ["25788785"],
+      "roomIds": ["25788785", "26966466", "30655190"],
       "contextSeconds": 20,
       "maxContextChars": 400
     },

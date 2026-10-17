@@ -16,6 +16,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(fixture, { recursive: true, force: true }); });
 
+it('reads live subtitles immediately and prefers the completed subtitle when it appears', async () => {
+  const base = path.join(room, '2026_10_01', 'new-record');
+  await fs.writeFile(`${base}.live.srt`, '1\n00:02:01,000 --> 00:02:03,000\n刚才说了实时转写\n');
+  const search = () => new RecordingEvidence([room], new AbortController().signal)
+    .search({ terms: ['实时转写'], kind: 'subtitle', date: '2026-10-01' });
+  expect((await search()).hits).toHaveLength(1);
+  await fs.writeFile(`${base}.srt`, '1\n00:02:01,000 --> 00:02:03,000\n刚才说了实时转写正式字幕\n');
+  const result = await search();
+  expect(result.hits).toHaveLength(1);
+  expect(result.hits[0].excerpt).toContain('正式字幕');
+});
+
 it('searches both sources, preserves attribution and context, and exposes only opaque IDs', async () => {
   const evidence = new RecordingEvidence([room], new AbortController().signal);
   const result = await evidence.search({ terms: ['法环'], kind: 'all', date: '2026-10' });

@@ -9,6 +9,7 @@ import type { Subtitle } from './editPlan';
 import { subtitleRepairEvidenceDigest, subtitleDiagnosticEvidence } from './ownSubtitleRepairEvidence';
 import { sourceTimingMetadata, validateRenderedTimingRepair } from './publicationTiming';
 import { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
+import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons } from './clipIntent';
 export { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
 
 export interface AutomaticPublicationConfig extends PublicationConfig {
@@ -89,7 +90,7 @@ export function publicationFrameTimes(artifact: Artifact, subtitles: Subtitle[],
             if (!Number.isSafeInteger(index) || index < 0 || index >= subtitles.length) return [];
             const cue = subtitles[index];
             return cue.text === change.after && cue.end > cue.start ? [Math.max(cue.start, cue.end - .1)] : [];
-        })).slice(-3) : [];
+        })).slice(-2) : [];
     return [...new Set([0.25, cueMid(subtitles[0]), duration / 2, cueMid(subtitles.at(-1)!), duration - 0.25, ...changed]
         .map(time => Math.max(0, Math.min(duration - .05, lastSampleTime, time))))];
 }
@@ -167,16 +168,32 @@ export async function reviewOwnPublications(artifacts: Artifact[], context: Publ
                 || Date.parse(artifact.generatedAt) < Date.parse(context.config.activatedAt!)) continue;
             let result: Artifact;
             try {
+                if (artifact.clipIntent?.needsHumanReview) {
+                    result = unavailable({ ...artifact, uploadReady: false }, context, now, clipIntentReasons(artifact.clipIntent).join('；'));
+                    result.publicationReview.status = 'needs_review';
+                    if (context.persist !== false) writeJson(artifact.output.metadataPath, result);
+                    results[index] = result;
+                    continue;
+                }
+                const speech = adapters.parse(artifact.source.srtPath);
+                const audience = artifact.source.xmlPath ? (await adapters.audience(artifact.source.xmlPath))
+                    .map((row, i) => ({ ...row, id: `D${i + 1}` })) : [];
+                const intent = clipIntentForWindow(collectClipIntentSignals(speech, audience), artifact.window);
+                if (intent.needsHumanReview) {
+                    const clipIntent = intent;
+                    result = unavailable({ ...artifact, clipIntent, uploadReady: false }, context, now, clipIntentReasons(clipIntent).join('；'));
+                    result.publicationReview.status = 'needs_review';
+                    if (context.persist !== false) writeJson(artifact.output.metadataPath, result);
+                    results[index] = result;
+                    continue;
+                }
                 if (!context.aiEnabled) throw new Error('AI is disabled; final publication review cannot run');
                 const initial = await publicationSnapshot(artifact);
-                const speech = adapters.parse(artifact.source.srtPath);
                 const rawEvidence = adapters.evidence(speech);
                 const evidence = artifact.mode === 'own_stream_fun_review'
                     ? projectRetainedSubtitleEvidence(rawEvidence, artifact.window) : rawEvidence;
                 const sourceEvidenceSha256 = evidence.sourceSha256;
                 const retained = adapters.parse(artifact.output.srtPath);
-                const audience = artifact.source.xmlPath ? (await adapters.audience(artifact.source.xmlPath))
-                    .map((row, i) => ({ ...row, id: `D${i + 1}` })) : [];
                 const start = artifact.window.start, end = artifact.window.end;
                 result = await reviewPublication(artifact, {
                     config: context.config, roomId: context.roomId, streamerName: context.streamerName,

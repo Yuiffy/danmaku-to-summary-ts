@@ -56,7 +56,7 @@ function summaryLines(results, metadata = {}) {
         const processing = results.filter(result => ['uploading', 'rendering'].includes(status(result)));
         const remaining = results.filter(result => !uploaded.includes(result) && !queued.includes(result) && !processing.includes(result));
         const cancelled = remaining.filter(result => status(result) === 'cancelled');
-        const rejected = remaining.filter(result => !cancelled.includes(result) && (result.selectionRejection || result.publicationDecision?.action === 'rejected'));
+        const rejected = remaining.filter(result => !cancelled.includes(result) && !result.clipIntent?.needsHumanReview && (result.selectionRejection || result.publicationDecision?.action === 'rejected'));
         const duplicates = remaining.filter(result => !cancelled.includes(result) && !rejected.includes(result) && automaticEnqueueIssue(result, metadata)?.kind === 'duplicate');
         const ready = remaining.filter(result => !cancelled.includes(result) && !rejected.includes(result) && uploadEligible(result)
             && !automaticEnqueueIssue(result, metadata) && !metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex] && status(result) !== 'failed');
@@ -67,7 +67,7 @@ function summaryLines(results, metadata = {}) {
     const uploadActive = results.filter(result => ['queued', 'uploading', 'rendering'].includes(metadata.uploadRegistry?.clipStatusByReviewIndex?.[result.reviewIndex]));
     const ready = results.filter(result => uploadEligible(result) && !metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex]
         && !uploaded.includes(result) && !uploadActive.includes(result));
-    const rejected = results.filter(result => result.selectionRejection);
+    const rejected = results.filter(result => result.selectionRejection && !result.clipIntent?.needsHumanReview);
     const readyIds = ready.map((result, index) => clipId(result, metadata, index)).filter(Boolean);
     const deferred = results.filter(result => result.preRenderHold).length;
     return [`总候选 ${results.length}${uploaded.length ? ` | 已上传 ${uploaded.length}` : ''}${uploadActive.length ? ` | 投稿处理中 ${uploadActive.length}` : ''} | 成片待审核 ${ready.length} | 待复核或异常 ${results.length - ready.length - rejected.length - uploaded.length - uploadActive.length} | 剔除 ${rejected.length}`,
@@ -78,7 +78,7 @@ function summaryLines(results, metadata = {}) {
 }
 
 function uploadEligible(result) {
-    return !result.preRenderHold && !result.rebuildRequired && !result.publicCopyPending && !result.selectionRejection && result.uploadReady !== false
+    return !(result.clipIntent?.needsHumanReview && result.ownStreamHumanReview?.status !== 'approved') && !result.preRenderHold && !result.rebuildRequired && !result.publicCopyPending && !result.selectionRejection && result.uploadReady !== false
         && !result.output?.mediaError && !result.output?.coverError
         && (!result.automaticPublicationRequired || result.ownStreamHumanReview?.status === 'approved'
             || (result.publicationReview?.status === 'passed' && result.publicationDecision?.action === 'auto_queue'))
@@ -102,6 +102,7 @@ function reviewIssues(result, metadata = {}) {
     if (!humanApproved && result.attributionRequired && result.attributionReview?.status !== 'passed' && !issues.length) issues.push('actor_review_unavailable');
     if (result.publicCopyPending && !issues.length) issues.push('public_copy_pending');
     if (!humanApproved && result.automaticPublicationRequired && result.publicationReview?.status !== 'passed' && !issues.length) issues.push('publication_review_unavailable');
+    if (!humanApproved) issues.unshift(...require('../workflow-runtime').loadWorkflow('clipping/clipIntent').clipIntentReasons(result.clipIntent));
     return [...new Set(issues.map(String))].filter(issue => !(result.publicCopyPending && issue.startsWith('clip public copy is pending;')));
 }
 
@@ -114,6 +115,7 @@ function reviewStatus(result, metadata = {}) {
     if (state === 'rendering') return '上传队列正在制作';
     if (state === 'cancelled') return '已跳过投稿';
     if (state === 'failed') return '投稿失败';
+    if (result.clipIntent?.needsHumanReview && result.ownStreamHumanReview?.status !== 'approved') return '别切意图待人工核对';
     const enqueueIssue = automaticEnqueueIssue(result, metadata);
     if (enqueueIssue?.kind === 'duplicate') return `重复已跳过（${enqueueIssue.message}）`;
     if (enqueueIssue?.kind === 'unknown') return '入队结果待确认（勿重复入队）';
@@ -197,7 +199,7 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
     if (!includeIssues) {
         const pending = !uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex];
         const brief = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest');
-        if (result.selectionRejection) return [...brief.compactReviewLines(result, issues),
+        if (result.selectionRejection && !result.clipIntent?.needsHumanReview) return [...brief.compactReviewLines(result, issues),
             ...(result.selectionRejection.reason === 'public_copy_evidence_dropped'
                 ? [`   具体问题: 拟发文案“${String(result.copy?.title || result.selectionRejection.title || '').replace(/\s+/g, ' ').slice(0, 90)}”的引用未完整落入裁切窗口。`,
                     '   下一步: 检查被裁掉的前后原话，补齐窗口或收窄文案后重新审核。'] : []),
@@ -271,7 +273,7 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
 function quickReviewLines(results, metadata = {}) {
     const lines = [];
     for (const result of numberedResults(results, metadata)) {
-        if (result.selectionRejection || (result.ownStreamHumanReview?.status === 'approved' && !result.rebuildRequired)) continue;
+        if (result.selectionRejection && !result.clipIntent?.needsHumanReview || (result.ownStreamHumanReview?.status === 'approved' && !result.rebuildRequired)) continue;
         const brief = require('./review_brief').briefLines(result, reviewIssues(result, metadata));
         const groups = result.subtitleProofreading?.reviewGroups || [];
         if (!brief.length && !groups.length) continue;

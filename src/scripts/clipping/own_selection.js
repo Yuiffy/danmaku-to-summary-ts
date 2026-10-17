@@ -140,7 +140,8 @@ function rescoreCandidateWindow(candidate, segments, danmaku, config, emotionAna
         speech: speech.reduce((sum, item) => sum + 16 + item.hits.length * 6, 0),
         emotion: config.emotionScoring?.enabled === false ? 0 : emotion.maxScore
     };
-    return { ...candidate, score: scores.audience + scores.speech + scores.emotion, scoreComponents: scores,
+    const intent = comments.some(item => require('../workflow-runtime').loadWorkflow('clipping/clipIntent').parseClipIntentCommand(item.text)) ? 100 : 0;
+    return { ...candidate, score: scores.audience + scores.speech + scores.emotion + intent, scoreComponents: { ...scores, ...(intent ? { intent } : {}) },
         danmakuCount: comments.length, reactionCount,
         sourceRecordIds: [...comments.map(item => item.id), ...speech.map(item => item.id)],
         matchedKeywords: Array.from(new Set([...reactions, ...speech].flatMap(item => item.hits))),
@@ -152,6 +153,11 @@ function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAn
     const segments = parsed.segments || [];
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
     const raw = [];
+    const intentPolicy = require('../workflow-runtime').loadWorkflow('clipping/clipIntent');
+    for (const signal of intentPolicy.collectClipIntentSignals(segments, danmaku).filter(row => row.source === 'danmaku')) {
+        raw.push(makeCandidate(signal.start - (Number(config.windowSeconds) || 110), signal.end + (Number(config.postPaddingSeconds) || 20),
+            'danmaku_clip_intent', 100, { clipIntent: { version: 1, needsHumanReview: signal.action === 'hold', signals: [signal] } }));
+    }
     raw.push(...buildEmotionCandidates(emotionAnalysis, {
         ...(config.emotionScoring || {}),
         prePaddingSeconds: config.prePaddingSeconds,

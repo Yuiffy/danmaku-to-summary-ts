@@ -65,7 +65,7 @@ export async function listSubtitles(configuredRoot: string, signal: AbortSignal)
     const children = folder.folder === root ? entries : await fs.readdir(folder.folder, { withFileTypes: true });
     const names = new Set(children.map(entry => entry.name.toLowerCase()));
     for (const entry of children) {
-      if (!entry.isFile() || entry.isSymbolicLink() || !/\.srt$/iu.test(entry.name) ||
+      if (!entry.isFile() || entry.isSymbolicLink() || !/\.srt$/iu.test(entry.name) || /\.live\.srt$/iu.test(entry.name) ||
           /\.speaker\.srt$/iu.test(entry.name) && names.has(entry.name.toLowerCase().replace(/\.speaker\.srt$/u, '.srt'))) continue;
       results.push({ root, file: path.join(folder.folder, entry.name),
         date: folder.date || /\d{4}[-_]\d{2}[-_]\d{2}/u.exec(entry.name)?.[0].replace(/_/gu, '-') || null });

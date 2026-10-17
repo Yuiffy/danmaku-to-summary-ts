@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { parseModelJson } from '../text/json';
 import * as path from 'path';
 import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
+import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons } from './clipIntent';
 
 type Data = Record<string, any>;
 const CHECKS = ['content', 'subtitles', 'policy'];
@@ -35,8 +36,20 @@ function parse(text: string, ids: string[]): Data[] {
 
 /** Text review admits media work only. Final media review and upload authority remain independent. */
 export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceReviewInput, adapters: OwnSourceReviewAdapters): Promise<Data[]> {
-    if (!input.enabled) return clips;
+    const signals = collectClipIntentSignals(input.cues as any, input.audience as any);
+    const annotated = clips.map(clip => {
+        const clipIntent = clipIntentForWindow(signals, clip as {start:number;end:number});
+        return clipIntent.signals.length ? { ...clip, clipIntent } : clip;
+    });
+    const held = new Map(annotated.filter(clip => clip.clipIntent?.needsHumanReview).map(clip => [clip, {
+        ...clip, publicCopyPending: true, uploadReady: false,
+        sourceReview: { version: 1, status: 'needs_review', sourceSha256: input.sourceSha256,
+            checks: {content:false, subtitles:false, policy:false}, issues: clipIntentReasons(clip.clipIntent) }
+    }]));
+    if (!input.enabled) return annotated.map(clip => held.get(clip) || clip);
+    clips = annotated.filter(clip => !held.has(clip));
     const diagnostics = input.diagnostics.sourceReview ||= { version: 1, requests: 0, passed: 0, held: 0 };
+    diagnostics.held += held.size;
     const batchSize = Math.max(1, Math.min(4, input.batchSize || 2)), results: Data[] = [];
     const requestReview = async (batch: Data[], ids: string[], before = 30, after = 30, history: Data[] = []): Promise<Data[]> => {
         let reviews: Data[], packetSha256: string | null = null, sourceSnapshot: string | null = null;
@@ -141,6 +154,13 @@ export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceR
                         }
                         if (adapters.snapshot() !== initialSnapshot) throw new Error('切前边界重选期间来源变化');
                         clip = planned; revised = true;
+                        const clipIntent = clipIntentForWindow(signals, clip as {start:number;end:number});
+                        if (clipIntent.signals.length) clip = { ...clip, clipIntent };
+                        if (clipIntent.needsHumanReview) {
+                            review = { version: 1, status: 'needs_review', sourceSha256: input.sourceSha256,
+                                checks: {content:false,subtitles:false,policy:false}, issues: clipIntentReasons(clipIntent) };
+                            break;
+                        }
                     }
                     [review] = await requestReview([clip], [ids[index]], before, after, history);
                     if (revised) break;
@@ -158,7 +178,8 @@ export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceR
                 ...(!passed ? { publicCopyPending:true, uploadReady:false } : {}) });
         }
     }
-    return results;
+    let next = 0;
+    return annotated.map(clip => held.get(clip) || results[next++]);
 }
 
 export async function restoreOwnCandidatePlan(plan: Data, source: Data, sourceSha256: string, refine: (candidates: Data[]) => Promise<Data[]>): Promise<Data[]> {

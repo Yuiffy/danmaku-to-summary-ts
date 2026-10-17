@@ -485,6 +485,10 @@ async function acquireWhisperLock(taskId = null, options = {}) {
                 console.log('🔒 获取 ASR 锁成功');
             }
 
+            if (process.env.ASR_CPU_FALLBACK === '1') {
+                console.log('🖥️ CPU 后台 ASR 已获取锁，跳过 GPU 负载等待');
+                return;
+            }
             // ── GPU 负载检测：获取到锁后，检查 GPU 是否繁忙 ──
             const config = configLoader.getConfig();
             const gpuCheckIntervalSec = config.whisper?.gpuDetection?.checkIntervalSeconds ?? 30;

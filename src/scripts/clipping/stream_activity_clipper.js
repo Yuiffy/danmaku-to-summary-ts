@@ -230,7 +230,9 @@ async function refreshPresentation(row, plan, root, options = {}) {
         if (item.method === 'source_frame_reading' && fileDigest(item.framePath) !== item.frameSha256
             || item.method === 'source_transcript_reading' && fileDigest(item.transcriptPath) !== item.transcriptSha256) throw new Error('Reviewed activity title evidence changed');
     }
-    const presentation = presentationTools.presentationFor(plan, row.kind, row.output.parts, titleEvidence);
+    const scopedPlan = row.activitySelection ? { ...plan, events: plan.events.filter(event =>
+        row.activities.some(selected => selected.id === event.id)) } : plan;
+    const presentation = presentationTools.presentationFor(scopedPlan, row.kind, row.output.parts, titleEvidence);
     if (row.presentation?.version === presentation.version && row.presentation?.signature === presentation.signature) return row;
     if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
     const coverPath = presentationTools.coverPathFor(row.output.metadataPath, presentation);
@@ -259,6 +261,9 @@ async function restyleStreamActivities(options = {}) {
         const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8')));
         const selected = rows.filter(row => !options.metadataPath || path.resolve(row.output.metadataPath) === path.resolve(options.metadataPath));
         if (!selected.length) throw new Error('Requested activity metadata is not in its manifest');
+        if (options.retainActivityIds && (selected.length !== 1 || !String(options.selectionNote || '').trim())) {
+            throw new Error('Activity selection requires one metadata file and an explicit note');
+        }
         if (options.contentName) {
             if (!options.evidenceFrame || !String(options.evidenceNote || '').trim() || selected.length !== 1 || selected[0].activities.length !== 1) {
                 throw new Error('Content name needs one selected activity, its generated cover frame and a source evidence note');
@@ -291,7 +296,11 @@ async function restyleStreamActivities(options = {}) {
             if (fileDigest(row.output.coverPath) !== row.coverSha256) throw new Error('Activity cover changed before restyling');
         }
         const changes = [];
-        for (const row of selected) changes.push({ original: row, updated: await refreshPresentation(row, plan, root, options) });
+        for (const row of selected) {
+            const current = options.retainActivityIds
+                ? stages.selectActivitySubmission(row, options.retainActivityIds, options.selectionNote) : row;
+            changes.push({ original: row, updated: await refreshPresentation(current, plan, root, options) });
+        }
         // Finish all covers before replacing any metadata; video files are never rebuilt.
         for (const { original, updated } of changes) if (original !== updated) {
             const backup = path.join(files.directory, 'temp', 'presentation-revisions', planTools.sha(original).slice(0, 16), `${original.kind}.json`);

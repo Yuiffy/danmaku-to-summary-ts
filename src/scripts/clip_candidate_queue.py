@@ -51,9 +51,11 @@ def update_record(clip, result, api):
     clip["updatedAt"] = api.now_iso()
 
 
-def active_ids(queue):
+def active_ids(queue, published_id=None):
     return {int(i) for job in queue.get("jobs", []) if job.get("status") in ("pending", "running", "retry_wait")
-            for i in job.get("clipIds", [])}
+            for i in job.get("clipIds", [])
+            if not (int(i) == published_id and job.get("status") != "running"
+                    and not job.get("allowDuplicateTitle"))}
 
 
 def preview_candidates(args, api):
@@ -131,7 +133,7 @@ def edit_candidate(args, api):
         if getattr(args, "enqueue", False) and is_published(clip):
             raise ValueError("Already published: rebuild locally and replace the original submission; do not enqueue a duplicate")
         queue = api.load_json(api.QUEUE_PATH, api.default_queue())
-        if action == "correct" and clip_id in active_ids(queue):
+        if action == "correct" and clip_id in active_ids(queue, clip_id if is_published(clip) else None):
             if getattr(args, "enqueue", False) and clip.get("lastCandidateCorrection") == signature:
                 print(f"[OK] {clip_id}: this correction is already queued")
                 return 0
@@ -195,7 +197,7 @@ def prepare_rebuild(args, api):
                                       or args.start is None or args.end is None or args.enqueue):
             raise ValueError("Pending candidates require --replan --start --end; cut with --automatic-review before enqueue")
         api.sync_clip_statuses(registry, [args.id])
-        if args.id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue())):
+        if args.id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue()), args.id if is_published(clip) else None):
             raise ValueError("The upload worker owns this ID; cancel its waiting job before editing")
         if args.enqueue and is_published(clip):
             raise ValueError("Already published: local rebuild only; duplicate upload is not allowed")
@@ -256,7 +258,7 @@ def cut_candidates(args, api):
                 if not expected:
                     raise ValueError(f"{clip_id}: upload job lacks an approved subtitle snapshot; enqueue again")
                 options.update(require_approval="yes", expected_sha256=expected)
-            elif clip_id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue())):
+            elif clip_id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue()), clip_id if is_published(clip) else None):
                 raise ValueError(f"{clip_id} is owned by the upload worker")
             print(f"[worker] candidate {clip_id}: burning subtitles and generating cover", flush=True)
             candidate_action(api, clip, "render", options, timeout=getattr(args, "timeout_seconds", 1800))

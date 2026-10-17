@@ -33,7 +33,7 @@ it('runs one query globally and throttles busy replies during a cross-room flood
   await Promise.resolve();
   expect(answer).toHaveBeenCalledTimes(1);
   expect(sent).toHaveBeenCalledTimes(2);
-  expect(sent.mock.calls[0][1]).toBe('鹿饼收到，正在直播记录中查询“以前玩过法环吗?”问题的答案。');
+  expect(sent.mock.calls[0][1]).toBe('鹿饼收到，思考“以前玩过法环吗?”中…');
   expect(sent).toHaveBeenCalledWith('200', '正忙着查「以前玩过法环吗?」问题，请稍后再问', expect.any(Function));
   pending.resolve({ answer: '玩过，字幕里提到打过玛尔基特。' });
   await session.flush();
@@ -70,7 +70,7 @@ it('gives authorized bare mentions one throttled hint without using query quota'
   }
   await session.flush();
   expect(answer).not.toHaveBeenCalled();
-  expect(sent.mock.calls.map(call => call[1])).toEqual(['鹿饼在，请发「@鹿饼 你的问题」。']);
+  expect(sent.mock.calls.map(call => call[1])).toEqual(['鹿饼在：聊天、查历史、总结最近5分钟。']);
   expect(Array.from(sent.mock.calls[0][1]).length).toBeLessThanOrEqual(20);
   session.ingest(message(), () => true, now);
   await session.flush();

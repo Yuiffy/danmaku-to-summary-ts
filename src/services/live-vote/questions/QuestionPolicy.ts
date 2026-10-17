@@ -37,6 +37,7 @@ export interface QuestionClue extends QuestionSource {
 }
 
 export interface QuestionAnswer {
+  basis?: 'general';
   answer: string;
   shortAnswer?: string;
   source?: QuestionSource;
@@ -130,8 +131,8 @@ export function busyQuestionMessage(question: string, maxChars: number): string 
 }
 
 export function receivedQuestionMessage(question: string, maxChars: number): string {
-  const prefix = maxChars >= 26 ? '鹿饼收到，正在直播记录中查询“' : '鹿饼收到，正在查“';
-  const suffix = maxChars >= 26 ? '”问题的答案。' : '”的答案。';
+  const prefix = '鹿饼收到，思考“';
+  const suffix = '”中…';
   return prefix + questionPreview(question, maxChars - Array.from(prefix + suffix).length) + suffix;
 }
 
@@ -153,7 +154,7 @@ export function formatQuestionRecord(record: QuestionRecord): string {
     `直播问答（房间${record.request.roomId}）`,
     `问题：${publicQuestionText(record.request.question, 120) || '问题内容已省略'}`,
     `回复：${publicQuestionText(record.result.answer, 300) || NO_EVIDENCE}`,
-    '线索：'
+    record.result.basis === 'general' ? '一般回答，不涉及直播事实。' : '线索：'
   ];
   const clues = record.result.clues || (record.result.source ? [{ ...record.result.source, excerpt: '' }] : []);
   for (const [index, clue] of clues.slice(0, 3).entries()) {
@@ -162,6 +163,6 @@ export function formatQuestionRecord(record: QuestionRecord): string {
     const kind = clue.kind === 'gift-catalog' ? `舰礼档案（所属月${clue.catalogMonth || '不详'}）` : clue.kind === 'subtitle' ? '录像字幕' : '观众弹幕';
     lines.push(`${index + 1}. ${room}${clue.date || '日期不详'} ${clue.time} ${kind}${text ? `：${text}` : ''}`);
   }
-  if (!clues.length) lines.push('在已检索的直播记录中没有找到可靠依据。');
+  if (!clues.length && record.result.basis !== 'general') lines.push('在已检索的直播记录中没有找到可靠依据。');
   return lines.join('\n');
 }

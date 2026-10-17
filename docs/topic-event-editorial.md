@@ -530,6 +530,9 @@ python src/scripts/clip_upload_registry.py cut --ids 123 --automatic-review --re
 python src/scripts/clip_upload_registry.py replace-media --id 123 --expected-bvid BVexample --note "用户要求修复原稿音画字幕错配"
 ```
 
+除时间轴修复外，同 ID 的已完成改词修订也可使用该入口：要求修订号大于零、
+存在逐字修订记录、压制版本一致，且修订字幕与输出 SRT 哈希均未变化；仍须独立最终审核通过。
+最终视觉审核保留最多五张常规抽帧、两张更正字幕抽帧及一张封面，符合八张内联图片上限。
 该操作仅替换原稿的单个视频和封面、修正自动生成的源时间行，保留线上标题、简介其余
 内容及隐私/评论/字幕等设置。提交前再次核对线上修改和成片证据；只上传文件，不调用
 新投稿入口。回执保留原 uploadState，未知提交结果禁止盲目重试。
@@ -545,6 +548,8 @@ python src/scripts/clip_upload_registry.py replace-media --id 123 --expected-bvi
 字幕修改会使旧视频暂不可上传；改词失败不入队，排队中的版本不可修改，重试复用
 已成功生成的版本。已投稿 ID 允许本地校对重压，但禁止 `enqueue`（包括 `--force`）
 再次投稿，需走原稿替换流程。
+已成功投稿的 ID 可在普通批次等待重试时本地修订；运行中的批次及明确重复投稿的
+批次仍保留锁。等待批次继续沿用成功回执跳过该 ID，不会重新投稿。
 
 已经成片的关键词切片（`local_review` / `topic_candidate_manual_cut`）也通过同一
 `rebuild` / `cut` 入口按原 ID 补齐话题上下文。先核对起因、指代、讨论和收尾，

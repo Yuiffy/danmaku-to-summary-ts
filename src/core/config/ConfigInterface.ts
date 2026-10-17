@@ -322,6 +322,25 @@ export interface AsrAdaptiveSpeakerConfig {
 }
 
 export interface AsrConfig {
+  device_handoff?: {
+    enabled: boolean;
+    idle_s?: number;
+    min_remaining_s?: number;
+    poll_s?: number;
+    gpu_util_pct?: number;
+    gpu_memory_pct?: number;
+    gpu_free_mb?: number;
+    window_s?: number;
+    worker_timeout_s?: number;
+  };
+  cpu_fallback?: { enabled: boolean; min_available_memory_gb?: number };
+  live?: {
+    enabled: boolean;
+    room_ids: string[];
+    room_roots: Record<string, string[]>;
+    python_executable?: string;
+    idle_release_s?: number;
+  };
   participantDiscovery?: {
     enabled?: boolean;
     visual?: {

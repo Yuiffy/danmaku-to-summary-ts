@@ -1496,7 +1496,7 @@ async function generateOwnStreamClipJob(context) {
         recordedAt: info.recordedAt,
         streamTitle: info.streamTitle,
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
-        ...(clip.publication ? { publication: clip.publication } : {}), ...(clip.sourceReview ? { sourceReview: clip.sourceReview } : {}),
+        ...(clip.publication ? { publication: clip.publication } : {}), ...(clip.sourceReview ? { sourceReview: clip.sourceReview } : {}), ...(clip.clipIntent ? { clipIntent: clip.clipIntent } : {}),
         window,
         candidate: clip.base || null,
         viewingAngles: anglesForWindow(clip, window, subtitleEvidence, danmaku),
@@ -1853,7 +1853,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         ordinaryReady: async results => {
             if (publicationRuntime) return;
             const artifacts = require('./clipping/own_review_state');
-            const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot);
+            const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot, danmaku);
             artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata, buildReviewMarkdown);
             const registry = options.registerUpload === false ? null : registerReviewForUpload(reviewMetadata.reviewPath, rows, reviewMetadata);
             if (registry) reviewMetadata.uploadRegistry = registry;
@@ -1873,7 +1873,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         evidence: buildSubtitleEvidence, audience: parseDanmakuXml, copyHelpers: { buildClipDescription, buildCoverTitle } });
     if (timingRuntime) results = timingRuntime.retainUnrecoveredTimingRows(results, options.timingRecovery);
     const artifacts = require('./clipping/own_review_state');
-    const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot);
+    const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot, danmaku);
     artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata, buildReviewMarkdown);
     const residualReview = writeResidualAuditForOwnStream({
         options,

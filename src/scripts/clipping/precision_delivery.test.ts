@@ -14,7 +14,7 @@ test('ordinary delivery completes before the selected clip starts, stable source
     try {
         const result = await produceOwnClips({ clips, options: { mediaPath: 'source', srtPath: 'srt' }, config: {
             enhancements: { enabled: true, workflow: 'creative', roomIds: ['room'] }, clipConcurrency: 2, clipResourceAdaptive: { enabled: false },
-            streamReviewRendering: false }, rootConfig: {}, parsed: {}, evidence: { version: 1 }, info: { roomId: 'room' }, outputRoot: dir,
+            streamReviewRendering: false }, rootConfig: {}, parsed: {}, danmaku: [], evidence: { version: 1, cues: [], sourceSha256: 'fixture' }, info: { roomId: 'room' }, outputRoot: dir,
             diagnostics: {}, metadata }, {
             review: async rows => rows, prepare: async rows => ({ clips: rows, summary: { selected: [{ id: 2 }], total: 3 } }),
             render: async (clip, index) => { calls.push(`render${index}`); return { window: { index: index + 1 }, title: clip.title }; },
@@ -104,7 +104,7 @@ test.each([false, true])('streaming creative reuses its baseline after ordinary 
         const produced = await produceOwnClips({ clips, options: { mediaPath, srtPath }, config: {
             streamReviewRendering: true, clipConcurrency: 1, clipResourceAdaptive: { enabled: false },
             enhancements: { enabled: true, workflow: 'creative', roomIds: ['room'] } }, rootConfig: {}, parsed: {},
-            evidence: { version: 1 }, info: { roomId: 'room' }, diagnostics: {}, metadata, outputRoot: dir }, {
+            danmaku: [], evidence: { version: 1, cues: [], sourceSha256: 'fixture' }, info: { roomId: 'room' }, diagnostics: {}, metadata, outputRoot: dir }, {
             review: async (rows, hooks) => { await hooks.onBatchReviewed(rows.map((clip, index) => ({ clip, index }))); return rows; },
             prepare: async rows => { selections++; expect(rows).toHaveLength(3); return { clips: rows.map((row, i) => ({ ...row,
                 precisionExperiment: { selected: i === 1, reason: 'reaction' } })), summary: { selected: [{ id: 2 }] } }; },

@@ -9,6 +9,7 @@ export type EvidenceReview =
 
 /** Rank and decide in the same model pass, so an easy question still takes two requests. */
 export const REVIEW_PROMPT = `现在对已返回的候选进行语义重排，再决定下一步。关键词命中次数不是答案可信度。
+read_recent按当前录像最近5/10分钟抽样，保留字幕延迟、覆盖缺失与limited限制，不能把未转写或抽样未见当成没说过。只总结返回时段，区分音轨字幕与观众弹幕；不能用历史搜索补出的旧事充当“刚才”。
 按是否直接回答问题、日期范围、上下文、来源归属排序，rankedEvidenceIds只列最有用的0～8个真实ID，最有用的在前。
 同一段重复消息不是多份独立证据。观众的疑问或猜测不算确认；不要把提问本身或机器人的回答作为证据。
 核对否定、改口和日期，不要将别的月份的礼物当成所问月份的礼物。ASR可能来自播放音频；没有明确归属时只能说录像提到。

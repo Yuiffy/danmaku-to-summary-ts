@@ -38,7 +38,8 @@ async function refreshReviewUnlocked(planPath, options = {}) {
     }
     if (results.length !== plan.clips.length) throw new Error(`Expected ${plan.clips.length} saved clip records; found ${results.length}. Refusing to rerender automatically.`);
     const parsed = topic.parseTopicSrt(plan.source.srtPath);
-    const all = prepareReviewResults(results, plan, parsed, outputRoot);
+    const danmaku = plan.source.xmlPath ? await topic.parseDanmakuXml(plan.source.xmlPath) : [];
+    const all = prepareReviewResults(results, plan, parsed, outputRoot, danmaku);
     const first = results[0] || {};
     const starts = results.map(result => Date.parse(result.processing?.startedAt)).filter(Number.isFinite);
     const ends = results.map(result => Date.parse(result.processing?.finishedAt)).filter(Number.isFinite);

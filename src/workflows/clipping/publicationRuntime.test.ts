@@ -7,6 +7,22 @@ import { reviewOwnPublications, enqueueOwnPublications, reviewPublications, enqu
 
 const passed = { status: 'passed', checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true }, issues: [] };
 const picture = 'data:image/jpeg;base64,/9j/';
+test('no-clip source evidence takes priority over a missing cover and prevents AI review or enqueue', async () => {
+    const f = fixture();
+    try {
+        const artifact = f.artifact(1); artifact.output.coverPath = null;
+        fs.writeFileSync(f.source.srtPath, '这段别切了');
+        const [result] = await reviewOwnPublications([artifact], f.context, f.adapters);
+        expect(result).toMatchObject({ uploadReady: false, clipIntent: { needsHumanReview: true },
+            publicationReview: { status: 'needs_review' }, publicationDecision: { action: 'needs_human' } });
+        expect(result.publicationReview.issues[0]).toContain('ASR疑似');
+        expect(result.publicationReview.issues.join('')).not.toContain('Missing rendered cover');
+        expect(f.adapters.request).not.toHaveBeenCalled();
+        const invoke = jest.fn();
+        await enqueueOwnPublications([result], { clipIdsByReviewIndex: { '1': 1 } }, f.directory, invoke);
+        expect(invoke).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
 test('current versioned captions receive bounded final-frame evidence without using stale or out-of-range edits', () => {
     const subtitles = Array.from({length: 8}, (_, index) => ({start:index*10+1,end:index*10+5,text:`当前${index}`}));
     const artifact: Artifact = {window:{start:100,end:180,duration:80},copy:{title:'标题',description:'简介',coverText:'封面'},output:{}};
@@ -16,9 +32,10 @@ test('current versioned captions receive bounded final-frame evidence without us
         {cue:4,after:'当前3'}, {cue:5,after:'当前4'}, {cue:6,after:'当前5'}, {cue:9,after:'窗外'}
     ]}]};
     const times=publicationFrameTimes(artifact,subtitles,80);
-    expect(times).toEqual([...baseline,34.9,44.9,54.9]);
+    expect(times).toEqual([...baseline,44.9,54.9]);
     expect(times).not.toContain(24.9);
-    expect(times.length).toBeLessThanOrEqual(8);
+    // Reserve one of the eight inline images for the cover.
+    expect(times.length + 1).toBeLessThanOrEqual(8);
     artifact.renderedSubtitles.renderedRevision=1;
     expect(publicationFrameTimes(artifact,subtitles,80)).toEqual(baseline);
 });

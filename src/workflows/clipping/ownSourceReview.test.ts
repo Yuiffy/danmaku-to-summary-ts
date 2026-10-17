@@ -6,6 +6,16 @@ const input = () => ({enabled:true,roomId:'25788785',streamerName:'岁己',sourc
     cues:[{id:'G1',start:101,end:102,text:'还款是一千还是一万'},{id:'G2',start:155,end:158,text:'完整观点'},{id:'G3',start:168,end:169,text:'观点收尾'}],
     audience:[{time:106,text:'金额没听清'}],excludedCategories:['现实家庭关系'],diagnostics:{}});
 
+test.each([true, false])('a no-clip signal holds before media and AI even with source review enabled=%s', async enabled => {
+    const context = input(); context.enabled = enabled;
+    context.cues[0].text = '刚才那个不要切了，别的可以切';
+    const request = jest.fn();
+    const [result] = await reviewOwnSourceCandidates([clips[0]], context, { snapshot: () => 'source', request });
+    expect(result).toMatchObject({ uploadReady: false, publicCopyPending: true,
+        clipIntent: { needsHumanReview: true }, sourceReview: { status: 'needs_review', issues: [expect.stringContaining('需人工核对')] } });
+    expect(request).not.toHaveBeenCalled();
+});
+
 test('passed attribution cannot admit an unresolved core amount; source passes only admit later media work', async () => {
     const request = jest.fn(async(prompt:string)=>{
         expect(prompt).toContain('还款是一千还是一万');
@@ -163,6 +173,21 @@ test.each(['unread_id','too_far','ignored_requested_end','changed_source','faile
     expect(result.sourceReview.status).not.toBe('passed');
     expect(replan.mock.calls.length).toBe(failure==='unread_id'?0:1);
     expect(request.mock.calls.length).toBe(failure==='second_replan'?2:1);
+});
+
+test('a repaired boundary that expands into a later no-clip warning is held before another AI pass', async () => {
+    const context = input();
+    context.cues = [{ id:'G1', start:100, end:105, text:'讨论开始' }, { id:'G2', start:115, end:120, text:'还没讲完' },
+        { id:'G3', start:160, end:175, text:'接着讲完了，这段别切' }];
+    const request = jest.fn().mockResolvedValueOnce({ text:JSON.stringify({reviews:[boundaryRow({tool:'read_context',
+        beforeSeconds:30,afterSeconds:180,reason:'读取后续'})]}) }).mockResolvedValueOnce({ text:JSON.stringify({reviews:[boundaryRow({tool:'revise_window',
+        startCueId:'G1',endCueId:'G3',reason:'保留完整后续'})]}) });
+    const replan = jest.fn(async (original, window) => ({ ...original, ...window, attributionRequired:true,
+        attributionReview:{status:'passed'},boundaryReview:{approved:true},topicEditPlan:{continuation:'complete'} }));
+    const [result] = await reviewOwnSourceCandidates([clips[0]], context, {snapshot:()=>'source',request,replan});
+    expect(result).toMatchObject({uploadReady:false,clipIntent:{needsHumanReview:true},sourceReview:{status:'needs_review'}});
+    expect(result.sourceReview.issues[0]).toContain('ASR疑似');
+    expect(request).toHaveBeenCalledTimes(2);
 });
 
 test('partial subtitle groups expose actual retained items and do not include their outside answer',async()=>{

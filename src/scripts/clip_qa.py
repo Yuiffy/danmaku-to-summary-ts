@@ -52,6 +52,8 @@ def validate_metadata_qa(metadata):
         if (_file_digest(draft.get("path")) != draft.get("sha256")
                 or _file_digest((metadata.get("output") or {}).get("srtPath")) != draft.get("sha256")):
             raise ValueError("rendered subtitles differ from the saved revision")
+    if (metadata.get("clipIntent") or {}).get("needsHumanReview") and not metadata.get("ownStreamHumanReview"):
+        raise ValueError("检测到别切意图，需人工核对语境后决定是否切片")
     if metadata.get("publicCopyPending"):
         raise ValueError("clip public copy is pending; generate and review publishing copy before upload")
     output = metadata.get("output") or {}

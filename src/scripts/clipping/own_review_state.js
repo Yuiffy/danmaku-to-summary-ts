@@ -6,9 +6,11 @@ const crypto = require('crypto');
 const { buildSubtitleEvidence, parseClipResponse } = require('./subtitle_evidence');
 const { chronologicalResults } = require('./own_review_report');
 
-function prepareReviewResults(results, plan, parsed, outputRoot) {
+function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
     const topic = require('../topic_clipper');
     const evidence = buildSubtitleEvidence(parsed.segments);
+    const intentPolicy = require('../workflow-runtime').loadWorkflow('clipping/clipIntent');
+    const signals = intentPolicy.collectClipIntentSignals(parsed.segments, danmaku);
     const presentation = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory');
     const candidates = [];
     const requestsDirectory = path.join(outputRoot, '.selection-cache/requests');
@@ -56,6 +58,13 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
         if (fs.existsSync(metadataPath)) {
             const existing = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
             let changed = false;
+            if (existing.window && !existing.ownStreamHumanReview) {
+                const intent = intentPolicy.clipIntentForWindow(signals, existing.window);
+                if (intent.signals.length && JSON.stringify(existing.clipIntent) !== JSON.stringify(intent)) {
+                    existing.clipIntent = intent;
+                    changed = true;
+                }
+            }
             if (!existing.selectionSource) {
                 existing.selectionSource = rejection.selectionSource || 'model_global_rerank';
                 changed = true;
@@ -71,6 +80,7 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
         const start = Number.isFinite(rejection.start) ? rejection.start : evidence.byId.get(rejection.startCueId)?.start;
         const end = Number.isFinite(rejection.end) ? rejection.end : evidence.byId.get(rejection.endCueId)?.end;
         const validWindow = Number.isFinite(start) && Number.isFinite(end) && end > start;
+        const clipIntent = validWindow ? intentPolicy.clipIntentForWindow(signals, { start, end }) : null;
         const index = parseInt(key.slice(0, 8), 16) + 1000000;
         const window = { index, start: start ?? null, end: end ?? null, duration: validWindow ? end - start : null };
         fs.mkdirSync(directory, { recursive: true });
@@ -82,6 +92,7 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
             selectionSource: rejection.selectionSource || 'model_global_rerank', reviewPresentation,
             copy: { title: rejection.title || `\u88ab\u5254\u9664\u5019\u9009 ${rejection.candidateIndex ?? rejection.index ?? '?'}`, description: '', coverText: '' },
             recommendationScore: rejection.score ?? null, publicCopyPending: true, uploadReady: false,
+            ...(clipIntent?.signals.length ? { clipIntent } : {}),
             selectionRejection: { minClipSeconds: plan.config?.minClipSeconds, maxClipSeconds: plan.config?.maxClipSeconds,
                 ...rejection, sourceSha256: evidence.sourceSha256 },
             grounding: { sourceSha256: evidence.sourceSha256, issues: [`selection_rejected:${rejection.reason}`],

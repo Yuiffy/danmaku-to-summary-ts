@@ -287,6 +287,11 @@ class AutomaticPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "technical review duration"):
             publication.validate_publication_review(self.metadata)
 
+    def test_final_pass_cannot_erase_no_clip_intent(self):
+        self.metadata["clipIntent"] = {"version": 1, "needsHumanReview": True}
+        with self.assertRaisesRegex(ValueError, "别切意图.*人工核对"):
+            publication.validate_publication_review(self.metadata)
+
     def test_final_pass_cannot_erase_unresolved_source_or_audio_review(self):
         for key, value in (("preRenderHold", True), ("sourceExpansionRequest", {"reason": "ending"}),
                            ("storyRepairRequest", {"reason": "story"}),

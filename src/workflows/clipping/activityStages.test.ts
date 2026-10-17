@@ -1,4 +1,18 @@
-import { runArchiveStages, assertOrderedActivityParts, activityBoundaryFeedback, retryBoundaryEvents } from './activityStages';
+import { runArchiveStages, assertOrderedActivityParts, activityBoundaryFeedback, retryBoundaryEvents, selectActivitySubmission } from './activityStages';
+
+test('explicit pending selection retains complete Ps and evidence while invalidating approval', () => {
+  const row = { activities: [{ id: 'short' }, { id: 'full' }], uploadReady: false,
+    output: { parts: [{ activityId: 'short', start: 1, end: 5, duration: 4 },
+      { activityId: 'full', start: 100, end: 400, duration: 300, mediaPath: 'full.mp4', sha256: 'bound' }] } };
+  const selected = selectActivitySubmission(row, ['full'], '只保留用户指定的完整演唱');
+  expect(selected.output.parts).toEqual([row.output.parts[1]]);
+  expect(selected.window).toEqual({ start: 100, end: 400, duration: 300 });
+  expect(selected.activitySelection.previousActivities).toEqual(row.activities);
+  expect(selected.uploadReady).toBe(false);
+  expect(row.output.parts).toHaveLength(2);
+  for (const ids of [[], ['missing'], ['full', 'full']]) expect(() => selectActivitySubmission(row, ids, '指定')).toThrow();
+  expect(() => selectActivitySubmission({ ...row, uploadReady: true }, ['full'], '指定')).toThrow();
+});
 
 test('final boundary feedback reopens only explicitly identified failed Ps with new evidence and preserves siblings', () => {
   const checks = { boundaries: false, titles: true };

@@ -5,6 +5,7 @@ import { expandGiftTerms } from './QuestionScope';
 import { evidenceScorer } from './EvidenceRanking';
 import { SemanticSearch } from './SubtitleIndex';
 import { parseSubtitle, readSubtitle } from './SubtitleCorpus';
+import { activeRecording, recentMinutes } from './RecentRecording';
 
 type EvidenceKind = 'subtitle' | 'danmaku';
 interface Cue { seconds: number; text: string }
@@ -20,6 +21,7 @@ export interface StoredEvidence { hit: EvidenceHit; context: Array<{ evidenceId?
 export interface QuestionEvidence {
   scopeDescription?: string;
   search(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean }>;
+  recent?(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean; [key: string]: unknown }>;
   context(args: unknown): StoredEvidence | { error: string };
   citation(id: string): QuestionAnswer['source'] | undefined;
   clue(id: string): QuestionClue | undefined;
@@ -103,7 +105,55 @@ export class RecordingEvidence {
   private readonly ids = new Map<string, string>();
 
   constructor(private readonly roots: string[], private readonly signal: AbortSignal,
-    private readonly options: { botUid?: string; semanticSearch?: SemanticSearch; question?: string } = {}) {}
+    private readonly options: { botUid?: string; semanticSearch?: SemanticSearch; question?: string; roomId?: string; askedAt?: number } = {}) {}
+
+  async recent(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean; [key: string]: unknown }> {
+    const minutes = recentMinutes(args);
+    this.checkAbort();
+    const files = await this.files(null, 'all');
+    const active = await activeRecording(files.map(file => file.file), this.options.roomId || '', this.options.askedAt ?? Date.now());
+    this.checkAbort();
+    if (!active) return { hits: [], limited: true, status: 'no_active_recording' };
+    const from = Math.max(0, active.end - minutes * 60);
+    const selected = files.filter(file => file.file.replace(/(?:\.live)?\.(?:srt|xml)$/iu, '') === active.base);
+    const hits: EvidenceSearchHit[] = [];
+    let limited = false, subtitleThrough = 0;
+    for (const file of selected) {
+      this.checkAbort();
+      try {
+        const stat = await fs.lstat(file.file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES || this.bytesScanned + stat.size > MAX_SCAN_BYTES) { limited = true; continue; }
+        const real = await fs.realpath(file.file);
+        if (!inside(file.root, real) || real !== file.file) { limited = true; continue; }
+        const handle = await fs.open(file.file, 'r');
+        let content: string;
+        try {
+          const opened = await handle.stat();
+          if (!opened.isFile() || opened.size > MAX_FILE_BYTES || this.bytesScanned + opened.size > MAX_SCAN_BYTES) { limited = true; continue; }
+          const buffer = Buffer.alloc(Math.min(MAX_FILE_BYTES + 1, stat.size + 1));
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          content = buffer.subarray(0, bytesRead).toString('utf8');
+        } finally { await handle.close(); }
+        this.bytesScanned += stat.size;
+        this.checkAbort();
+        const cues = file.kind === 'subtitle' ? parseSrt(content) : parseDanmaku(content, this.options.botUid);
+        this.cueCache.set(file.file, cues);
+        if (file.kind === 'subtitle') subtitleThrough = Math.max(subtitleThrough, cues.at(-1)?.seconds || 0);
+        const indices = cues.flatMap((cue, index) => cue.seconds >= from && cue.seconds <= active.end ? [index] : []);
+        limited ||= indices.length > 48;
+        // Even sampling bounds context while covering the whole requested interval.
+        for (let n = 0; n < Math.min(48, indices.length); n++) {
+          const index = indices[Math.floor(n * indices.length / Math.min(48, indices.length))];
+          const stored = this.register(file, index);
+          if (stored) hits.push({ ...stored.hit, context: [{ evidenceId: stored.hit.evidenceId, time: stored.hit.time, text: stored.hit.excerpt }] });
+          else limited = true;
+        }
+      } catch { this.checkAbort(); limited = true; }
+    }
+    return { hits, limited, window: { from, to: active.end, minutes, clock: 'recorder_filename_estimate' },
+      subtitleThrough, subtitleLagS: Math.max(0, active.end - subtitleThrough),
+      notice: '字幕和弹幕是两个来源；未转写尾部、静音及抽样不能用于推断没说过。' };
+  }
 
   private register(file: RecordingFile, index: number): StoredEvidence | undefined {
     const key = `${file.file}\0${index}`;
@@ -172,6 +222,7 @@ export class RecordingEvidence {
           if (!entry.isFile() || entry.isSymbolicLink()) continue;
           const extension = path.extname(entry.name).toLowerCase();
           if (!['.srt', '.xml'].includes(extension)) continue;
+          if (/\.live\.srt$/iu.test(entry.name) && names.has(entry.name.toLowerCase().replace(/\.live\.srt$/u, '.srt'))) continue;
           if (/\.speaker\.srt$/iu.test(entry.name) && names.has(entry.name.toLowerCase().replace(/\.speaker\.srt$/u, '.srt'))) continue;
           const fileDate = folder.date || /\d{4}[-_]\d{2}[-_]\d{2}/u.exec(entry.name)?.[0].replace(/_/gu, '-') || null;
           const fileKind: EvidenceKind = extension === '.srt' ? 'subtitle' : 'danmaku';

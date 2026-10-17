@@ -361,7 +361,13 @@ npm run activity:clips -- watch-splits --media 'D:\录播.flv' --start 3600 --en
 npm run activity:clips -- restyle --manifest 'D:\...\UPLOAD_MANIFEST.json'
 # 只更新其中一类
 npm run activity:clips -- restyle --metadata 'D:\...\songs.json'
+# 用户明确指定只投稿部分活动：保留原 ID、完整 P 视频及选材历史，重新生成包装并使旧审核失效
+npm run activity:clips -- restyle --metadata 'D:\...\songs.json' --retain-activity-ids activity-5 --selection-note '只保留指定区间的完整演唱'
 ```
+
+`--retain-activity-ids` 只能缩减一个待核包内已有活动，不能改 P 起止、加入其他来源或
+修改检测计划。被移除的活动、旧元数据和原视频均保留；当前包保存 `activitySelection`
+记录。选择后须对同 ID 重新执行完整 `review`，再单独入队，不继承原批准。
 
 命令拒绝修改已批准、排队、上传中或已发布的稿件；封面制作全部成功后才写入新元数据。更新包装仍是待审核，投稿授权继续使用下文的 `approve --enqueue`。
 

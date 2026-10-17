@@ -262,6 +262,7 @@ def _load_emotion_model(config, device, runtime_cache, auto_model_cls):
     model = auto_model_cls(
         model=model_name,
         device=device_name,
+        ncpu=2 if device_name == 'cpu' else 4,
         disable_update=True,
     )
     elapsed = time.perf_counter() - started

@@ -25,7 +25,7 @@ function buildNotifyMarkdown(results, metadata, hooks) {
     if (!metadata.planOnly) lines.splice(lines.length - 1, 0,
         ...(require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').reviewAttentionLines?.(results.map(result => ({
             id: ownReview.clipId(result, metadata), status: ownReview.reviewStatus(result, metadata),
-            rejected: Boolean(result.selectionRejection || result.sourceReview?.status === 'rejected' || result.publicationDecision?.action === 'rejected')
+            rejected: !result.clipIntent?.needsHumanReview && Boolean(result.selectionRejection || result.sourceReview?.status === 'rejected' || result.publicationDecision?.action === 'rejected')
         }))) || []), '');
     const entries = hooks.buildNotifyClipLines(results, metadata);
     results.forEach((result, index) => {

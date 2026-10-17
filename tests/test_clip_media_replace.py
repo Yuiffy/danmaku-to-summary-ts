@@ -1,11 +1,41 @@
 """Existing media replacement preserves privacy and human copy/settings."""
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from src.scripts.clip_media_replace import edit_payload, unchanged_archive, record_replacement
+from src.scripts.clip_media_replace import edit_payload, unchanged_archive, record_replacement, validate_replacement_revision
+
+
+class SubtitleReplacementRevisionTests(unittest.TestCase):
+    def test_waiting_batch_releases_published_id_but_running_and_forced_jobs_keep_ownership(self):
+        from src.scripts.clip_candidate_queue import active_ids
+        job = {'status': 'retry_wait', 'clipIds': [7, 8]}
+        self.assertEqual(active_ids({'jobs': [job]}, 7), {8})
+        self.assertEqual(active_ids({'jobs': [job]}), {7, 8})
+        for change in ({'status': 'running'}, {'allowDuplicateTitle': True}):
+            self.assertEqual(active_ids({'jobs': [{**job, **change}]}, 7), {7, 8})
+
+    def test_requires_rendered_same_id_revision_and_unchanged_subtitles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            srt = Path(temporary) / 'clip.srt'
+            srt.write_bytes(b'confirmed subtitles')
+            digest = hashlib.sha256(srt.read_bytes()).hexdigest()
+            metadata = {'uploadId': 7, 'output': {'srtPath': str(srt)},
+                'renderedSubtitles': {'clipId': 7, 'revision': 1, 'renderedRevision': 1,
+                    'edits': [{'from': 'old', 'to': 'new'}], 'sha256': digest,
+                    'renderedSha256': digest, 'path': str(srt)}}
+            validate_replacement_revision(metadata, 7)
+            for change in ({'clipId': 8}, {'renderedRevision': 0}, {'edits': []}):
+                changed = copy.deepcopy(metadata)
+                changed['renderedSubtitles'].update(change)
+                with self.assertRaises(ValueError):
+                    validate_replacement_revision(changed, 7)
+            srt.write_bytes(b'changed after rendering')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                validate_replacement_revision(metadata, 7)
 
 
 class MediaReplacementTests(unittest.TestCase):

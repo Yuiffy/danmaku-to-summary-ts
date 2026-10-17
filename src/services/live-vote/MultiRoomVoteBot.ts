@@ -4,6 +4,7 @@ import { LiveQuestionSession } from './questions/LiveQuestionSession';
 import { LiveQuestionConfig, QuestionAnswerer, QuestionRecordWriter } from './questions/QuestionPolicy';
 import { LiveReminderSession, ReminderAdapters } from './reminders/LiveReminderSession';
 import { LiveReminderConfig } from './reminders/ReminderPolicy';
+import { parseClipIntentCommand } from '../../core/clipping/ClipIntent';
 
 export interface MultiRoomVoteConfig {
   globalAdminUids: string[];
@@ -25,6 +26,7 @@ export class MultiRoomVoteBot {
   private stopped = false;
   private readonly questions?: LiveQuestionSession;
   private readonly reminders?: LiveReminderSession;
+  private readonly lastClipNotice = new Map<string, number>();
 
   constructor(private readonly config: MultiRoomVoteConfig,
     private readonly send: (roomId: string, message: string, isCurrent: () => boolean, beforeSend?: () => void) => Promise<void | boolean>,
@@ -89,6 +91,15 @@ export class MultiRoomVoteBot {
     const room = message.roomId && this.rooms.get(message.roomId);
     if (!room) return;
     const isCurrent = () => !this.stopped && this.rooms.get(message.roomId!) === room;
+    const intent = parseClipIntentCommand(message.text);
+    if (intent && !this.stopped && /^[1-9]\d*$/u.test(message.uid) && message.uid !== this.config.botUid
+        && Number.isFinite(message.sentAt) && Math.abs(now - message.sentAt) <= 10000) {
+      if (now - (this.lastClipNotice.get(message.roomId!) ?? -Infinity) >= 10000) {
+        this.lastClipNotice.set(message.roomId!, now);
+        this.enqueue(message.roomId!, intent === 'hold' ? '收到别切意向，录播后需人工核对再决定。' : '收到选段意向，录播后按弹幕选材，不自动投稿。', isCurrent);
+      }
+      return;
+    }
     if (this.reminders?.ingest(message, now)) return;
     if (!this.questions?.ingest(message, isCurrent, now)) room.session.ingest(message, now);
   }

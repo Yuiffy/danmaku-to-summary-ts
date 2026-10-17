@@ -1,3 +1,4 @@
+const { translatePythonPath, translatePythonPayloadPaths } = require('./python_paths');
 ﻿const fs = require('fs');
 const path = require('path');
 const net = require('net');
@@ -889,78 +890,6 @@ function resolvePythonCommand(options = {}) {
     return { executable, args };
 }
 
-function normalizePathForMap(value) {
-    return String(value || '').replace(/\\/g, '/');
-}
-
-function getPythonPathMap(options = {}) {
-    const raw = options.python_path_map || options.pythonPathMap || [];
-    if (Array.isArray(raw)) {
-        return raw
-            .map((item) => {
-                if (Array.isArray(item) && item.length >= 2) {
-                    return { from: item[0], to: item[1] };
-                }
-                if (item && typeof item === 'object') {
-                    return { from: item.from || item.source, to: item.to || item.target };
-                }
-                return null;
-            })
-            .filter(item => item && item.from && item.to)
-            .map(item => ({
-                from: normalizePathForMap(item.from),
-                to: normalizePathForMap(item.to)
-            }))
-            .sort((a, b) => b.from.length - a.from.length);
-    }
-    if (raw && typeof raw === 'object') {
-        return Object.entries(raw)
-            .map(([from, to]) => ({ from: normalizePathForMap(from), to: normalizePathForMap(to) }))
-            .sort((a, b) => b.from.length - a.from.length);
-    }
-    return [];
-}
-
-function translatePythonPath(value, options = {}) {
-    if (typeof value !== 'string' || !value.trim()) {
-        return value;
-    }
-    const normalized = normalizePathForMap(value);
-    const normalizedLower = normalized.toLowerCase();
-    for (const mapping of getPythonPathMap(options)) {
-        const from = mapping.from;
-        const fromLower = from.toLowerCase();
-        if (normalizedLower === fromLower || normalizedLower.startsWith(fromLower)) {
-            const suffix = normalized.slice(from.length).replace(/^\/+/, '');
-            const target = mapping.to.replace(/\/+$/, '');
-            return suffix ? `${target}/${suffix}` : target;
-        }
-    }
-    return value;
-}
-
-function shouldTranslatePayloadKey(key) {
-    return /(^|_)(path|file)$/i.test(String(key || '')) || /Path$|File$/i.test(String(key || ''));
-}
-
-function translatePythonPayloadPaths(value, options = {}, key = '') {
-    if (Array.isArray(value)) {
-        return value.map(item => translatePythonPayloadPaths(item, options, key));
-    }
-    if (value && typeof value === 'object') {
-        return Object.fromEntries(
-            Object.entries(value).map(([entryKey, entryValue]) => [
-                entryKey,
-                translatePythonPayloadPaths(entryValue, options, entryKey)
-            ])
-        );
-    }
-    if (typeof value === 'string' && shouldTranslatePayloadKey(key)) {
-        return translatePythonPath(value, options);
-    }
-    return value;
-}
-
 function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 'transcribe') {
     const port = Number(process.env.ASR_PERSISTENT_WORKER_PORT || 0);
     const token = String(process.env.ASR_PERSISTENT_WORKER_TOKEN || '');
@@ -1023,7 +952,7 @@ function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 't
 }
 
 function runJsonPython(scriptPath, payload, label = 'ASR backend') {
-    if (payload?.backend === 'paraformer') {
+    if (payload?.backend === 'paraformer' && !payload?.device_handoff?.enabled && process.env.ASR_CPU_FALLBACK !== '1') {
         const persistentRequest = runPersistentAsrWorker(payload, label);
         if (persistentRequest) {
             return persistentRequest.catch((error) => {
@@ -1048,7 +977,7 @@ function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
             shell: false,
-            env: { ...process.env, PYTHONUTF8: '1' }
+            env: { ...process.env, PYTHONUTF8: '1', ...(process.env.ASR_CPU_FALLBACK === '1' && !payload?.device_handoff?.enabled ? { CUDA_VISIBLE_DEVICES: '', OMP_NUM_THREADS: '2', MKL_NUM_THREADS: '2', OPENBLAS_NUM_THREADS: '2' } : {}) }
         });
         applyFfmpegProcessPriority(
             child.pid,
@@ -1204,7 +1133,6 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
         roster_streamer_ids: rosterStreamerIds
     };
 }
-
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
     const context = runtimeOptions.routingContext || {};
@@ -1240,31 +1168,41 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     };
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
+        // Only the standard model route opts into the per-job supervisor. Release
+        // an idle resident model first; the central queue/ASR lock still owns us.
+        options.device_handoff = { ...config.asr?.device_handoff,
+            min_available_memory_gb: config.asr?.cpu_fallback?.min_available_memory_gb ?? 10,
+            enabled: config.asr?.device_handoff?.enabled === true && options.model === 'paraformer-zh'
+                && !options.finetuned_model && options.model_profile !== 'finetuned'
+                && ['cuda', 'cuda:0'].includes(options.device || 'cuda') };
+        if (options.device_handoff.enabled) {
+            const release = runPersistentAsrWorker({ process_timeout_s: 30 }, 'ASR device handoff', 'shutdown');
+            if (release) await release;
+        }
         options.room_id = String(context.room_id || context.roomId || '').trim() || null;
         options.emotion_analysis = resolveEmotionAnalysisOptions(options.emotion_analysis, context);
+        const source = context.sourceMediaPath || mediaPath;
+        options.live_asr = { ...config.asr?.live, source_path: source,
+            reuse: config.asr?.live?.enabled === true && (config.asr.live.room_ids || []).includes(options.room_id)
+                && fs.existsSync(source.slice(0, -path.extname(source).length) + '.live-asr.json') };
     }
     const label = backend === 'fun_asr_nano_vllm'
         ? 'Fun-ASR-Nano vLLM backend'
         : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : (backend === 'paraformer' ? 'Paraformer backend' : 'SenseVoice backend'));
     return runJsonPython(scriptPath, options, label);
 }
-
 async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'sensevoice');
 }
-
 async function transcribeFunAsrNano(mediaPath, config = {}, runtimeOptions = {}) {
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano');
 }
-
 async function transcribeFunAsrNanoVllm(mediaPath, config = {}, runtimeOptions = {}) {
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano_vllm');
 }
-
 async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {}) {
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'paraformer');
 }
-
 async function transcribeMoss(mediaPath, config = {}, runtimeOptions = {}) {
     const asrConfig = getAsrConfig(config);
     if (asrConfig.moss.inference_backend === 'vllm' && asrConfig.moss.managed_server) {
@@ -1294,7 +1232,6 @@ async function transcribeMoss(mediaPath, config = {}, runtimeOptions = {}) {
         backend: 'moss', audio_path: mediaPath };
     return runJsonPython(path.join(__dirname, '..', 'python', 'moss_transcribe.py'), options, 'MOSS backend');
 }
-
 async function transcribeMossWithFallback(mediaPath, config = {}, runtimeOptions = {}) {
     const selected = runtimeOptions.resolvedBackend;
     try {

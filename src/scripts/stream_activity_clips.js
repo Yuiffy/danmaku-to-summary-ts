@@ -95,6 +95,8 @@ async function main(argv = process.argv.slice(2)) {
             metadataPath: options.metadata ? path.resolve(options.metadata) : null,
             manifestPath: options.manifest ? path.resolve(options.manifest) : null, registerUpload: !options['no-register'],
             contentName: options['content-name'], evidenceFrame: options['evidence-frame'], evidenceNote: options['evidence-note'],
+            retainActivityIds: options['retain-activity-ids'] ? options['retain-activity-ids'].split(',').map(id => id.trim()) : null,
+            selectionNote: options['selection-note'],
             titleEvidencePath: options['title-evidence'] ? path.resolve(options['title-evidence']) : null });
         console.log(JSON.stringify(result, null, 2)); return result;
     }

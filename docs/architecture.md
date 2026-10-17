@@ -89,6 +89,9 @@ must be updated before using the new task-list/cancellation adapter.
 | `scripts/comic/screenshots.py` | local frame acquisition, sheet rendering, shared FFmpeg invocation | provider calls, room configuration |
 | `scripts/comic/image_inputs.py`, `image_routes.py` | input ordering/provenance, route attempts/fallback | importing the parent, global configuration or provider clients |
 | `src/scripts/python` | ML/ASR model implementations | Node process orchestration |
+| `services/live-asr`, `tools/live-asr` | explicit single-room CPU worker lifecycle, bounded active-recording discovery, merge-cache timeline mapping | chat/publication, recorder control, processing other rooms implicitly |
+| `handlers/mikufans/AsrCpuFallback`, `scripts/python/asr_cpu_fallback` | CPU admission for the original supported model route and bounded per-job CPU overrides under GPU pressure | changing models, queue persistence, publication, migrating running CUDA weights |
+| `scripts/python/asr_device_handoff`, `asr_handoff_*` | opt-in per-job standard Paraformer window checkpoints, device policy, aligned PCM and isolated model workers | central queue ownership, publication, rewriting live-producer caches or moving loaded CUDA weights |
 | `scripts`, `tools` | reusable operator commands and platform setup | application startup side effects |
 | `docs`, `plans` | maintained guides, contracts, architecture decisions and roadmaps | task diaries, experiment results, deployment snapshots |
 | `local-scripts`, `temp`, `tmp` | task-specific scripts, reports, captures and experiments (ignored) | reusable product behavior |
@@ -97,6 +100,8 @@ must be updated before using the new task-list/cancellation adapter.
 Dependencies point from entrypoints to services to shared infrastructure. Leaf
 components must not import their parent. Existing script paths remain facades;
 internal helpers are not exported unless their callers need them.
+The ASR facade retains its path translation exports; `scripts/asr/python_paths.js`
+owns the extracted native/WSL payload path mapping.
 
 `services/webhook/FileMerger` owns merged recording XML. Its embedded browser
 preview keeps JavaScript in CDATA so the complete output is well-formed XML.

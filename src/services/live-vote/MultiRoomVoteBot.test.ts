@@ -12,6 +12,20 @@ const rooms = [
 ];
 const message = (roomId: string, uid: string, text: string, at = now) => ({ roomId, uid, text, sentAt: at });
 
+it('accepts viewer clip intents without AI, rate limits acknowledgments per room and ignores stale/self commands', async () => {
+  const sent: Array<[string, string]> = [];
+  const bot = new MultiRoomVoteBot({ globalAdminUids: [], botUid: '99' }, async (id, text) => { sent.push([id, text]); }, jest.fn());
+  bot.updateRooms(rooms);
+  bot.ingest(message('100', '99', '@鹿饼 我要这段'), now);
+  bot.ingest(message('100', '30', '@鹿饼 我要这段', now - 11000), now);
+  bot.ingest(message('100', '30', '@鹿饼 我要这段'), now);
+  bot.ingest(message('100', '30', '@鹿饼 这段别切'), now);
+  bot.ingest(message('200', '30', '@鹿饼 这段别切'), now);
+  await bot.flush();
+  expect(sent).toEqual([['100', expect.stringContaining('选段意向')], ['200', expect.stringContaining('人工核对')]]);
+  bot.stop();
+});
+
 it('finishes only the commanded room and discards its queued progress while preserving other rooms', async () => {
   const sent: Array<[string, string]> = [];
   const bot = new MultiRoomVoteBot({ globalAdminUids: ['42'] }, async (id, text) => { sent.push([id, text]); }, jest.fn());

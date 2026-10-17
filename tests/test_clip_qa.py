@@ -37,6 +37,14 @@ class ClipQualityGateTest(unittest.TestCase):
         clips = load_upload_manifest(self.file)
         self.assertTrue(clips[0]['qaRequired'])
 
+    def test_no_clip_intent_precedes_generic_missing_copy_and_final_ai_pass(self):
+        self.metadata.update(clipIntent={"version": 1, "needsHumanReview": True}, publicCopyPending=True)
+        with self.assertRaisesRegex(ValueError, '别切意图.*人工核对'):
+            validate_metadata_qa(self.metadata)
+        self.metadata.update(publicCopyPending=False)
+        with self.assertRaisesRegex(ValueError, '别切意图'):
+            validate_metadata_qa(self.metadata)
+
     def test_pending_public_copy_is_blocked_even_without_optional_ai_qa(self):
         self.metadata.update(qaRequired=False, publicCopyPending=True, uploadReady=False)
         self.file.write_text(json.dumps(self.metadata), encoding='utf-8')
