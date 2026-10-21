@@ -61,6 +61,10 @@ do not enqueue each song or viewing P as a standalone short clip.
 
 ### Precision editing and feedback
 
+For the “快乐小岁” episodic game highlight series, read
+[happy-sui-series](../happy-sui-series/SKILL.md). It covers dense multi-stream
+selection, chronological story bridges, speech tails, teasers and continuation points.
+
 For complete game archives and future automatic game submissions, read
 `docs/stream-game-clips.md` and use `npm run game:clips -- run`. Preserve the full
 allowlisted gameplay, perform full text and visual coverage checks, verify original

@@ -76,7 +76,7 @@ from clip_upload_progress import UploadProgress
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 from clip_upload_manifest import load_upload_manifest, find_review_manifest
 from clip_upload_description import (
-    clean_generated_description, split_source_description, build_clip_time_range, build_desc,
+    clean_generated_description, split_source_description, build_clip_time_range, build_desc, resolve_upload_prefix,
 )
 import requests
 from clip_submission_recovery import (find_intent, clear_intent, intent_key, reconcile_intent,
@@ -857,7 +857,7 @@ async def main():
             print('[ERROR] 上传 JSON 中未找到切片')
             return 1
         args.source = args.source or clips[0].get('source') or ''
-        args.prefix = args.prefix or clips[0].get('prefix') or '【小岁】'
+        args.prefix = resolve_upload_prefix(args.prefix, clips[0].get('prefix'))
         tags = tag_override or clips[0].get('tags') or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
         args.tid = args.tid or int(clips[0].get('tid') or 21)
         args.streamer_name = args.streamer_name or clips[0].get('streamerName') or None

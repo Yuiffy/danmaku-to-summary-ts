@@ -4,6 +4,13 @@ import datetime
 import re
 
 
+def resolve_upload_prefix(cli_prefix, manifest_prefix=None):
+    """An intentional empty JSON prefix must survive submission revalidation."""
+    if cli_prefix:
+        return cli_prefix
+    return manifest_prefix if manifest_prefix is not None else '【小岁】'
+
+
 def clean_generated_description(description, clip_title=''):
     """移除生成简介中将由上传器统一补充的模板字段和重复行。"""
     title = str(clip_title or '').strip()

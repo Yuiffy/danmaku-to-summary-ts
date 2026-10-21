@@ -11,10 +11,17 @@ from src.scripts.batch_upload import (
     record_title_conflict,
     state_record_matches_upload,
     strip_review_score_suffix,
+    resolve_upload_prefix,
 )
 
 
 class BatchUploadDescriptionTests(unittest.TestCase):
+    def test_json_series_title_keeps_its_reviewed_empty_prefix(self):
+        self.assertEqual(resolve_upload_prefix('', ''), '')
+        self.assertEqual(resolve_upload_prefix('', '【快乐小岁】'), '【快乐小岁】')
+        self.assertEqual(resolve_upload_prefix('【用户指定】', ''), '【用户指定】')
+        self.assertEqual(resolve_upload_prefix('', None), '【小岁】')
+
     def test_precision_details_survive_cleanup_and_follow_source_fields(self):
         detail = '【AI精切说明】\n00:05.00-00:07.60 后期罐头笑声'
         description = build_desc('标题（AI精切）', '小岁 直播《测试》2026-09-22 20:00:00', '00:01:00', '00:00:30',
