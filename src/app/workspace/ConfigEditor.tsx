@@ -39,6 +39,15 @@ export function ConfigEditor() {
       notificationConfigPath: value.credentialConfigPath || '', startMinutes: 15, endMinutes: 60, minGapMinutes: 10, quietMaxPerMinute: 12, quietRatio: 0.5 } };
     setValue(next); setSection('reminders'); setDraft(JSON.stringify(next.reminders, null, 2)); setDirty(true);
   }
+  let styleMode = 'off';
+  try { const current = JSON.parse(draft).editorialStyles; if (current?.enabled) styleMode = current.mode || 'auto'; } catch { /* Keep invalid JSON editable. */ }
+  function changeStyle(mode: string) {
+    try {
+      const current = JSON.parse(draft);
+      current.editorialStyles = { ...current.editorialStyles, enabled: mode !== 'off', mode: mode === 'off' ? 'auto' : mode };
+      setDraft(JSON.stringify(current, null, 2)); setDirty(true); setMessage(''); setError('');
+    } catch { setError('当前分组的 JSON 无效，请先修正再选择切片模式'); }
+  }
   return <>
     <div className="toolbar"><div className="segmented">{(list.data?.names || ['production', 'default', 'live-vote']).map(item => <button key={item} className={name === item ? 'selected' : ''} onClick={() => {
       if (dirty && !window.confirm('有未保存修改，确定切换配置？')) return; setName(item); setMessage('');
@@ -51,6 +60,10 @@ export function ConfigEditor() {
       <section className="config-editor"><div className="section-heading"><h2>{sections[section] || section}</h2><span>{dirty ? '有未保存修改' : `更新于 ${dateText(doc.data?.updatedAt)}`}</span></div>
         <p className="muted">保留隐藏占位值可保持原凭据；填写新值可替换凭据。</p>
         {name !== 'secrets' && <p className="muted">凭据覆盖和环境变量优先于主配置；常驻服务的修改需在下次部署时应用。</p>}
+        {['ownStreamClips', 'clipTopics'].includes(section) && <label>切片制作模式 <select aria-label="切片制作模式" value={styleMode} onChange={event => changeStyle(event.target.value)}>
+          <option value="auto">自动选择（普通 / 前置 / 精切）</option><option value="ordinary">普通</option>
+          <option value="highlight_first">前置</option><option value="precision">精切</option><option value="off">关闭三模式选择</option>
+        </select><p className="muted">自动模式按内容选择；前置为重点原话 → 鹿饼 OP → 正文。保存后应用于新切片。</p></label>}
         <textarea aria-label="配置 JSON" className="code-editor" value={draft} onChange={event => { setDraft(event.target.value); setDirty(true); setMessage(''); }} spellCheck={false} />
         <div className="toolbar"><span className="muted">修改整个分组，其他分组保留。</span><button onClick={() => { if (!dirty || window.confirm('放弃未保存修改？')) doc.refresh(); }}>重新加载</button></div>
       </section>

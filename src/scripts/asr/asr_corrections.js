@@ -125,28 +125,25 @@ function addCorrection(target, from, to, extra = {}) {
     const excludePattern = Array.isArray(extra.exclude_pattern)
         ? extra.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
         : [];
-    const protect = extra.protect === false ? false : undefined;
-    const existing = target.get(source);
-    const mergedExcludeWhen = Array.from(new Set([...(existing?.exclude_when || []), ...excludeWhen]));
-    const mergedExcludePattern = Array.from(new Set([...(existing?.exclude_pattern || []), ...excludePattern]));
     const next = {
         from: source,
         to: replacement,
-        ...existing,
         ...extra,
-        protect: existing?.protect === false || protect === false ? false : undefined
+        protect: extra.protect === false ? false : undefined
     };
-    if (mergedExcludeWhen.length > 0) {
-        next.exclude_when = mergedExcludeWhen;
+    if (excludeWhen.length > 0) {
+        next.exclude_when = Array.from(new Set(excludeWhen));
     } else {
         delete next.exclude_when;
     }
-    if (mergedExcludePattern.length > 0) {
-        next.exclude_pattern = mergedExcludePattern;
+    if (excludePattern.length > 0) {
+        next.exclude_pattern = Array.from(new Set(excludePattern));
     } else {
         delete next.exclude_pattern;
     }
-    target.set(source, next);
+    // Conditions belong to one alternative; a room rule cannot overwrite the global rule
+    // or donate its phrase restrictions to another alternative. Only exact duplicates merge.
+    target.set(JSON.stringify(next), next);
 }
 
 function getCorrectionExclusions(exclusions, from) {
@@ -160,13 +157,7 @@ function getCorrectionExclusions(exclusions, from) {
 }
 
 function getCorrectionExcludePatterns(excludePatterns, from) {
-    if (!excludePatterns || typeof excludePatterns !== 'object' || Array.isArray(excludePatterns)) {
-        return [];
-    }
-    const values = excludePatterns[from];
-    return Array.isArray(values)
-        ? values.map(value => String(value || '').trim()).filter(Boolean)
-        : [];
+    return getCorrectionExclusions(excludePatterns, from);
 }
 
 function addSafeCorrections(target, corrections, exclusions = {}, excludePatterns = {}) {
@@ -187,8 +178,8 @@ function addSafeCorrections(target, corrections, exclusions = {}, excludePattern
                     from,
                     item.to || item.word || item.target || item.correct,
                     {
-                        exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
-                        exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from),
+                        exclude_when: [...getCorrectionExclusions(exclusions, from), ...(item.exclude_when || [])],
+                        exclude_pattern: [...getCorrectionExcludePatterns(excludePatterns, from), ...(item.exclude_pattern || [])],
                         protect: item.protect
                     }
                 );
@@ -218,8 +209,8 @@ function addContextualCorrections(target, corrections, exclusions = {}, excludeP
         const from = item.from || item.alias || item.source || item.wrong;
         const extra = {
             require_nearby: requireNearby,
-            exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
-            exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from)
+            exclude_when: [...getCorrectionExclusions(exclusions, from), ...(item.exclude_when || [])],
+            exclude_pattern: [...getCorrectionExcludePatterns(excludePatterns, from), ...(item.exclude_pattern || [])]
         };
         const contextWindowTokens = Number(item.context_window_tokens);
         if (Number.isFinite(contextWindowTokens) && contextWindowTokens > 0) {
@@ -249,23 +240,26 @@ function addAmbiguousCorrections(target, corrections, exclusions = {}, excludePa
             context_window_tokens: Number(item.context_window_tokens) > 0 ? Number(item.context_window_tokens) : undefined,
             match_mode: item.match_mode || 'token',
             boundary_sensitive: item.boundary_sensitive !== false,
-            exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
-            exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from)
+            exclude_when: [...getCorrectionExclusions(exclusions, from), ...(item.exclude_when || [])],
+            exclude_pattern: [...getCorrectionExcludePatterns(excludePatterns, from), ...(item.exclude_pattern || [])]
         });
     });
 }
 
-function addCorrections(targets, corrections) {
+function addCorrections(targets, corrections, inherited = {}) {
     if (!corrections) {
         return;
     }
     if (corrections.safe || corrections.contextual || corrections.ambiguous) {
-        addSafeCorrections(targets.safe, corrections.safe, corrections.exclude_when, corrections.exclude_pattern);
-        addContextualCorrections(targets.contextual, corrections.contextual, corrections.exclude_when, corrections.exclude_pattern);
-        addAmbiguousCorrections(targets.ambiguous, corrections.ambiguous, corrections.exclude_when, corrections.exclude_pattern);
+        const combine = key => Object.fromEntries(Object.keys({ ...inherited[key], ...corrections[key] })
+            .map(from => [from, [...getCorrectionExclusions(inherited[key], from), ...getCorrectionExclusions(corrections[key], from)]]));
+        const exclusions = combine('exclude_when'), patterns = combine('exclude_pattern');
+        addSafeCorrections(targets.safe, corrections.safe, exclusions, patterns);
+        addContextualCorrections(targets.contextual, corrections.contextual, exclusions, patterns);
+        addAmbiguousCorrections(targets.ambiguous, corrections.ambiguous, exclusions, patterns);
         return;
     }
-    addSafeCorrections(targets.safe, corrections);
+    addSafeCorrections(targets.safe, corrections, inherited.exclude_when, inherited.exclude_pattern);
 }
 
 function addHotwordToken(target, word, weight) {
@@ -339,12 +333,16 @@ function resolveAsrHotwords(config, context = {}, helpers = {}) {
         if (Array.isArray(rule.hotwords)) {
             rule.hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
         }
-        addCorrections(corrections, rule.corrections);
+        addCorrections(corrections, rule.corrections, asrConfig.corrections || {});
     }
 
     const hotwords = Array.from(hotwordsByWord.values());
     hotwords.forEach((entry) => {
         const correctionTo = entry.correction_to || entry.word;
+        const protection = alias => ({
+            exclude_when: getCorrectionExclusions(asrConfig.corrections?.exclude_when, alias),
+            exclude_pattern: getCorrectionExcludePatterns(asrConfig.corrections?.exclude_pattern, alias)
+        });
         addHotwordToken(hotwordTokens, entry.word, entry.weight);
         addHotwordToken(hotwordPromptTokens, entry.word, entry.weight);
         (entry.aliases || []).forEach(alias => {
@@ -352,16 +350,18 @@ function resolveAsrHotwords(config, context = {}, helpers = {}) {
             if (entry.alias_hotwords !== false) {
                 addHotwordToken(hotwordPromptTokens, alias, entry.weight);
             }
-            addCorrection(corrections.safe, alias, correctionTo, { protect: entry.protect });
+            addCorrection(corrections.safe, alias, correctionTo, { ...protection(alias), protect: entry.protect });
         });
         (entry.hotword_terms || []).forEach((term) => {
             addHotwordToken(hotwordTokens, term, entry.weight);
             addHotwordToken(hotwordPromptTokens, term, entry.weight);
         });
         (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, correctionTo, {
+            ...protection(alias),
             require_nearby: entry.require_nearby || DEFAULT_CONTEXTUAL_NEARBY_WORDS
         }));
         (entry.ambiguous_aliases || []).forEach(alias => addCorrection(corrections.ambiguous, alias, correctionTo, {
+            ...protection(alias),
             require_nearby: entry.require_nearby || DEFAULT_AMBIGUOUS_NEARBY_WORDS,
             context_window_tokens: entry.context_window_tokens || DEFAULT_CONTEXT_WINDOW_TOKENS,
             match_mode: entry.match_mode || 'token',
@@ -946,7 +946,7 @@ function applyAmbiguousCorrectionList(text, corrections = [], options = {}) {
             const matched = String(match[0] || '');
             const start = match.index;
             const end = start + matched.length;
-            if (isProtectedByExcludedTerm(sourceText, matched, start, excludedTerms)) {
+            if (isProtectedByExcludedTerm(transcriptContext.text, matched, baseOffset + start, excludedTerms)) {
                 continue;
             }
             if (excludePatterns.length > 0 && isProtectedByExcludePattern(sourceText, matched, start, excludePatterns)) {

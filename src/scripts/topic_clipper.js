@@ -1848,15 +1848,11 @@ async function generateTopicClips(options = {}) {
         }
     }
 
-    if (publicationActive) {
-        const finals = results.filter(result => !isPendingTopicResult(result));
-        const reviewed = await require('./clipping/topic_automatic_publication').reviewTopicFinals(finals, {
-            rootConfig: options.config || {}, info, streamerName, publicationConfig, clipResourceConfig, options,
-            ffmpegTimeoutMs: config.ffmpegTimeoutMs
-        }, { parseTopicSrt, buildPreflightEvidence, parseDanmakuXml, runFfmpeg, resolveFfprobePath,
-            coverGenerator, writeCopyMarkdown });
-        finals.forEach((result, index) => { results[results.indexOf(result)] = reviewed[index]; });
-    }
+    await require('./clipping/editorial_styles').finishTopicStylesAndReview(results, {
+        config, rootConfig: options.config || {}, info, streamerName, publicationConfig, clipResourceConfig, options,
+        parsed, danmaku, publicationActive
+    }, { parseTopicSrt, buildPreflightEvidence, parseDanmakuXml, runFfmpeg, resolveFfprobePath,
+        coverGenerator, generateClipCover: coverGenerator, getVideoResolution, calculateSubtitleStyle, buildBurnAssContentFromSrt, cutClipMedia, isPendingTopicResult, writeCopyMarkdown });
 
     results.forEach((result, index) => { result.reviewIndex = index + 1; });
     const reviewStem = sanitizeFileName(path.basename(source.mediaPath, path.extname(source.mediaPath)));

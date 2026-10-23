@@ -32,7 +32,7 @@ export function atomicJson(file: string, value: unknown): void {
   } finally { if (fs.existsSync(staging)) fs.unlinkSync(staging); }
 }
 export const HIDDEN = '•••• 已隐藏，保留此值则不修改 ••••';
-const secretKey = /(?:cookie|token|password|secret|api[_-]?key|webhookurl|authorization|credential)$/iu;
+const secretKey = /(?:cookie|token|password|secret|api[_-]?key|webhookurl|authorization|credential|ac_?time_?value|csrf|bili_jct|sessdata)$/iu;
 export function redact(value: any, key = '', mask: (secret: any) => string = () => HIDDEN): any {
   if (secretKey.test(key) && value !== null && value !== '') return mask(value);
   if (typeof value === 'string' && /[?&](?:key|token|api_key)=/iu.test(value)) return mask(value);

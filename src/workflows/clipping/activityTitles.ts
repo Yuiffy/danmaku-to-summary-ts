@@ -50,6 +50,13 @@ export function songTitle(name: string, date: string): string {
   return `${name || '待确认歌名'}-${date}`;
 }
 
+/** Prioritize the submitted performances over generic labels within the SDK's ten-tag limit. */
+export function songSubmissionTags(parts: Data[], baseTags: string[]): string[] {
+  const names = parts.map(part => typeof part.name === 'string' ? part.name.trim() : '')
+    .filter(name => name && name !== '待确认歌名');
+  return [...new Set([...names, ...baseTags].map(tag => tag.trim()).filter(Boolean))].slice(0, 10);
+}
+
 export function songCoverSubject(events: Data[]): string {
   const names = [...new Set(events.map(event => event.name || '待确认歌名'))];
   return names.slice(0, 3).join('\n');

@@ -16,7 +16,11 @@ def approve_review(args, api):
         queue = api.load_json(api.QUEUE_PATH, api.default_queue())
         if args.id in api.clip_candidate_queue.active_ids(queue) or clip.get("status") == "uploaded":
             raise ValueError("Queued/uploaded clips cannot be changed by this review command")
-        if not clip.get("reviewPending"):
+        explicit_review = getattr(args, "feedback_authorized", False) or any(
+            getattr(args, name, None) is not None
+            for name in ("title", "description", "cover_text", "source_kind")
+        )
+        if not clip.get("reviewPending") and not explicit_review:
             print(f"[OK] {args.id} is already review-ready; no change made")
             return 0
         command = ["node", str(api.PROJECT_ROOT / "src/scripts/review_rendered_clip.js"),

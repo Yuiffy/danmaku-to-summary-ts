@@ -151,7 +151,7 @@ def publish_precision(args, api):
                 'metadataPath': str(directory / 'clip.json')}
     if args.dry_run:
         print(json.dumps({'action': 'replace_existing_bv', **approval, 'precisionCopyPreview': preview,
-                         'copyPolicy': 'Append precision label and rendered edit details to current online copy'}, ensure_ascii=False, indent=2))
+                         'copyPolicy': 'Keep the online title without the legacy precision suffix; disclose rendered edits in the description'}, ensure_ascii=False, indent=2))
         return 0
     approval_path = directory / 'PUBLICATION_APPROVAL.json'
     if approval_path.exists():

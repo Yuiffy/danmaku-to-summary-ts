@@ -22,6 +22,7 @@ npm test -- --runInBand
 本机 Web 工作台的双服务启动、操作范围和验收见 [web-admin.md](web-admin.md)。
 完整 Python 回归还需要 `requests[socks]`、`bilibili-api-python`、`Pillow`、`numpy`、
 `google-genai`、`PyYAML` 和 PyTorch（CPU 版即可完成张量相关单测）。
+B 站 SDK 的维护状态、调用归属和替换边界见 [接口上游索引](bilibili-api-upstreams.md)。
 实际 ASR 模型环境的安装方式见 [asr-backends.md](asr-backends.md)。
 
 ## 按改动选择检查

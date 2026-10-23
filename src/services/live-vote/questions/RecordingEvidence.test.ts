@@ -16,6 +16,23 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(fixture, { recursive: true, force: true }); });
 
+it('finds legacy date-folder subtitles and danmaku using the session date rather than a next-day export filename', async () => {
+  const archive = path.join(room, '24_09_30');
+  await fs.mkdir(archive);
+  await fs.writeFile(path.join(archive, '2024_10_01_00_50_09_export.srt'),
+    '1\n00:26:48,180 --> 00:26:51,240\n昨天我们先去体检了，然后去吃饭。\n\n' +
+    '2\n02:21:12,290 --> 02:21:44,239\n不知道体检有没有量体脂率，普通的一个身高和体重。\n');
+  await fs.writeFile(path.join(archive, '2024_10_01_export.xml'),
+    '<i><d p="8472,1,25,0,1,0,123,0">体检有没有量身高</d></i>');
+  const evidence = new RecordingEvidence([room], new AbortController().signal);
+  const result = await evidence.search({ terms: ['体检', '身高'], kind: 'all', date: '2024-09' });
+  expect(result.hits).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'subtitle', date: '2024-09-30', time: '02:21:12', excerpt: expect.stringContaining('普通的一个身高和体重') }),
+    expect.objectContaining({ kind: 'danmaku', date: '2024-09-30' })
+  ]));
+  expect((await evidence.search({ terms: ['体检'], kind: 'all', date: '2024-10-01' })).hits).toEqual([]);
+});
+
 it('reads live subtitles immediately and prefers the completed subtitle when it appears', async () => {
   const base = path.join(room, '2026_10_01', 'new-record');
   await fs.writeFile(`${base}.live.srt`, '1\n00:02:01,000 --> 00:02:03,000\n刚才说了实时转写\n');
@@ -44,6 +61,32 @@ it('searches both sources, preserves attribution and context, and exposes only o
   expect(JSON.stringify(result)).not.toContain(fixture);
   expect(evidence.citation('invented')).toBeUndefined();
   expect(evidence.context({ evidenceId: '../secret' })).toEqual({ error: 'Unknown evidence ID' });
+});
+
+it('finds SC text and exposes its recorded author only through the selected evidence, context and citation', async () => {
+  const folder = path.join(room, '2026_06_17');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'stream.xml'), '<i><BililiveRecorderRecordInfo start_time="2026-06-17T22:35:56.486+08:00" />' +
+    '<sc ts="8089.015" user="L1f3n0w0v3R710w_" uid="288811455" price="30">躺在床上莫名又会想</sc></i>');
+  const evidence = new RecordingEvidence([room], new AbortController().signal);
+  const { hits } = await evidence.search({ terms: ['躺在床上莫名又会想'], kind: 'danmaku', date: '2026-06-17' });
+  expect(hits).toHaveLength(1);
+  const metadata = { date: '2026-06-17', time: '02:14:49', senderName: 'L1f3n0w0v3R710w_', senderUid: '288811455',
+    messageType: 'superchat', sentAt: '2026-06-18T00:50:45.501+08:00', sentAtBasis: 'recording_start' };
+  expect(hits[0]).toMatchObject(metadata);
+  expect(evidence.context({ evidenceId: hits[0].evidenceId })).toMatchObject({ hit: metadata });
+  expect(evidence.citation(hits[0].evidenceId)).toMatchObject(metadata);
+  expect(evidence.clue(hits[0].evidenceId)).toMatchObject(metadata);
+});
+
+it('keeps the older sender when later ordinary comments repeat the same SC text in an earliest-record query', async () => {
+  await fs.mkdir(path.join(room, '2026_06_17'));
+  await fs.writeFile(path.join(room, '2026_06_17', 'old.xml'), '<i><sc ts="8089" user="原发送者" uid="123">躺在床上莫名又会想</sc></i>');
+  await fs.writeFile(path.join(room, '2026_10_01', 'repeat.xml'), '<i><d p="1,1,25,0,1,0,456,0" user="复读者">躺在床上莫名又会想</d></i>');
+  const evidence = new RecordingEvidence([room], new AbortController().signal, { question: '躺在床上莫名又会想最早是谁发的' });
+  const { hits } = await evidence.search({ terms: ['躺在床上莫名又会想'], kind: 'danmaku', date: null });
+  expect(hits).toHaveLength(1);
+  expect(hits[0]).toMatchObject({ date: '2026-06-17', senderName: '原发送者', senderUid: '123', messageType: 'superchat' });
 });
 
 it('does not read unrelated files, generated clip subdirectories, other rooms or directory junctions', async () => {

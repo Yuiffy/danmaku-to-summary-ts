@@ -1,5 +1,8 @@
 # ASR Backend 配置
 
+跨直播间未来行程通过[行程与联动记忆](streamer-itinerary-memory.md)加入开放声纹候选；
+历史计划不构成本场到场或逐句说话人证据，不改变声纹验收阈值。
+
 > **当前状态（2026-09-29）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。生产仅对已确认多人联动的场次启用 20% MOSS 灰度，其余按原房间路由运行（默认 Paraformer + CAM++）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
 项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
@@ -577,14 +580,17 @@ speaker 标签不由此阶段重新分配。
   全局替换，更不能把 `爸爸 -> 妈妈` 或 `升级 -> 岁己` 变成裸词规则。
 - **称呼限定局部实名语境**：岁己、栞栞、弥月三个房间均包含两人的规则，覆盖各自直播间。
   “小明／小迷”仅在前后20秒内有弥月、老弥、小弥、Mizuki 等规范线索时改为“小弥”；
-  “小刊／小康”仅在附近有栞栞、小栞、Shiori、獭獭栞时规范为“小栞”；同样的线索下
+  “小刊”仅在附近有栞栞、小栞、Shiori、獭獭栞时规范为“小栞”；“小康 → 小栞”已由用户
+  明确确认为米岁栞三个房间的称呼替换，不再要求附近重复出现规范姓名，仍保留普通词及同名排除项。
+  同样的规范姓名线索下
   “康康”规范为“栞栞”，但保留“让我康康／给我康康／你康康／来康康”等看看的网络用语、
   “康康视频／照片／图片／效果”等表达及明确另一个康康的语境。
   “签签”和“小看”不自动替换，也不提供替换建议。保留“小迷糊／小迷妹／小迷弟／小迷宫／
   小迷你／小迷茫／小迷惑／小迷恋”“小康社会／奔小康”等普通词、明确另一个小明或小迷
   及否认身份的语境；这些排除项同时阻止自动改写与复核建议。
   排除项在整个局部窗口内保守阻止改写；不能消除所有同名歧义。
-  缺乏实名线索的别名只进入分组复核，不用直播、主播或房主姓名作为另一人的身份证据。
+  除上述用户确认的“小康”称呼规则外，缺乏实名线索的别名只进入分组复核，
+  不用直播、主播或房主姓名作为另一人的身份证据。
   这些是文本规范化规则，不是声纹实名验证；支持词取自本轮改写前输入，不靠规则输出互相佐证。
 - **复核按问题分组**：同一疑词列出所有出现位置；长段粘连拉丁文字作为可能的外语
   音频提示，整组保留所有位置，并生成不超过30秒的局部核对窗口。它不是可靠的
@@ -707,6 +713,8 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 - `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换。
 - `ambiguous_aliases`: 只生成 ambiguous corrections，适合 `岁吉`、`碎几` 这类高歧义同音词；默认要求附近存在 `require_nearby` 提示词，并按局部 token 窗口判断，避免误伤普通词语。
 - `corrections.safe`: 显式安全替换，等价于旧的 corrections 对象/数组。
+  全局表对所有房间生效，不依赖 `subtitleProofreading.roomIds`；例如 `c几`、`C几`、
+  `c 几`、`C 几` 与既有 `c级`、`c自己` 统一改为“岁己”，继续保留既有词边界保护。
 - `corrections.contextual`: 显式上下文替换，必须配置 `require_nearby`，否则不会执行。
 - `corrections.ambiguous`: 显式高歧义替换；默认按局部 token 上下文生效，适合需要“只改靠近主播语境的那一次出现”的情况。
 - `context_window_tokens`: `contextual/ambiguous` 可选字段；限制 nearby 关键词与待替换词之间允许相隔多少个 token，默认 6。
@@ -769,15 +777,19 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 当前 dispatch 行为：Fun-ASR-Nano / vLLM 会在推理时接收 `hotwords` 数组；Paraformer/SenseVoice 的 `hotword` 字符串当前由 JS adapter 留空，依赖 `phoneme_correction` 与统一 corrections。所有 backend 的 SRT 写出前都会应用 corrections。
 
 生产的会话人名补漏分为受限纠错与疑似召回。栞栞房间只在“支持赛吉斯”局部语境
-纠正为岁己；犬绒房间只在附近有海獭、且同 cue 为“给小碎看／买／送”的收礼人
-句式时纠正“小碎”。后者显式保护小碎步、片、石等普通词及打碎动作，不跨 cue
+纠正为岁己；犬绒房间在全局“小碎”规则之外，补充附近有海獭、且同 cue 为“给小碎看／买／送”的收礼人
+句式。两条规则独立判定，任一满足即可纠正“小碎”，不把房间条件强加给全局规则。
+两者均保护小碎步、片、石等普通词及打碎动作；普通词保护可跨 cue，收礼人句式不跨 cue
 拼接词组猜改。“随机／随即／自己／这一集／c机”不加入生产全局替换表，而由
 [关键词预审的疑似召回](topic-event-editorial.md#疑似-asr-人名召回)标记原词再判断语义。
 
-合并顺序为全局 corrections、房间 routing corrections、common/route hotword 派生
-别名。生产“小碎”从 common hotword 的 `ambiguous_aliases` 移至显式全局
-`corrections.ambiguous`，使犬绒的局部覆盖不会被派生别名盖回。全局词条保留原解析
-行为；房间覆盖显式声明排除项。高歧义词不要放进 `safe` 或整场 `contextual` 规则。
+规则收集顺序为全局 corrections、房间 routing corrections、common/route hotword 派生
+别名。同一原词的不同规则组合保留，各自保留目标、附近线索、窗口、边界及排除条件，
+仅完全相同的规则去重，不按原词覆盖或拼成混合条件。重叠的同一处改词只计一次；
+目标冲突时保留现有先收集规则优先的顺序。全局 `exclude_when` / `exclude_pattern`
+同时继承到房间规则及热词派生别名；空的逐条排除数组不清除全局保护，逐条排除项继续追加。
+生产“小碎”保留在显式全局 `corrections.ambiguous`，仍需满足原有局部语境和词边界，
+不是裸词全局替换。高歧义词不要放进 `safe` 或整场 `contextual` 规则。
 
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 

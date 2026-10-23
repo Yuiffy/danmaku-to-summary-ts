@@ -82,6 +82,71 @@ class ActivityUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'P changed'):
             validate_activity_review(data)
 
+    def test_explicit_feedback_accepts_current_cut_without_inventing_independent_review(self):
+        event = self.data['activities'][0]
+        event['verification'] = {'method': 'independent_local_asr', 'decision': 'uncertain', 'reason': 'end not closed'}
+        event['reviewIssues'] = ['end_boundary_unconfirmed']
+        self.save()
+        with patch('src.scripts.activity_audio_review.check_local_activity', side_effect=ValueError('independent assessment pending')):
+            with self.assertRaisesRegex(ValueError, 'independent assessment pending'):
+                approve(self.metadata, '投')
+        approve(self.metadata, '保留全部现有分P，全投', feedback_authorized=True)
+        data = json.loads(self.metadata.read_text(encoding='utf-8'))
+        self.assertEqual(data['activityReview']['acceptanceMode'], 'feedback')
+        self.assertIs(data['activityReview']['audioVisualReviewed'], False)
+        evidence = data['activities'][0]['verification']
+        self.assertEqual(evidence['previousVerification'], event['verification'])
+        self.assertEqual(evidence['previousReviewIssues'], event['reviewIssues'])
+        self.assertEqual(evidence['previousPackageReview'], {'status': 'pending'})
+        self.assertEqual(evidence['decision'], 'accepted')
+        self.assertEqual(len(load_upload_manifest(self.manifest)[0]['parts']), 3)
+        validate_metadata_qa(data)
+        for mutate in (lambda d: d['activityReview'].update(authority='automatic'),
+                       lambda d: d['activityReview'].update(audioVisualReviewed=True),
+                       lambda d: d['activities'][0]['verification'].update(note='different'),
+                       lambda d: d['activities'][0]['verification']['window'].update(end=1),
+                       lambda d: d['output']['parts'][0].update(end=1)):
+            changed = copy.deepcopy(data)
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                validate_metadata_qa(changed)
+        self.srt.write_bytes(b'new source')
+        with self.assertRaisesRegex(ValueError, 'source evidence changed'):
+            validate_metadata_qa(data)
+
+    def test_feedback_keeps_all_song_parts_with_uncertain_trial_boundaries(self):
+        self.data['kind'] = 'songs'
+        self.data['activities'] = []
+        for i, part in enumerate(self.parts):
+            part['activityId'] = f'song-{i}'
+            self.data['activities'].append(dict(id=part['activityId'], kind='song',
+                start=part['start'], end=part['end'], name=part['title'],
+                verification={'method': 'independent_local_asr', 'decision': 'uncertain'},
+                reviewIssues=['end_boundary_unconfirmed']))
+        self.save()
+        with self.assertRaises(ValueError):
+            approve(self.metadata, '投')
+        approve(self.metadata, '三段全部保留，全投', feedback_authorized=True)
+        data = json.loads(self.metadata.read_text(encoding='utf-8'))
+        self.assertEqual(data['output']['parts'], self.parts)
+        self.assertEqual(len(load_upload_manifest(self.manifest)[0]['parts']), 3)
+        for event in data['activities']:
+            self.assertEqual(event['verification']['previousVerification']['decision'], 'uncertain')
+        validate_metadata_qa(data)
+
+    def test_feedback_does_not_accept_changed_media_or_failed_render(self):
+        self.data['output']['parts'][0]['actualDuration'] = 1
+        self.save()
+        before = self.metadata.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'rendered duration differs'):
+            approve(self.metadata, '全投', feedback_authorized=True)
+        self.assertEqual(self.metadata.read_bytes(), before)
+        self.data['output']['parts'][0]['actualDuration'] = 1500
+        self.save()
+        Path(self.parts[0]['mediaPath']).write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'P changed'):
+            approve(self.metadata, '全投', feedback_authorized=True)
+
     def test_repaired_detection_transcript_remains_bound_to_review(self):
         transcript = self.root / 'ALIGNED.srt'
         transcript.write_text('原音频重新对齐的字幕', encoding='utf-8')

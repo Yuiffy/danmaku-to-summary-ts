@@ -135,7 +135,32 @@ describe('one numbered own-stream review with durable IDs', () => {
     fetch.mockReset();
     fetch.mockResolvedValue({ ok: true, json: async () => ({ errcode: 0 }) });
     await expect(own.notifyResults([], { fatalError: 'planning failed' }, { wechatWork: { webhookUrl: 'https://example.test/robot' } })).resolves.toBe(true);
-    expect(JSON.parse(fetch.mock.calls[0][1].body).markdown.content).toContain('批次处理：处理未完成');
+    const message = JSON.parse(fetch.mock.calls[0][1].body).markdown.content;
+    expect(message).toContain('批次处理：处理未完成（原始错误：planning failed）');
+    expect(message).toContain('状态: 批次处理失败，自动切片尚未完成');
+    expect(message).toContain('候选统计尚未完成');
+    expect(message).toContain('切片目录: 未生成或尚未返回');
+    expect(message).not.toContain('总候选 0');
+    expect(message).not.toContain('无需人工处理');
+  });
+
+  test('a completed empty batch retains the normal empty-list summary', () => {
+    const message = own.buildNotifyMarkdown([], {});
+    expect(message).toContain('总候选 0');
+    expect(message).toContain('本次无需人工处理成片');
+    expect(message).not.toContain('批次处理失败');
+  });
+
+  test('a failed batch with recorded clips retains their IDs and statuses as an incomplete list', () => {
+    const message = own.buildNotifyMarkdown([clip(1, 0)], { fatalError: 'later stage failed', outputRoot: 'D:/clips',
+      uploadRegistry: { clipIdsByReviewIndex: { 1: 11 }, clipStatusByReviewIndex: { 1: 'queued' } } });
+    expect(message).toContain('状态: 批次处理失败');
+    expect(message).toContain('切片目录: D:/clips');
+    expect(message).toContain('已记录候选 1');
+    expect(message).toContain('清单可能不完整');
+    expect(message).toContain('ID11');
+    expect(message).toContain('状态: 已排队上传');
+    expect(message).not.toContain('无需人工处理');
   });
 
   test('ambiguous review indices cannot be registered', () => {

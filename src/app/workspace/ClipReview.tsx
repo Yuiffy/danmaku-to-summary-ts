@@ -67,6 +67,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const [titleChoice, setTitleChoice] = useState<TitleChoiceRef>(), [titleBusy, setTitleBusy] = useState(false);
   const [start, setStart] = useState(''), [end, setEnd] = useState(''), [allowLong, setAllowLong] = useState(false), [durationNote, setDurationNote] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
+  const submitting = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
   const [sourceOrigin, setSourceOrigin] = useState<number>();
   const feedback = useResource<{ job: AdminJob | null }>(`/clips/${id}/feedback`, 0, true);
@@ -88,8 +89,9 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   useEffect(() => {
     if (restored.current || !feedback.data) return;
     restored.current = true;
-    try { setNote(localStorage.getItem(`clip-feedback-${id}`) ?? feedback.data.job?.note ?? ''); }
-    catch { setNote(feedback.data.job?.note || ''); }
+    const retryNote = feedback.data.job && ['failed', 'interrupted'].includes(feedback.data.job.status) ? feedback.data.job.note || '' : '';
+    try { setNote(localStorage.getItem(`clip-feedback-${id}`) ?? retryNote); }
+    catch { setNote(retryNote); }
   }, [feedback.data, id]);
   function changeNote(value: string) {
     restored.current = true; setNote(value);
@@ -101,15 +103,15 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   useEffect(() => { if (savedCoverText !== undefined) setCoverText(savedCoverText); }, [savedCoverText]);
   const loaded = !!detail, hasMedia = !!detail?.media, sourceAvailable = !!detail?.source.available;
   useEffect(() => { if (loaded) setMode(hasMedia ? 'media' : sourceAvailable ? 'source' : 'preview'); }, [loaded, hasMedia, sourceAvailable]);
-  async function act(action: string, extra: Record<string, unknown> = {}) {
-    if (!detail) return;
-    if (!['preview', 'subtitles'].includes(action) && !note.trim()) { setError('请填写审核或修改说明'); return; }
+  async function act(action: string, extra: Record<string, unknown> = {}, actionNote = note) {
+    if (!detail || submitting.current) return;
+    if (!['preview', 'subtitles'].includes(action) && !actionNote.trim()) { setError('请填写审核或修改说明'); return; }
     const publishing = action === 'feedback-publish' || action === 'enqueue' || action === 'correct' && enqueue;
     if (publishing && action !== 'feedback-publish' && !window.confirm(`确认授权 #${id} 入队投稿到 B 站？${action === 'correct' ? '后台将先重制字幕与视频。' : ''}`)) return;
     if (action === 'exclude' && !window.confirm(`确认排除 #${id}，阻止后续投稿？`)) return;
-    setBusy(true); setError(''); setMessage('');
+    submitting.current = true; setBusy(true); setError(''); setMessage('');
     try {
-      const body: any = { ...extra, action, revision: detail.revision, note, publishApproved: publishing };
+      const body: any = { ...extra, action, revision: detail.revision, note: actionNote, publishApproved: publishing };
       if (titleChoice) Object.assign(body, { titleSetId: titleChoice.setId, titleRevision: titleChoice.revision });
       if (action === 'correct') Object.assign(body, { from, to, cue, enqueue });
       if (['cut', 'approve-review', 'rebuild'].includes(action)) Object.assign(body, { title, description, coverText, sourceKind: action === 'cut' ? '' : sourceKind });
@@ -121,10 +123,13 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
         }
       }
       const result = await api<AdminJob>(`/clips/${id}/actions`, body);
-      if (action === 'feedback-publish') onFeedback(result);
+      if (action === 'feedback-publish') {
+        onFeedback(result); setNote('');
+        try { localStorage.removeItem(`clip-feedback-${id}`); } catch { /* The saved job retains the submitted opinion. */ }
+      }
       else setMessage('操作已提交，请在任务中确认实际执行结果。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '操作失败'); }
-    finally { setBusy(false); }
+    finally { submitting.current = false; setBusy(false); }
   }
   const asset = (kind: string) => `/api/admin/clips/${id}/assets/${kind}?v=${['media', 'media-subtitles'].includes(kind) ? detail?.mediaRevision || detail?.revision : detail?.revision}&part=${part}`;
   const isPreview = mode === 'preview', isSource = mode === 'source', hasVideo = detail && (isPreview ? detail.preview : detail.media);
@@ -136,7 +141,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
     {message && <div className="notice" role="status">{message}<button onClick={onJobs}>查看任务 ↗</button></div>}
     {feedback.error && <div className="notice error" role="alert">处理进度暂时无法读取：{feedback.error}</div>}
     {job && <div className={`notice${feedbackFailed ? ' error' : ''}`} role={feedbackFailed ? 'alert' : 'status'}>
-      <strong>{publicationComplete ? statusText(detail!.clip.status) : feedbackActive(job) ? '已提交反馈，正在处理' : job.status === 'succeeded' ? '修改处理完成，已加入投稿队列' : `${statusText(job.status)} · ${job.phase || '等待处理修改意见'}`}</strong>
+      <strong>{publicationComplete ? statusText(detail!.clip.status) : feedbackActive(job) ? '已提交，正在处理' : job.status === 'succeeded' ? '处理完成，已加入投稿队列' : `${statusText(job.status)} · ${job.phase || '等待处理'}`}</strong>
       {feedbackActive(job) && <p>{job.phase || '等待后台处理'}。可以继续选择其他切片，结果会自动更新。</p>}
       {feedbackFailed && <p>修改意见已保留，请根据下方原因补充意见后重试。</p>}
       <details><summary>查看处理过程和已保存的意见</summary><p>{job.note}</p><pre>{job.output || '等待执行…'}</pre></details>
@@ -162,7 +167,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
         {isPreview && <p className="muted">粗剪字幕包含上下文。改词使用候选字幕行号，可切换成片核对或留空替换全部匹配。</p>}
         {detail.category === 'clip' && !isSource && <><p className="muted">确认改词可直接写在下方修改意见中，例如：“建功”改成“建构”。</p><details><summary>高级逐字修改</summary><div className="form-grid"><label>原文字<input value={from} onChange={event => setFrom(event.target.value)} /></label><label>替换为<input value={to} onChange={event => setTo(event.target.value)} /></label><label>候选字幕行号（可选）<input value={cue} onChange={event => setCue(event.target.value)} inputMode="numeric" /></label></div>
           <label className="check-label"><input type="checkbox" checked={enqueue} onChange={event => setEnqueue(event.target.checked)} />改词后重制并入队投稿</label><button disabled={processing || !from} onClick={() => void act('correct')}>保存确认改词</button></details></>}
-        {detail.category !== 'clip' && <p className="muted">请逐 P 核对原音与边界，把结论写在下方意见中，再点“按意见修改并投稿”。</p>}
+        {detail.category !== 'clip' && <p className="muted">请逐 P 核对原音与边界。没有问题可直接投稿，需要修改时在下方填写意见。</p>}
       </section>}
       {tab === 'copy' && <section className="inspector-section copy-layout"><div className="form-stack"><label>标题<input readOnly value={title} /></label>{detail.category === 'clip' && <p className="muted">在上方“标题方案”中选择或保存手写标题。</p>}<label>简介<textarea readOnly={detail.category !== 'clip'} value={description} onChange={event => setDescription(event.target.value)} rows={5} /></label><label>封面文字<textarea readOnly={detail.category !== 'clip'} value={coverText} onChange={event => setCoverText(event.target.value)} rows={2} /></label>{detail.category === 'clip' && <><label>内容归属<select value={sourceKind} onChange={event => setSourceKind(event.target.value)}><option value="">沿用现有归属</option><option value="live_speech">主播本人发言</option><option value="recount">转述 / 引用</option><option value="playback">播放音频</option><option value="audience">观众弹幕</option></select></label><p className="muted">改好的文案会随“按意见修改并投稿”一起保存和制作。</p></>}{detail.category === 'activity' && <button disabled={processing} onClick={() => void act('restyle')}>更新歌切 / 视听包装</button>}</div>
         <div>{detail.cover && <Image className="review-cover" src={asset('cover')} alt="当前视频封面" width={480} height={300} unoptimized />}
@@ -170,9 +175,9 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
             : <p className="muted">成片制作完成后，可以拖动选帧并裁剪封面。</p>}</div></section>}
       {tab === 'evidence' && <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>}
       {tab === 'rebuild' && (detail.category === 'clip' ? <section className="inspector-section"><p className="muted">源时间使用整场录播的绝对秒数。重制准备修订，制作生成新视频；精剪会调用配置的 AI 流程。</p><div className="form-grid"><label>开始秒数<input value={start} onChange={event => setStart(event.target.value)} /></label><label>结束秒数<input value={end} onChange={event => setEnd(event.target.value)} /></label></div><label className="check-label"><input type="checkbox" checked={allowLong} onChange={event => setAllowLong(event.target.checked)} />保留完整的长话题</label>{allowLong && <label>完整话题说明<input value={durationNote} onChange={event => setDurationNote(event.target.value)} /></label>}<div className="button-row"><button disabled={processing} onClick={() => void act('rebuild')}>准备重制修订</button><button disabled={processing} onClick={() => void act('precision')}>AI 精剪</button></div></section> : detail.category === 'activity' ? <ActivityRevision busy={processing} kind={detail.evidence.kind} act={act} /> : <p className="muted inspector-section">完整游戏包保留连续内容，可逐 P 预览、审核和整包投稿。</p>)}
-      <footer className="review-actions"><label>修改意见<textarea value={note} onChange={event => changeNote(event.target.value)} placeholder="例如：把字幕“建功”改成“建构”；这段是小岁本人在说话，标题保留。没有修改时写明已核对无误。" rows={3} maxLength={1000} /></label>
-        <p className="muted">点击即授权按意见修改、制作并复核，通过后自动投稿。意见会保存，失败原因显示在当前视频里。</p>
-        <button className="primary" disabled={processing || !note.trim() || job?.status === 'succeeded' || publicationComplete} onClick={() => void act('feedback-publish')}>{detail.clip.status === 'uploaded' ? '已投稿' : publicationComplete ? '已加入投稿队列' : busy ? '正在提交…' : feedbackActive(job) ? '已提交反馈，正在处理' : job?.status === 'succeeded' ? '已加入投稿队列' : job?.status === 'failed' || job?.status === 'interrupted' ? '按补充意见重试并投稿' : '按意见修改并投稿'}</button>
+      <footer className="review-actions"><label>修改意见（可选）<textarea value={note} disabled={processing || publicationComplete || job?.status === 'succeeded'} onChange={event => changeNote(event.target.value)} placeholder="没有问题直接点下方投稿。有修改再填写，例如：把字幕“建功”改成“建构”，标题保留。" rows={3} maxLength={1000} /></label>
+        <p className="muted">无需填写确认语。点击即授权投稿；有修改意见则先按意见修改，尚无成片或有待制作修订则先制作。进度与失败原因会显示在这里。</p>
+        <button className="primary" disabled={processing || job?.status === 'succeeded' || publicationComplete} onClick={() => void act('feedback-publish', {}, note.trim() || '投')}>{detail.clip.status === 'uploaded' ? '已投稿' : publicationComplete ? '已加入投稿队列' : busy ? '正在提交…' : feedbackActive(job) ? '已提交，正在处理' : job?.status === 'succeeded' ? '已加入投稿队列' : note.trim() ? feedbackFailed ? '按补充意见重试并投稿' : '按意见修改并投稿' : !detail.media || detail.pendingRebuild ? '按当前内容制作并投稿' : '没问题，直接投稿'}</button>
         <details><summary>高级操作</summary><div className="button-row">{detail.category === 'clip' && <button disabled={processing} onClick={() => void act('cut')}>只制作成片</button>}<button disabled={processing || !detail.media} onClick={() => void act('approve-review')}>只保存审核</button><button disabled={processing || detail.clip.status === 'uploaded'} onClick={() => void act('enqueue')}>只入队投稿</button>{detail.category === 'clip' && <button className="danger-link" disabled={processing || detail.clip.status === 'uploaded'} onClick={() => void act('exclude')}>排除</button>}</div></details>
       </footer>
     </>}

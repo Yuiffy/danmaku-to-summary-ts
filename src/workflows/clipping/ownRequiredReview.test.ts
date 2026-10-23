@@ -6,6 +6,16 @@ import type { PublicationSnapshot } from './publicationReview';
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const config = { mode: 'auto' as const, roomIds: ['25788785'], authorizationNote: '允许复核后投稿', activatedAt: '2026-10-03T00:00:00Z' };
 const checks = { meaning: true, attribution: true, title: true, cover: true, subtitles: true, completeStory: true };
+test('a current keyword front-loaded clip receives explicit QA under its own publication scope', async () => {
+    const f = fixture(); f.artifact.mode = 'local_review'; f.artifact.publicationKind = 'keyword_topic';
+    f.artifact.attributionRequired = false; f.artifact.aiReview = { status: 'ready', applied: true };
+    f.artifact.editorialTimeline = { op: { source: { roomId: '25788785' } } };
+    const topic = { ...config, roomIds: [], enabled: true, policyVersion: 'topic-v1', scope: 'configured_keywords', keywords: ['岁己'] };
+    const result = await reviewOwnRequiredQa(f.artifact, topic, f.evidence, f.io);
+    expect(result.qaResult.status).toBe('passed');
+    expect((f.io.request as jest.Mock).mock.calls[0][0]).toContain('不能归给当前直播间');
+    expect(result.publicationDecision).toBeUndefined();
+});
 function fixture() {
     const artifact: Artifact = { mode: 'own_stream_fun_review', roomId: '25788785', generatedAt: '2026-10-04T00:00:00Z', qaRequired: true,
         attributionRequired: true, attributionReview: { status: 'passed' }, uploadReady: true,

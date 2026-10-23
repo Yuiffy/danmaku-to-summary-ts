@@ -34,6 +34,35 @@ test('attention index distinguishes active review, transport failures and option
     expect(reviewAttentionLines([{ status: '待人工复核' }]).join('\n')).toContain('编号待登记');
 });
 
+test('fatal batch errors never report an empty or fully queued list as requiring no action', () => {
+    expect(reviewAttentionLines([])).toEqual(['本次无需人工处理成片；备选仅供按兴趣补切。']);
+    for (const rows of [[], [{ id: 1, status: '已排队投稿' }]]) {
+        const text = reviewAttentionLines(rows, { fatalError: 'planning failed' }).join('\n');
+        expect(text).toContain('需先排查批次错误');
+        expect(text).not.toContain('无需人工处理');
+    }
+    expect(reviewAttentionLines([{ id: 3, status: '待人工复核' }], { fatalError: 'planning failed' }).join('\n'))
+        .toContain('ID3：待人工复核');
+});
+
+test('fatal diagnostics retain ranked selection counts ahead of other warnings', () => {
+    const error = 'Invalid ranked selection size: selected=58, maxClips=50';
+    const metadata = { fatalError: error, aiStatus: { errors: [1, 2, 3, 4].map(index => `选材分块${index}失败`) } };
+    const lines = compactDiagnosticLines(metadata);
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toContain('批次处理：候选排序结果数量不合法');
+    expect(lines[0]).toContain(error);
+});
+
+test('fatal diagnostic detail is bounded and strips credentials and stack lines', () => {
+    const detail = compactDiagnosticLines({ fatalError: new Error('planning failed at https://user:pass@example.test/api?key=secret-value Authorization: Bearer access-secret api_key=key-secret token=token-secret sk-provider-secret "password": "quoted secret" Basic encoded-secret\n at private-stack') }).join('\n');
+    expect(detail).toContain('原始错误：planning failed');
+    for (const secret of ['user:pass', 'secret-value', 'access-secret', 'key-secret', 'token-secret', 'sk-provider-secret', 'quoted secret', 'encoded-secret', 'private-stack']) {
+        expect(detail).not.toContain(secret);
+    }
+    expect(compactDiagnosticLines({ fatalError: 'x'.repeat(1000) })[0].length).toBeLessThan(250);
+});
+
 test('short reasons retain the concrete blocker and omit duplicate codes and passing observations', () => {
     const issues = ['字幕“没有这种被凶的预气”中“预气”疑为错字；需核实并修正，现有证据不足以确认音频原词。',
         'final_subtitles_not_passed', '本地音频引文和画面支持这是一段连续的电影同看活动。'];

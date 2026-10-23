@@ -35,6 +35,17 @@ test('passed attribution cannot admit an unresolved core amount; source passes o
     expect(JSON.stringify(clips)).toBe(original);
 });
 
+test('verified recording games reach local review without overriding a rejected unrelated window', async () => {
+    const context = { ...input(), campaignContext: { actualGames: ['芙娅之魂'], overview: '游戏后看视频', coverage: 'verified_recording_context_only' } };
+    const result = await reviewOwnSourceCandidates([clips[0]], context, { snapshot: () => 'source', request: async prompt => {
+        const packet = JSON.parse(prompt.split('\n').at(-1)!);
+        expect(packet.campaignContext).toEqual(context.campaignContext);
+        expect(prompt).toContain('不要求每段战斗或游戏反应都复读游戏名');
+        return { text: JSON.stringify({ reviews: [{ clipId: 's1', status: 'rejected', checks: { content: true, subtitles: true, policy: false }, issues: ['本段为观看视频，超出游戏选材范围'] }] }) };
+    } });
+    expect(result[0]).toMatchObject({ uploadReady: false, sourceReview: { status: 'rejected' } });
+});
+
 test('minor homophone errors are judged by factual impact without rewriting or granting publication', async () => {
     const context=input();
     context.cues[0].text='没有这种被凶的预气';

@@ -131,3 +131,16 @@ body {
 .title-stats-scroll { overflow-x: auto; }
 .title-statistics table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .title-statistics th, .title-statistics td { padding: 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border, #d7dce2); }
+.login-recovery { max-width: 960px; }
+.login-recovery .toolbar { justify-content: space-between; flex-wrap: wrap; }
+.login-status, .login-recovery form { padding: 24px; margin: 20px 0; border: 1px solid var(--border, #d7dce2); border-radius: 10px; }
+.login-recovery h2 { margin-top: 0; font-size: 20px; }
+.login-status dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; }
+.login-status dt { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.login-status dd { margin: 0; }
+.comment-replies .comment-copy { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 680px; }
+.comment-replies .comment-answer { color: var(--accent); }
+.login-recovery form label { display: block; margin: 18px 0 8px; }
+.login-recovery textarea, .login-recovery input { width: 100%; }
+.login-recovery textarea { -webkit-text-security: disc; }
+.login-recovery p { line-height: 1.7; }

@@ -114,7 +114,9 @@ export class AdminFeedbackSession {
       if (!sourceKind && !record.pendingCut) throw new AdminError('需根据现有证据确认发言、转述或播放内容的归属');
       if (humanReview || this.directFeedback && initial.media && !metadata.selectionRejection && !initial.pendingRebuild && !record.pendingCut
         && plan.start === undefined && !plan.corrections?.length
-        && ['title', 'description', 'coverText'].every(key => !plan[key as keyof FeedbackPlan] || plan[key as keyof FeedbackPlan] === initial[key as keyof typeof initial])) {
+        // A title edit changes public copy and the reviewed cover, not video timing.
+        // In particular, highlight-first subtitles use the composed timeline.
+        && ['description', 'coverText'].every(key => !plan[key as keyof FeedbackPlan] || plan[key as keyof FeedbackPlan] === initial[key as keyof typeof initial])) {
         if (initial.pendingRebuild) throw new AdminError('存在待制作修订，不能批准旧成片；请先完成该修订');
         if (!initial.media || !initial.mediaSubtitles || record.pendingCut) throw new AdminError('尚无完整成片可供人工确认；请先制作并核对');
         const approve = clipCommand(this.id, { action: 'approve-review', note: this.note, ...copy, sourceKind });
@@ -161,7 +163,8 @@ export class AdminFeedbackSession {
       }
       if (!humanReview && !this.directFeedback && initial.category === 'game') throw new AdminError('游戏包需要专用完整成片审核；不能把自动分析登记为人工审核');
       await this.step('正在核验完整投稿包', bundleCommand(this.id,
-        { action: humanReview || this.directFeedback ? 'approve-review' : 'automatic-review', note: this.note }, initial.category, metadataPath));
+        { action: humanReview || this.directFeedback ? 'approve-review' : 'automatic-review', note: this.note,
+          feedbackAuthorized: this.directFeedback }, initial.category, metadataPath));
     }
     this.reviewed = true;
     const result = this.inspect();

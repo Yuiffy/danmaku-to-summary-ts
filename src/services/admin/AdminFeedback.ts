@@ -39,7 +39,8 @@ export class AdminFeedback {
       const initial = this.clips.feedbackDetail(id);
       if (initial.category !== 'clip' && Object.keys(edits).length) throw new AdminError('完整包文案修改需要专用包装流程；意见已保存，未入队');
       const unchangedReview = !Object.keys(edits).length && isUnchangedReview(note);
-      const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note);
+      const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note)
+        && !missingFeedbackFields(edits, initial, true).length;
       const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update, () => this.assertEditable(id), this.directFeedback);
       if (this.agent && !unchangedReview && !publishCurrent) {
         await this.agent(session, initial, edits, (phase, detail) => { update({ phase }); output(`\n${phase}${detail ? `：${detail}` : ''}\n`); });

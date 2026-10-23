@@ -1129,6 +1129,21 @@ describe('asr_backends', () => {
       .toBe('岁己也爱看丧尸片');
   });
 
+  test.each(['default', 'production'])('%s corrections normalize c几 globally without room proofreading', name => {
+    const config = require(`../../../config/${name}.json`);
+    for (const room_id of ['23260993', '25788785', '26966466', '1791260716', '123', '']) {
+      const resolved = asr.resolveAsrHotwords(config, { room_id });
+      for (const alias of ['c几', 'C几', 'c 几', 'C 几', 'c级', 'c自己']) {
+        expect(asr.applyCorrectionsToText(`然后就${alias}好像都赚了几十万了`, resolved.corrections))
+          .toBe('然后就岁己好像都赚了几十万了');
+      }
+      expect(asr.applyCorrectionsToText('谁跟陈荣说的c几赚了几十万', resolved.corrections))
+        .toBe('谁跟陈荣说的岁己赚了几十万');
+      expect(asr.applyCorrectionsToText('abc几和ADC几是标识符', resolved.corrections))
+        .toBe('abc几和ADC几是标识符');
+    }
+  });
+
   test('production corrections normalize Yua and 虹味 ASR variants', () => {
     const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '1700301235' });
 

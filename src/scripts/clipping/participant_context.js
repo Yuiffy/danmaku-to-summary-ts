@@ -46,11 +46,11 @@ function participantPromptLines(context) {
         require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').SPEAKER_IDENTITY_RULE,
         '本场人物背景：名单或房主身份不是逐句说话人证据；mentioned_only只表示被提到，不证明在场。',
         ...context.people.map(person => JSON.stringify({ id: person.id, name: person.label, copyName: person.preferredName,
-            names: person.names, presence: person.presence,
+            names: person.names, sourceHost: Boolean(person.sourceHost), presence: person.presence,
             ...(person.referenceHints?.length ? { referenceHints: person.referenceHints, hintsAreCandidatesOnly: true } : {}) })),
         '声纹V标记是局部音频窗口匹配，分数/间隔不是概率，不是逐词标注；?或mixed保留未知，不能用房主身份补全。',
         'candidate只表示标题、动态、封面或画面发现的候选；名单/画面不能给某句语音署名。voice_matched只证明音轨里匹配到声音，被观看视频也可能有该声音；实际互动仍须同时间的对话/画面支持。',
-        '逐项区分当前讲述者、转述内的说话人、动作执行者和对象；第一人称我不能默认归给房主，提到谁不代表谁执行动作。',
+        '逐项区分当前讲述者、转述内的说话人、动作执行者和对象；联动、连麦、播放或音源不明时，第一人称我不能默认归给房主，提到谁不代表谁执行动作。普通单人自述没有其他说话音源时，公开文案以sourceHost的copyName或“主播”自然表述，不因没有逐句报姓名而写成“讲述者”。人物名单本身仍不构成逐句声纹或动作证据。',
         '不同人说的提问、回应和反问不得合并成同一个人的连续动作。身份不确定就写中性事件并注明待核。',
         '事件中已确认的执行者或对象，无论现场嘉宾、仅被提及的人还是转述对象，公开文案优先使用其copyName，不因缺少现场声纹把已确认人名改成对方、有人或朋友。',
         '称呼对应与动作归属分开核验：片内姓名及连续指代已成立才写名字；同字段已交代姓名后可自然用代词，真正泛指或身份不确定时不得硬套人名。'

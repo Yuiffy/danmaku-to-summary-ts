@@ -160,7 +160,10 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
     if ((options.start === undefined) !== (options.end === undefined)) throw new Error('Supply both --start and --end');
     const start = Number(options.start ?? metadata.window.start);
     const end = Number(options.end ?? metadata.window.end);
-    const changed = Boolean(options.transcriptRecord) || start !== metadata.window.start || end !== metadata.window.end;
+    const ordinary = options.ordinary === true || options.ordinary === 'yes';
+    if (metadata.editorialTimeline && !ordinary) throw new Error('Editorial timeline rebuild requires --ordinary to restore source order before correcting subtitles');
+    const changed = Boolean(options.transcriptRecord) || Boolean(ordinary && metadata.editorialTimeline)
+        || start !== metadata.window.start || end !== metadata.window.end;
     const editorialPlan = rejection && rejection.reason !== 'duration_out_of_bounds'
         ? require('./clipping/rejected_replan').reviewEditorialReplan(metadata, options, evidence, start, end) : null;
     const limits = metadata.mode === 'own_stream_fun_review'
@@ -198,6 +201,11 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
         metadata.subtitleProofreading = summary;
         metadata.output = { ...metadata.output, srtPath: file };
         delete metadata.renderedSubtitles;
+        if (ordinary) {
+            delete metadata.editorialTimeline;
+            delete metadata.editorialStyle;
+            metadata.style = 'ordinary';
+        }
     }
     if (rejection) {
         metadata.originalSelectionRejection = rejection;
@@ -269,6 +277,10 @@ async function updateRevision(metadataPath, options, config = require('./config-
             if (oldHash !== editable.candidateSubtitles.sha256 || options.confirmCurrent) metadata.rebuildRequired = true;
         }
         if (options.action === 'prepare') {
+            // A rebuild starts a fresh artifact review. Keep old diagnostic receipts
+            // in revision history; they must not bind a different window or copy.
+            delete metadata.automaticSubtitleRepairAttempt;
+            delete metadata.automaticSubtitleRepairError;
             for (const field of ['title', 'description', 'coverText']) {
                 if (options[field] !== undefined) metadata.copy[field] = String(options[field]).replace(/\\n/g, '\n').trim();
             }

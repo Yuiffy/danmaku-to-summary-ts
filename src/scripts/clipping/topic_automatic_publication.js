@@ -31,7 +31,28 @@ async function reviewTopicFinals(finals, context, io) {
         runFfmpeg: (args, profile) => io.runFfmpeg(args, { ffmpegPath: options.ffmpegPath || 'ffmpeg', resourceConfig: clipResourceConfig, threads: profile?.ffmpegThreads }),
         ...(options.publicationAdapters || {})
     };
-    const reviewed = await runtime.reviewOwnPublications(finals, reviewContext, adapters);
+    const reviewFinals = async rows => {
+        const quality = loadWorkflow('clipping/ownRequiredReview');
+        const prepared = [];
+        for (const artifact of rows) {
+            let current = artifact;
+            if (artifact.qaRequired && reviewContext.aiEnabled && quality.ownAutomaticReviewEligible(artifact, publicationConfig)) {
+                try {
+                    const retained = adapters.parse(artifact.output.srtPath);
+                    const speech = adapters.parse(artifact.source.srtPath)
+                        .filter(row => row.end > artifact.window.start - 30 && row.start < artifact.window.end + 30);
+                    current = await quality.reviewOwnRequiredQa(artifact, publicationConfig, { speech, retained, excludedCategories }, {
+                        snapshot: runtime.publicationSnapshot,
+                        inspect: row => adapters.inspect ? adapters.inspect(row, retained) : runtime.inspectPublicationMedia(row, retained, reviewContext, adapters),
+                        request: (prompt, images) => request(artifact, 'quality-current', prompt, images)
+                    });
+                } catch (error) { current = { ...artifact, automaticQaRepairError: String(error.message || error) }; }
+            }
+            prepared.push(current);
+        }
+        return runtime.reviewOwnPublications(prepared, reviewContext, adapters);
+    };
+    const reviewed = await reviewFinals(finals);
     if (options.finalOnly) return reviewed;
     let repair;
     try { repair = loadWorkflow('clipping/topicPublicationRepair'); }
@@ -65,7 +86,7 @@ async function reviewTopicFinals(finals, context, io) {
                 path.join(path.dirname(artifact.output.metadataPath), 'automatic_copy_revisions', randomUUID()),
                 { streamerName, clipDuration: artifact.window.duration, coverSourcePath: artifact.source.mediaPath,
                     clipStart: artifact.window.start, timeoutMs: context.ffmpegTimeoutMs, resourceConfig: clipResourceConfig }),
-            reviewFinal: async artifact => (await runtime.reviewOwnPublications([artifact], reviewContext, adapters))[0]
+            reviewFinal: async artifact => (await reviewFinals([artifact]))[0]
         });
         reviewed[index] = result;
         fs.writeFileSync(result.output.metadataPath, JSON.stringify(result, null, 2), 'utf8');

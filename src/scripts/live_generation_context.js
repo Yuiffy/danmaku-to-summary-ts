@@ -248,7 +248,7 @@ function filterRecentDynamics(dynamics, recordingStartTime, options = {}) {
 
     let candidates = (Array.isArray(dynamics) ? dynamics : []).map((item) => {
         const publishMs = new Date(item?.publishTime || '').getTime();
-        const content = truncateText(item?.content);
+        const content = truncateText(item?.content, options.maxContentChars || MAX_DYNAMIC_CONTENT_CHARS);
         if (!content || Number.isNaN(publishMs)) {
             return null;
         }
@@ -268,7 +268,7 @@ function filterRecentDynamics(dynamics, recordingStartTime, options = {}) {
 
     candidates.sort((a, b) => b._publishMs - a._publishMs);
 
-    if (!Number.isNaN(startMs)) {
+    if (!Number.isNaN(startMs) && options.preferNearby !== false) {
         const nearbyLowerBound = startMs - nearbyHours * 60 * 60 * 1000;
         const nearby = candidates.filter((item) => item._publishMs >= nearbyLowerBound);
         if (nearby.length > 0) {
@@ -398,7 +398,8 @@ async function fetchRecentDynamics(config, roomId, recordingStartTime, options =
             limit: contextConfig.limit,
             lookbackHours: contextConfig.lookbackHours,
             nearbyHours: contextConfig.nearbyHours,
-            futureGraceMinutes: contextConfig.futureGraceMinutes
+            futureGraceMinutes: contextConfig.futureGraceMinutes,
+            ...options.dynamicOptions
         })
     };
 }
@@ -466,6 +467,29 @@ async function prepareLiveGenerationContext(highlightPath, roomId, config, optio
         }, config);
     }
 
+    const itineraryOptions = { root: path.resolve(__dirname, '../..'), config,
+        session: { roomId: context.roomId, startedAt: context.recordingStartTime,
+            title: context.liveTitle, sessionId: path.resolve(discoveryInput) },
+        srtPath: options.srtPath, xmlPath: options.xmlPath, dynamics: context.recentDynamics };
+    try {
+        const itinerary = config.ai?.itineraryMemory?.enabled === true
+            ? require('./workflow-runtime').loadWorkflow('itinerary/runtime') : null;
+        if (itinerary && options.generateItinerary && context.recordingStartTime) {
+            context.sources.itineraryDynamics = await itinerary.refreshDynamics(itineraryOptions, {
+                fetch: (roomId, asOf) => fetchRecentDynamics(config, roomId, asOf, { fetcher: options.fetcher,
+                    dynamicOptions: { limit: 5, lookbackHours: 168, preferNearby: false, maxContentChars: 1800 } }),
+                generate: options.generateItinerary
+            });
+        }
+        if (itinerary && options.generateItinerary && context.recordingStartTime) {
+            context.sources.itineraryLearning = (await itinerary.learnPlans(itineraryOptions, options.generateItinerary)).status;
+        }
+        if (itinerary && context.recordingStartTime) {
+            context.itineraryMemory = itinerary.recallPlans(itineraryOptions);
+            if (context.participantDiscovery) context.participantDiscovery = itinerary.augmentDiscovery(
+                context.participantDiscovery, context.itineraryMemory, config);
+        }
+    } catch (error) { context.sources.itineraryMemoryError = String(error.message); }
     const outputPath = writeLiveGenerationContext(highlightPath, context);
     return { context, outputPath };
 }
@@ -491,6 +515,7 @@ function formatLiveGenerationContext(context) {
     }
 
     const lines = [
+        context.itineraryMemory?.prompt || '',
         '【本场事实上下文（高优先级约束）】',
         `- 直播标题：${context.liveTitle || '未取得'}`,
         `- 开播时间（北京时间）：${context.recordingStartLocalTime || '未取得'}。判断早/午/晚必须以此为准，不能因主播说“刚起床”等作息描述改写客观时段。`

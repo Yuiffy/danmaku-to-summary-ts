@@ -114,7 +114,7 @@ test.each(['tail', 'opening', 'twice', 'final_qa', 'in_window_repair', 'final_in
                     value = { approved: !needs, needsSourceExpansion: needs,
                         issues: needs ? ['结尾截在也很，必须扩展原录播以保留难抗拒和后续收束'] : [] };
                     if (needs && outcome === 'many_requirements') value.requiredSourceCueIds = Array.from({ length: 38 }, (_, i) => `R${i + 5}`);
-                    if (needs && outcome === 'structured_qa') value.issues = [{ '位置': '片尾', '问题': '必要后半句在窗外，需扩展素材' }];
+                    if (needs && outcome === 'structured_qa') value.issues = [{ '位置': '片尾', '问题': '必要后半句在窗外，需扩展素材', requiredSourceCueIds: ['R5'] }];
                 } else if (stage.startsWith('story')) {
                     const offset = ['opening', 'boundary_repaired'].includes(outcome) && sourceAttempt ? 1 : 0;
                     value = { profile, keep: [
@@ -162,7 +162,10 @@ test.each(['tail', 'opening', 'twice', 'final_qa', 'in_window_repair', 'final_in
                 expect(stages.filter(stage => stage === 'story-qa')).toHaveLength(sourceAttempt + 1 + (outcome === 'final_in_window' ? 1 : 0));
                 expect(stages.filter(stage => stage === 'qa')).toHaveLength(['final_qa', 'final_in_window'].includes(outcome) ? 2 : 1);
                 expect(context.topic.cutClipMedia.mock.calls.some(call => !call[4].creativePlan)).toBe(true);
-                if (outcome === 'structured_qa') expect(result.creativeResult.history.find(r => r.stage === 'source_window_incomplete').qa.issues[0]).toContain('片尾');
+                if (outcome === 'structured_qa') {
+                    expect(result.creativeResult.history.find(r => r.stage === 'source_window_incomplete').qa.issues[0]).toContain('片尾');
+                    expect(stages.some(stage => stage.endsWith('-source-requirements'))).toBe(false);
+                }
                 if (outcome === 'spillover') {
                     expect(result.editPlan.keep.at(-1).end).toBe(123);
                     expect(text).not.toContain('最后才真的收束');

@@ -17,6 +17,27 @@ test('ordinary controls do not run per-clip enhancement or require an AI review'
         experiment: { enabled: true } } }, info: { roomId: 'room' } })).toBe(metadata);
 });
 
+test('all eligible creative clips are selected without another model request while unresolved copy and attribution remain blocked', async () => {
+    const generate = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu');
+    const clips = [
+        { start: 0, end: 30, title: 'First complete highlight' },
+        { start: 30, end: 60, title: 'Second complete highlight' },
+        { start: 60, end: 90, publicCopyPending: true },
+        { start: 90, end: 120, attributionRequired: true }
+    ];
+    const config = { ai: { enabled: true }, enhancements: { enabled: true, roomIds: ['event'], workflow: 'creative',
+        selectionMode: 'all_eligible', experiment: { enabled: true, ratio: 1, maxClips: 1 } } };
+    const parsed = { segments: clips.map(clip => ({ start: clip.start, end: clip.end, text: 'Complete source words' })) };
+    try {
+        const result = await selectExperimentBatch(clips, parsed, config, {}, { roomId: 'event' });
+        expect(result.clips.map((clip: any) => clip.precisionExperiment.selected)).toEqual([true, true, false, false]);
+        expect(result.summary.reason).toBe('configured_all_eligible');
+        expect(generate).not.toHaveBeenCalled();
+        const disabled = await selectExperimentBatch(clips, parsed, config, { ai: { text: { enabled: false } } }, { roomId: 'event' });
+        expect(disabled.clips.every((clip: any) => !clip.precisionExperiment.selected)).toBe(true);
+    } finally { generate.mockRestore(); }
+});
+
 test('one model request assigns the experiment and persists its usage without rendering controls', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-selection-'));
     const generator = require('../ai_text_generator');

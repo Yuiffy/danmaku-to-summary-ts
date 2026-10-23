@@ -37,11 +37,16 @@ The handler source under `src/services/webhook/handlers/` is authoritative for r
 
 ## 录播日志状态监控
 
-`bilibili.danmuRiskControl` 默认每 30 分钟读取 mikufans 的 JSONL 日志，不再启动
+`bilibili.danmuRiskControl` 默认每分钟读取 mikufans 的 JSONL 日志，不再启动
 Python 弹幕探针，也不主动调用 B 站 API。`roomIds` 限定弹幕连接告警房间；共享
 API 的 `-352` 按接口告警，不会冒充某个房间独有的问题。API 恢复与弹幕认证恢复
 分别通知：获取令牌不等于弹幕已连上，既有连接仍能收消息也不证明接口风控解除。
 连接异常持续至少一分钟才通知，读取周期决定通知延迟；短暂掉线后立即恢复不告警。
+守护状态损坏、心跳过期或日志不可读持续至少一分钟时，也发送独立的“弹幕监控失效”企微
+告警，按 `notifyCooldownMs` 重复提醒；通常在失效后两分钟内首次通知。待发的断线/风控
+通知在日志不可读时仍继续重试。失效状态与待发通知持久化，服务重启不重置计时。
+重新读到可信日志后只报告“监控恢复”，不能据此报告弹幕连接恢复。`-352` 提示接口请求
+受限，不能单独证明需要验证码；若网页确实出现验证码，需手动验证后再检查弹幕认证状态。
 
 `recorderStatePath` 默认 `data/runtime/recorder_watchdog.state.json`。每次读取核对
 守护心跳、当前 PID、启动时间及进程是否存在；不根据日志中的最大 PID 猜测当前进程。

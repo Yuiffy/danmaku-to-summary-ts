@@ -39,12 +39,14 @@ test('one archive per kind, full song JSON, complete multipart rendering and res
         const metadata = manifest.clips.map(row => JSON.parse(fs.readFileSync(row.metadataPath, 'utf8')));
         expect(metadata.map(row => row.output.parts.length)).toEqual([1, 4]);
         expect(metadata.map(row => row.upload.collectionSectionId)).toEqual([111, 222]);
+        expect(metadata[0].upload.tags).toEqual(['测试曲', '岁己', '小岁', '歌切', '虚拟主播']);
         expect(metadata.every(row => row.uploadReady === false && row.activityReview.status === 'pending')).toBe(true);
         const songs = JSON.parse(fs.readFileSync(result.songsPath, 'utf8'));
         expect(songs.songs).toHaveLength(1); expect(songs.songs[0]).toMatchObject({ name: '测试曲', part: 1 });
         expect(songStatistics(f.dir)).toMatchObject({ inspectedSessions: 1, performances: 1, unknownPerformances: 0 });
         expect(fs.readFileSync(result.reviewPath, 'utf8')).toContain('一个投稿，4 P');
         await workflow.generateStreamActivities(f.options);
+        expect(JSON.parse(fs.readFileSync(metadata[0].output.metadataPath, 'utf8')).upload.tags).toEqual(metadata[0].upload.tags);
         expect(f.renderPart).toHaveBeenCalledTimes(5); expect(f.request).toHaveBeenCalledTimes(4);
     } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
 });
@@ -109,12 +111,14 @@ test('restyling legacy pending packages reuses every video and detector result a
         for (const row of originals) {
             delete row.presentation;
             row.copy.title = '旧版标题'; row.upload.prefix = '【小岁】';
+            if (row.kind === 'songs') row.upload.tags = ['旧通用标签'];
             fs.writeFileSync(row.output.metadataPath, JSON.stringify(row));
         }
         const restyleOptions = { ...f.options, manifestPath: result.manifestPath };
         expect(await workflow.restyleStreamActivities(restyleOptions)).toMatchObject({ status: 'restyled', updated: 2 });
         const updated = manifest.clips.map(row => JSON.parse(fs.readFileSync(row.metadataPath, 'utf8')));
         expect(updated.map(row => row.upload.prefix)).toEqual(['【岁己歌切】', '【岁己同步视听】']);
+        expect(updated[0].upload.tags).toEqual(['测试曲', '岁己', '小岁', '歌切', '虚拟主播']);
         expect(updated.map(row => row.output.parts.map(part => [part.mediaPath, part.sha256, part.start, part.end])))
             .toEqual(originals.map(row => row.output.parts.map(part => [part.mediaPath, part.sha256, part.start, part.end])));
         expect(updated.every(row => !row.uploadReady && row.activityReview.status === 'pending')).toBe(true);

@@ -714,6 +714,13 @@ export interface GenerationModeConfig {
 }
 
 export interface AIConfig {
+  itineraryMemory?: {
+    enabled: boolean;
+    scope: 'selected' | 'all';
+    streamerIds: string[];
+    model?: string;
+    directory?: string;
+  };
   defaultGenerationMode?: string;
   generationModes?: Record<string, GenerationModeConfig>;
   providers?: Record<string, AIProviderConfig>;
@@ -737,6 +744,7 @@ export interface FusionConfig {
 }
 
 export interface ClipTopicsConfig {
+  editorialStyles?: { enabled?: boolean; mode?: 'auto' | 'ordinary' | 'highlight_first' | 'precision'; opManifest?: string; opManifests?: string[] };
   enabled: boolean;
   mode: 'local_review' | string;
   keywords: string[];

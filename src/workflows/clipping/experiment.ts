@@ -28,6 +28,33 @@ export function experimentEligibility(clip: ExperimentClip, sourceSha256?: strin
     return null;
 }
 
+/** An explicitly rebuilt baseline carries a newer review than its original selection plan. */
+export function rebuiltPrecisionCandidate(artifact: Record<string, any>, sourceSha256: string,
+    snapshot: { source: unknown; digests: Record<string, unknown> }): ExperimentClip {
+    const draft = artifact.renderedSubtitles, review = artifact.attributionReview, final = artifact.publicationReview;
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const copyDigest = createHash('sha256').update(['title', 'coverText', 'description']
+        .map(key => String(artifact.copy?.[key] || '')).join('\0')).digest('hex');
+    if (!artifact.uploadReady || artifact.publicCopyPending || artifact.rebuildRequired || artifact.selectionRejection
+        || draft?.version !== 1 || !draft.review?.note || draft.sourceSha256 !== sourceSha256
+        || draft.window?.start !== artifact.window.start || draft.window?.end !== artifact.window.end
+        || final?.status !== 'passed' || final.technical?.passed !== true || final.issues?.length
+        || final.artifactWindow?.start !== artifact.window.start || final.artifactWindow?.end !== artifact.window.end
+        || ['content', 'attribution', 'subtitles', 'visuals', 'policy'].some(key => final.checks?.[key] !== true)
+        || !same(final.source, snapshot.source)
+        || ['video', 'subtitles', 'cover', 'copy'].some(key => !snapshot.digests[key] || final.digests?.[key] !== snapshot.digests[key])
+        || review?.artifactCopyDigest !== copyDigest) throw new Error('Rebuilt precision baseline requires current independent review');
+    const clip: ExperimentClip = { start: artifact.window.start, end: artifact.window.end,
+        ...review.proposedCopy, attributionRequired: true, publicCopyPending: false,
+        attributionReview: review, grounding: artifact.grounding };
+    if (experimentEligibility(clip, sourceSha256)) throw new Error('Rebuilt precision attribution review is stale');
+    const topic = artifact.topicEditPlan;
+    if (topic?.sourceSha256 === sourceSha256 && topic.sourceStart === clip.start && topic.sourceEnd === clip.end) {
+        clip.topicEditPlan = topic;
+    }
+    return clip;
+}
+
 export function buildExperimentSelection(clips: ExperimentClip[], speech: Subtitle[], settings: ExperimentSettings, sourceSha256?: string) {
     if (!Number.isFinite(settings.ratio) || settings.ratio <= 0 || settings.ratio > 1
         || !Number.isInteger(settings.maxClips) || settings.maxClips < 0) throw new Error('Invalid precision experiment sample limits');
@@ -84,10 +111,10 @@ export function assignExperiment<T extends ExperimentClip>(clips: T[], packet: R
 
 export function labelExperimentTitle(title: string, selected: boolean): string {
     if (!selected) return title;
-    const base = String(title || '').trim();
-    const marked = base.endsWith(PRECISION_TITLE_SUFFIX) ? base : base + PRECISION_TITLE_SUFFIX;
-    if (Array.from(marked).length > 80) throw new Error('Precision title exceeds the Bilibili 80-character limit');
-    return marked;
+    // Editing disclosures belong in the description. Also clean legacy generated titles.
+    const base = stripExperimentTitle(String(title || '').trim());
+    if (Array.from(base).length > 80) throw new Error('Precision title exceeds the Bilibili 80-character limit');
+    return base;
 }
 
 export function stripExperimentTitle(title: string): string {

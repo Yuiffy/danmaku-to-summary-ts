@@ -11,9 +11,11 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 try:
+    from .clip_campaign_policy import resolve_campaign_publication
     from .ordinary_subtitle_evidence import validate_subtitle_audio_evidence, validate_subtitle_diagnostic
     from .clip_source_timing import source_timing_metadata, validate_rendered_timing_repair
 except ImportError:
+    from clip_campaign_policy import resolve_campaign_publication
     from ordinary_subtitle_evidence import validate_subtitle_audio_evidence, validate_subtitle_diagnostic
     from clip_source_timing import source_timing_metadata, validate_rendered_timing_repair
 
@@ -270,6 +272,17 @@ def validate_publication_review(metadata):
     timing_audio = validate_rendered_timing_repair(metadata)
     if timing_audio:
         digests['timingAudio'] = timing_audio
+    timeline = metadata.get('editorialTimeline')
+    if timeline != review.get('editorialTimeline') or metadata.get('style') == 'highlight_first' and not timeline:
+        raise ValueError('editorial timeline changed after final review')
+    if timeline:
+        files = [timeline['baseline']['metadata'], timeline['baseline']['media'], timeline['baseline']['subtitles'],
+                 timeline['opManifest'], timeline['opMedia'], timeline['opSubtitles']]
+        keys = ('metadata', 'media', 'subtitles', 'opManifest', 'opMedia', 'opSubtitles')
+        hashes = [file_digest(file) for file in files]
+        if any(timeline.get('binding', {}).get(key) != value for key, value in zip(keys, hashes)):
+            raise ValueError('editorial composing source changed after review')
+        digests['editorial'] = hashlib.sha256('\0'.join(hashes).encode()).hexdigest()
     if review.get("digests") != digests:
         raise ValueError("final publication artifacts changed after review")
     if review.get("source") != current_source:
@@ -280,7 +293,7 @@ def validate_policy(metadata, config):
     version = _policy_version(metadata)
     room = str(metadata.get("roomId") or "")
     settings = config.get("clipTopics" if version == TOPIC_POLICY_VERSION else "ownStreamClips") or {}
-    policy = settings.get("automaticPublication") or {}
+    policy = (settings.get("automaticPublication") or {}) if version == TOPIC_POLICY_VERSION else resolve_campaign_publication(settings, metadata, _timestamp)
     if (policy.get("mode") != "auto" or policy.get("policyVersion") != version
             or not str(policy.get("authorizationNote") or "").strip()):
         raise ValueError("automatic publication policy is disabled or does not authorize this room")

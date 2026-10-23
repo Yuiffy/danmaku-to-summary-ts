@@ -85,6 +85,27 @@ describe('human review of rendered own-stream clips', () => {
     expect(saved.uploadReady).toBe(true);
   });
 
+  test('updates a highlight-first title while retaining the composed media and subtitle timeline', async () => {
+    metadata.mode = 'local_review';
+    metadata.window.duration = 12.2;
+    metadata.editorialStyle = { selected: 'highlight_first', status: 'completed' };
+    metadata.editorialTimeline = { duration: 12.2, pieces: [
+      { kind: 'op', start: 0, end: 3.2, outputStart: 0 },
+      { kind: 'body', start: 0, end: 9, outputStart: 3.2 }
+    ] };
+    fs.writeFileSync(metadata.output.srtPath, '1\n00:00:03,200 --> 00:00:12,200\nHost said hello.\n');
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    const before = { video: fileDigest(metadata.output.mediaPath), subtitles: fileDigest(metadata.output.srtPath) };
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '投', title: '用户选择的新标题', feedbackAuthorized: true }, {});
+    const saved = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    expect(saved.copy.title).toBe('用户选择的新标题');
+    expect(saved.window).toEqual(metadata.window);
+    expect(saved.editorialTimeline).toEqual(metadata.editorialTimeline);
+    expect(saved.ownStreamHumanReview.digests).toMatchObject(before);
+    expect(saved.ownStreamHumanReview).toMatchObject({ acceptanceMode: 'feedback', audioVisualReviewed: false });
+    expect(cover).toHaveBeenCalledTimes(1);
+  });
+
   test('accepts whitespace changes only in the metadata-bound generated description prefix', async () => {
     metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
     metadata.candidate = { emotionEvidence: [{ start: 1, end: 10, emotion: 'HAPPY' }] };

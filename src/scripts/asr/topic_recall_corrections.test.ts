@@ -26,14 +26,26 @@ describe('production room-scoped subtitle normalization', () => {
         'protects words split over subtitle cues: %j', (...texts: string[]) => {
             expect(applyCorrectionsToSegments(texts.map(text => ({ text })), subset('1791260716'))).toEqual(texts);
         });
-    test('a room override survives hotword merging and does not change other-room behavior', () => {
-        expect(corrections('1791260716').ambiguous.find(rule => rule.from === '小碎')).toMatchObject({
+    test('room additions compose with the global rule and do not change other-room behavior', () => {
+        const global = corrections('123').ambiguous.find(rule => rule.from === '小碎');
+        const combined = corrections('1791260716').ambiguous.filter(rule => rule.from === '小碎');
+        expect(combined).toHaveLength(2);
+        expect(combined).toContainEqual(global);
+        expect(combined.find(rule => rule.require_nearby.includes('海獭'))).toMatchObject({
             require_nearby: ['海獭'], context_window_tokens: 6, boundary_sensitive: false
         });
-        expect(corrections('123').ambiguous.find(rule => rule.from === '小碎')).toEqual({
+        expect(global).toMatchObject({
             from: '小碎', to: '小岁', require_nearby: ['主播', '直播', '开播', 'SUI', '岁己', '饼干岁', 'VR', 'VirtuaReal'],
             context_window_tokens: 6, match_mode: 'token', boundary_sensitive: true, protect: undefined
         });
+        for (const room of ['123', '1791260716']) {
+            expect(applyCorrectionsToSegments([{ text: '岁己。小碎' }], subset(room))[0]).toBe('岁己。小岁');
+            for (const text of ['岁己。小碎步', '岁己。小碎片', '岁己。打小碎了']) {
+                expect(applyCorrectionsToSegments([{ text }], subset(room))[0]).toBe(text);
+            }
+            const texts = ['岁己。小碎', '步'];
+            expect(applyCorrectionsToSegments(texts.map(text => ({ text })), subset(room))).toEqual(texts);
+        }
         expect(applyCorrectionsToSegments([{ text: '给小碎看送海獭' }], subset('123'))[0]).toBe('给小碎看送海獭');
         expect(applyCorrectionsToSegments([{ text: '一起支持赛吉斯' }], subset('123'))[0]).toBe('一起支持赛吉斯');
         expect(applyCorrectionsToSegments([{ text: '支持马赛吉斯球队' }], subset('26966466'))[0]).toBe('支持马赛吉斯球队');

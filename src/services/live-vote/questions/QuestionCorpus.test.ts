@@ -101,6 +101,95 @@ it('shares one question embedding across rooms and refinements and closes the lo
   expect(corpus.coverage.get('100')?.indexedFiles).toBe(1); expect(corpus.coverage.get('200')?.indexedFiles).toBe(1);
 });
 
+it('re-embeds a focused query, reuses it across dates/rooms, and bounds new query embeddings', async () => {
+  const semantic = { enabled: true, backend: 'local' as const, dimensions: 512, model: 'fixture', directory: path.join(directory, 'index'), modelDirectory: path.join(directory, 'model') };
+  config.semantic = semantic;
+  const encoder = { embed: jest.fn(async (texts: string[]) => texts.map(() => normalizedVector(Array(512).fill(1), 512))), close: jest.fn(async () => {}) };
+  for (const roomId of ['100', '200']) await updateSubtitleRoom(semantic, roomId, config.recordingRoots[roomId], encoder, signal());
+  encoder.embed.mockClear();
+  const corpus = new QuestionCorpus(config, { roomId: '100', question: '岁己和七海体检有没有测身高' }, signal(), undefined, () => encoder);
+  try {
+    await corpus.search({ ...args, query: '去体检的经历' });
+    await corpus.search({ ...args, query: '去体检的经历', date: null });
+    await corpus.search({ ...args, query: '体检测量项目' });
+    expect(encoder.embed.mock.calls.map(call => call[0])).toEqual([['去体检的经历'], ['体检测量项目']]);
+    for (let i = 0; i < 8; i++) await corpus.search({ ...args, query: `检索重点${i}` });
+    expect(encoder.embed).toHaveBeenCalledTimes(6);
+    expect(encoder.close).not.toHaveBeenCalled();
+  } finally { await corpus.close(); }
+  expect(encoder.close).toHaveBeenCalledTimes(1);
+});
+
+it('filters session sources before semantic top-K and keeps focused followups in the anchor room', async () => {
+  config.giftCatalogs = {};
+  const root = config.recordingRoots['100'][0];
+  const base = '2024_10_01_00_50_09_秋日';
+  await fs.writeFile(path.join(root, `${base}_1_fix.srt`), '1\n00:26:48,000 --> 00:26:51,000\n昨天去体检了\n');
+  await fs.writeFile(path.join(root, `${base}_3_fix.srt`), '1\n02:21:12,000 --> 02:21:15,000\n检查的是普通身高体重项目\n');
+  // More globally superior matches than the semantic candidate cap, all outside the session.
+  for (let i = 0; i < 40; i++) await fs.writeFile(path.join(root, `2024_10_01_12_00_${String(i).padStart(2, '0')}_别场.srt`), '1\n00:01:00,000 --> 00:01:03,000\n身高玩笑\n');
+  config.semantic = { enabled: true, backend: 'local', dimensions: 512, model: 'fixture', directory: path.join(directory, 'index'), modelDirectory: path.join(directory, 'model') };
+  const vector = (first: number, second: number) => Float32Array.from([first, second, ...Array(510).fill(0)]);
+  const encoder = { embed: jest.fn(async (texts: string[]) => texts.map(text => text.includes('普通') ? vector(0.8, 0.6) : vector(1, 0))), close: jest.fn(async () => {}) };
+  for (const roomId of ['100', '200']) await updateSubtitleRoom(config.semantic, roomId, config.recordingRoots[roomId], encoder, signal());
+  const corpus = new QuestionCorpus(config, { roomId: '100', question: '岁己和七海体检有测身高吗' }, signal(), undefined, () => encoder);
+  try {
+    const event = await corpus.search({ terms: ['体检'], kind: 'subtitle', date: null, query: '去体检的经历' });
+    const anchor = event.hits.find(hit => hit.excerpt.includes('昨天去体检'))!;
+    expect(anchor).toBeDefined();
+    const result = await corpus.search({ terms: ['无字面命中'], kind: 'subtitle', date: null, query: '测量项目', withinEvidenceId: anchor.evidenceId });
+    expect(result.hits.some(hit => hit.excerpt.includes('普通身高体重'))).toBe(true);
+    expect(result.hits.every(hit => hit.roomId === '100' && !hit.excerpt.includes('玩笑'))).toBe(true);
+    await expect(corpus.search({ ...args, withinEvidenceId: 'r200_ev999' })).rejects.toThrow('session');
+    await expect(corpus.search({ ...args, withinEvidenceId: '../../private' })).rejects.toThrow();
+    await expect(corpus.search({ ...args, query: 'x'.repeat(121) })).rejects.toThrow();
+  } finally { await corpus.close(); }
+});
+
+it('refuses a gift catalog ID as a recording-session anchor', async () => {
+  const corpus = new QuestionCorpus(config, { roomId: '100', question: '舰礼' }, signal());
+  const result = await corpus.search(args);
+  await expect(corpus.search({ ...args, withinEvidenceId: result.hits.find(hit => hit.kind === 'gift-catalog')!.evidenceId })).rejects.toThrow('session');
+});
+
+it('recalls an old event beyond the recent 250-file scan without a date or an embedding provider', async () => {
+  const root = config.recordingRoots['100'][0];
+  for (let i = 0; i < 260; i++) await fs.writeFile(path.join(root, `2026-10-07-${i}.srt`), `1\n00:00:01,000 --> 00:00:03,000\n玩笑身高一米八，第${i}段\n`);
+  const old = path.join(root, '2024-01-01.srt');
+  await fs.writeFile(old, '1\n00:26:48,000 --> 00:26:51,000\n昨天去体检了\n\n2\n02:21:12,000 --> 02:21:15,000\n体检是普通的身高体重项目\n');
+  config.semantic = { enabled: true, backend: 'local', dimensions: 512, model: 'fixture', directory: path.join(directory, 'index'), modelDirectory: path.join(directory, 'model') };
+  const encoder = { embed: async (texts: string[]) => texts.map(() => normalizedVector(Array(512).fill(1), 512)) };
+  await updateSubtitleRoom(config.semantic, '100', [root], encoder, signal());
+  const request = { roomId: '100', question: '上次体检有没有测身高' };
+  const corpus = new QuestionCorpus(config, request, signal());
+  const events = await corpus.search({ terms: ['体检'], kind: 'subtitle', date: null, query: '去体检的经历' });
+  expect(events.hits[0]).toMatchObject({ date: '2024-01-01' });
+  expect(corpus.coverage.get('100')?.lexicalStatus).toBe('ready');
+  const details = await corpus.search({ terms: ['身高'], kind: 'subtitle', date: null, withinEvidenceId: events.hits[0].evidenceId });
+  expect(details.hits[0]).toMatchObject({ date: '2024-01-01', time: '02:21:12' });
+  expect(details.hits.every(hit => hit.date === '2024-01-01')).toBe(true);
+  // Metadata is recall only: current source content must still match its digest before citation.
+  await fs.writeFile(old, '1\n00:00:01,000 --> 00:00:03,000\n已经改成无关字幕\n');
+  const next = new QuestionCorpus(config, request, signal());
+  expect((await next.search({ terms: ['体检'], kind: 'subtitle', date: null })).hits).toEqual([]);
+});
+
+it('uses indexed session membership for followups even when directory enumeration is unavailable', async () => {
+  const root = config.recordingRoots['100'][0], base = '2024_01_01_20_00_00_旧场';
+  await fs.writeFile(path.join(root, `${base}_1_fix.srt`), '1\n00:26:48,000 --> 00:26:51,000\n昨天去检查了\n');
+  await fs.writeFile(path.join(root, `${base}_3_fix.srt`), '1\n02:21:12,000 --> 02:21:15,000\n测量了身高体重\n');
+  config.semantic = { enabled: true, backend: 'local', dimensions: 512, model: 'fixture', directory: path.join(directory, 'index'), modelDirectory: path.join(directory, 'model') };
+  await updateSubtitleRoom(config.semantic, '100', [root], { embed: async texts => texts.map(() => normalizedVector(Array(512).fill(1), 512)) }, signal());
+  const listing = jest.spyOn(require('fs/promises'), 'opendir').mockRejectedValue(new Error('directory enumeration unavailable'));
+  try {
+    const corpus = new QuestionCorpus(config, { roomId: '100', question: '检查时有没有测身高' }, signal());
+    const event = await corpus.search({ terms: ['昨天'], kind: 'subtitle', date: null });
+    expect(event.hits[0]).toMatchObject({ time: '00:26:48' });
+    const detail = await corpus.search({ terms: ['身高'], kind: 'subtitle', date: null, withinEvidenceId: event.hits[0].evidenceId });
+    expect(detail.hits[0]).toMatchObject({ time: '02:21:12', excerpt: '测量了身高体重' });
+  } finally { listing.mockRestore(); }
+});
+
 it('allows the agent to cite catalog evidence while never exposing file/network tools', async () => {
   const request = { roomId: '200', uid: 'test', question: '小岁的舰礼是什么' };
   const corpus = new QuestionCorpus(config, request, signal());

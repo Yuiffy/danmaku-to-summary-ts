@@ -97,4 +97,48 @@ describe('DanmuRiskControlMonitor from recorder logs', () => {
     now += 1000; event('api-recovered'); event('risk'); await poll();
     expect(sendMarkdown).toHaveBeenCalledTimes(4);
   });
+
+  test('alerts when the watchdog state is unreadable, retries delivery across restart and separates monitor recovery from connection recovery', async () => {
+    source.read.mockRejectedValue(new Error('无法读取录播姬进程状态，日志监控状态未知'));
+    now += 1000; await poll();
+    expect(sendMarkdown).not.toHaveBeenCalled();
+    sendMarkdown.mockResolvedValueOnce(false);
+    now += 60000; await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    expect(sendMarkdown.mock.calls[0][0]).toContain('弹幕监控失效');
+    expect(sendMarkdown.mock.calls[0][0]).toContain('无法确认弹幕是否正常接收');
+    monitor.stop(); monitor = new DanmuRiskControlMonitor({ sendMarkdown } as any, source);
+    await monitor.start();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    expect(sendMarkdown.mock.calls[1][0]).toEqual(sendMarkdown.mock.calls[0][0]);
+    now += 60000; await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    source.read.mockResolvedValue(snapshot);
+    await poll(); await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(3);
+    expect(sendMarkdown.mock.calls[2][0]).toContain('弹幕监控恢复');
+    expect(sendMarkdown.mock.calls[2][0]).not.toContain('✅ 录播姬弹幕连接恢复');
+    expect(JSON.parse(await fs.readFile(statePath, 'utf8')).outbox).toEqual([]);
+  });
+
+  test('keeps pending outage notifications deliverable when log reads fail and repeats monitor failure only after cooldown', async () => {
+    sendMarkdown.mockResolvedValueOnce(false);
+    now += 1000; event('risk'); await poll();
+    source.read.mockRejectedValue(new Error('secret-cookie provider error'));
+    now += 1000; await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    now += 60000; await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(3);
+    expect(sendMarkdown.mock.calls[2][0]).not.toContain('secret-cookie');
+    now += 1800000; await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(4);
+  });
+
+  test('stops monitoring-failure alerts when monitoring is explicitly disabled', async () => {
+    source.read.mockRejectedValue(new Error('无法读取录播姬进程状态，日志监控状态未知'));
+    now += 1000; await poll();
+    (ConfigProvider.getConfig().bilibili!.danmuRiskControl!).enabled = false;
+    now += 60000; await poll();
+    expect(sendMarkdown).not.toHaveBeenCalled();
+  });
 });

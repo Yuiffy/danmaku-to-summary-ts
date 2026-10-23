@@ -3,8 +3,84 @@ const topicClipper = require('./topic_clipper');
 const backgroundClipRunner = require('./background_clip_runner');
 
 describe('background_clip_runner', () => {
+  test('each recording job refreshes saved mode settings before loading its config snapshot', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-mode-settings-'));
+    const clear = jest.spyOn(configLoader, 'clearCache');
+    const get = jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: true,
+      editorialStyles: { enabled: true, mode: 'ordinary' } }, ownStreamClips: { enabled: false } });
+    const topic = jest.spyOn(topicClipper, 'generateTopicClips').mockResolvedValue([]);
+    jest.spyOn(require('./clipping/stream_activity_clipper'), 'generateStreamActivities').mockResolvedValue({ status: 'empty' });
+    jest.spyOn(require('./clipping/stream_game_clipper'), 'generateStreamGames').mockResolvedValue({ status: 'empty' });
+    try {
+      for (const mode of ['ordinary', 'precision']) {
+        get.mockReturnValue({ clipTopics: { enabled: true, editorialStyles: { enabled: true, mode } }, ownStreamClips: { enabled: false } });
+        const payloadPath = path.join(dir, `${mode}.json`);
+        fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: 'source.mp4', srtPath: 'source.srt', roomId: '12' }));
+        await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+        expect(topic.mock.calls.at(-1)[0].config.clipTopics.editorialStyles.mode).toBe(mode);
+      }
+      expect(clear).toHaveBeenCalledTimes(2);
+      expect(clear.mock.invocationCallOrder[0]).toBeLessThan(get.mock.invocationCallOrder[0]);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  test('expired game campaign stops only own highlights and still executes the original keyword stage', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'expired-campaign-keywords-'));
+    const media = path.join(dir, 'recording.flv'), payloadPath = path.join(dir, 'payload.json');
+    fs.writeFileSync(media, 'source');
+    fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: media, srtPath: 'source.srt', roomId: 'event' }));
+    const root = { clipTopics: { enabled: true, keywords: ['岁己'] }, ownStreamClips: { enabled: true, roomIds: ['regular'],
+      campaigns: [{ enabled: true, roomIds: ['event'], startsAt: '2000-01-01T00:00:00Z', endsAt: '2000-01-02T00:00:00Z' }] } };
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue(root);
+    const keyword = jest.spyOn(topicClipper, 'generateTopicClips').mockResolvedValue([]);
+    const own = jest.spyOn(require('./own_stream_clipper'), 'generateOwnStreamClips');
+    jest.spyOn(require('./clipping/stream_activity_clipper'), 'generateStreamActivities').mockResolvedValue({ status: 'empty' });
+    jest.spyOn(require('./clipping/stream_game_clipper'), 'generateStreamGames').mockResolvedValue({ status: 'empty' });
+    try {
+      expect(backgroundClipRunner.shouldRunAnyClipper('event', null)).toBe(true);
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(keyword).toHaveBeenCalledTimes(1);
+      expect(own).not.toHaveBeenCalled();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test.each([[], ['其他游戏']].map(games => ({ games })))('a non-game campaign skips own selection and notifications while keyword clips continue ($games)', async ({ games }) => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const { createHash } = require('crypto');
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'non-game-campaign-'));
+    const media = path.join(dir, '录制-1967216004-20261023-160324-272-我魂！.flv'), srt = path.join(dir, 'recording.srt'), xml = path.join(dir, 'recording.xml');
+    const payloadPath = path.join(dir, 'payload.json');
+    fs.writeFileSync(srt, 'srt'); fs.writeFileSync(xml, 'xml');
+    fs.writeFileSync(path.join(dir, 'recording_FULL_LIVE_CONTEXT.json'), JSON.stringify({ schemaVersion: 1, roomId: 'event',
+      sourceText: 'source', sharedPrefix: 'prefix', sourceSha256: hash('source'), sharedPrefixSha256: hash('prefix'),
+      inputSources: { srtSha256: hash('srt'), xmlSha256: hash('xml') } }));
+    fs.writeFileSync(path.join(dir, 'recording_LIVE_CONTENT.json'), JSON.stringify({ schemaVersion: 1, status: 'success', roomId: 'event',
+      source: { promptVersion: 2, coverage: 'full_srt_and_merged_danmaku', sourceSha256: hash('source'), sharedPrefixSha256: hash('prefix') },
+      content: { games, overview: '明天玩芙娅之魂，今天唱歌', topics: ['芙娅之魂'] } }));
+    fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: media, srtPath: srt, xmlPath: xml, roomId: 'event',
+      fullLiveContextPath: path.join(dir, 'recording_FULL_LIVE_CONTEXT.json'), liveContentSummaryPath: path.join(dir, 'recording_LIVE_CONTENT.json') }));
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: true }, ownStreamClips: { enabled: true,
+      campaigns: [{ id: 'fuya', enabled: true, roomIds: ['event'], requiredGames: ['芙娅之魂'],
+        startsAt: '2026-01-01T00:00:00+08:00', endsAt: '2100-01-01T00:00:00+08:00' }] } });
+    const keyword = jest.spyOn(topicClipper, 'generateTopicClips').mockResolvedValue([]);
+    const own = jest.spyOn(require('./own_stream_clipper'), 'generateOwnStreamClips');
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(require('./clipping/stream_activity_clipper'), 'generateStreamActivities').mockResolvedValue({ status: 'empty' });
+    jest.spyOn(require('./clipping/stream_game_clipper'), 'generateStreamGames').mockResolvedValue({ status: 'empty' });
+    try {
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(keyword).toHaveBeenCalledTimes(1);
+      expect(own).not.toHaveBeenCalled();
+      expect(log.mock.calls.flat().join('\n')).toContain('本场未实际游玩活动游戏');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('开始岁己直播有趣切片');
+      expect(fs.existsSync(path.join(dir, 'own_stream_fun_clips'))).toBe(false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
   test('a recording-scoped job replaces ordinary stages, keeps source, and is not repeated after completion', async () => {
@@ -71,7 +147,7 @@ describe('background_clip_runner', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test.each(['25788785', '22470216'])('automatic publication retains only its allowlisted source (%s)', async roomId => {
+  test.each(['25788785', '22470216', 'event'])('automatic publication retains only its allowlisted source (%s)', async roomId => {
     const fs = require('fs'), os = require('os'), path = require('path');
     const activity = require('./clipping/stream_activity_clipper');
     const games = require('./clipping/stream_game_clipper');
@@ -80,12 +156,14 @@ describe('background_clip_runner', () => {
     fs.writeFileSync(media, 'source');
     fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: media, srtPath: 'source.srt', roomId, videoPathToDelete: media }));
     jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: false },
-      ownStreamClips: { enabled: false, automaticPublication: { mode: 'auto', roomIds: ['25788785'] } } });
+      ownStreamClips: { enabled: false, automaticPublication: { mode: 'auto', roomIds: ['25788785'] },
+        campaigns: [{ enabled: true, roomIds: ['event'], startsAt: '2000-01-01T00:00:00Z', endsAt: '2099-01-01T00:00:00Z',
+          settings: { automaticPublication: { mode: 'auto', roomIds: ['event'] } } }] } });
     jest.spyOn(activity, 'generateStreamActivities').mockResolvedValue({ status: 'empty' });
     jest.spyOn(games, 'generateStreamGames').mockResolvedValue({ status: 'empty' });
     try {
       await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
-      expect(fs.existsSync(media)).toBe(roomId === '25788785');
+      expect(fs.existsSync(media)).toBe(roomId !== '22470216');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -177,6 +255,59 @@ describe('background_clip_runner', () => {
       releaseOrdinary(); releaseGame(); await task.catch(() => {});
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('failed own selection remains resumable while successful archives are reused on retry', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-own-retry-'));
+    const media = path.join(dir, 'recording.flv'), xml = path.join(dir, 'recording.xml');
+    const payloadPath = path.join(dir, 'payload.json');
+    fs.writeFileSync(media, 'source'); fs.writeFileSync(xml, '<i/>');
+    fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: media, srtPath: 'source.srt',
+      xmlPath: xml, roomId: '25788785', videoPathToDelete: media }));
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: true },
+      ownStreamClips: { enabled: true, roomIds: ['25788785'] } });
+    const topic = jest.spyOn(topicClipper, 'generateTopicClips').mockResolvedValue([]);
+    const own = jest.spyOn(require('./own_stream_clipper'), 'generateOwnStreamClips')
+      .mockRejectedValueOnce(new Error('Invalid ranked selection size')).mockResolvedValue([]);
+    const activity = jest.spyOn(require('./clipping/stream_activity_clipper'), 'generateStreamActivities')
+      .mockResolvedValue({ status: 'empty' });
+    const games = jest.spyOn(require('./clipping/stream_game_clipper'), 'generateStreamGames')
+      .mockResolvedValue({ status: 'empty' });
+    try {
+      await expect(backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath)).rejects.toThrow('Invalid ranked selection size');
+      const failed = JSON.parse(fs.readFileSync(`${payloadPath}.progress.json`, 'utf8'));
+      expect(failed.status).toBe('failed');
+      expect(failed.completed).not.toHaveProperty('own');
+      expect(failed.completed).toEqual({ topics: [], songs: { status: 'empty' },
+        games: { status: 'empty' }, watch: { status: 'empty' } });
+      expect(fs.readFileSync(media, 'utf8')).toBe('source');
+      expect(activity.mock.calls.map(call => call[0].kind)).toEqual(['songs', 'watch']);
+      expect(games).toHaveBeenCalledTimes(1);
+
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      const completed = JSON.parse(fs.readFileSync(`${payloadPath}.progress.json`, 'utf8'));
+      expect(completed.status).toBe('completed');
+      expect(completed.completed.own).toEqual([]);
+      expect(own).toHaveBeenCalledTimes(2);
+      expect(topic).toHaveBeenCalledTimes(1);
+      expect(activity).toHaveBeenCalledTimes(2);
+      expect(games).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('direct own selection keeps its fallback while early campaign failures still propagate', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-own-direct-'));
+    const media = path.join(dir, 'recording.flv'), xml = path.join(dir, 'recording.xml');
+    fs.writeFileSync(xml, '<i/>');
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ ownStreamClips: { enabled: true, roomIds: ['25788785'] } });
+    jest.spyOn(require('./own_stream_clipper'), 'generateOwnStreamClips').mockRejectedValue(new Error('selection failed'));
+    try {
+      await expect(backgroundClipRunner.generateOwnStreamClipsForMedia(media, 'source.srt', xml, '25788785')).resolves.toEqual([]);
+      await expect(backgroundClipRunner.generateOwnStreamClipsForMedia(media, 'source.srt', xml, '25788785',
+        { earlyCampaign: true })).rejects.toThrow('selection failed');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
   test('notifies a fatal topic clipping failure and resolves so later stages can continue', async () => {

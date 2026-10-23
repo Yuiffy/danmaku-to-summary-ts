@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "id": "shikamochi-op-sad-v1",
+  "mediaPath": "shikamochi-op-sad-v1.mp4",
+  "srtPath": "shikamochi-op-sad-v1.srt",
+  "duration": 3.2,
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "mediaSha256": "71e59cf312f186007f8773e35ff8db0d1046afd1a47dd1a6d7f6fd262bbd5c1d",
+  "srtSha256": "66a269ce52914b656073ef2cad7cc2d5da6a89ccbb01a655589cdb48141df652",
+  "avatar": {
+    "path": "avatar.jpg",
+    "sha256": "a0d95cb6663a75e587f14ea7b73ce1e17b353487e7b4341e4d0119e5f165d07c",
+    "name": "鹿饼Shikamochi",
+    "uid": 412141275,
+    "url": "https://i0.hdslb.com/bfs/face/8658634b5ebedba3b442634ebe86205b0ecb43fd.jpg",
+    "downloadedAt": "2026-10-22T09:21:18.302Z"
+  },
+  "source": {
+    "roomId": "25788785",
+    "streamer": "岁己SUI",
+    "recordedAt": "2026-10-21T22:00:29+08:00",
+    "recordingBasename": "录制-25788785-20261021-220029-854-陪你这个猪过周二！唱唱聊.flv",
+    "excerpts": [
+      {
+        "start": 10577.3,
+        "end": 10578.5,
+        "text": "鹿饼伤心了"
+      },
+      {
+        "start": 10578.5,
+        "end": 10580.5,
+        "text": "鹿饼根本就没心"
+      }
+    ]
+  },
+  "evidence": {
+    "method": "Existing independently transcribed bounded original audio; SRT/XML spelling and context. Actual original audio/video used, no synthetic speech.",
+    "subtitleProvenanceSha256": "043e23ed0eb0b3ace7e25a79f2939b2e983a2a9c41f2cf849b4babaeab5cee9a",
+    "derivedFrom": {
+      "manifest": "OP.json",
+      "sha256": "82fcb285fab6ea0a19495f9e7fb543082178a551d204b68a3af5fa6c3b78ca04",
+      "parts": [
+        {
+          "index": 0,
+          "sha256": "bd39f5763757e4f2f0b578fa54406b302d5a033b2763fff10fa5c56b184989fa"
+        },
+        {
+          "index": 1,
+          "sha256": "5b4b96a989556cd98ea47e33fd8fef259d0e843ddeff3893f7337828fed94785"
+        }
+      ]
+    }
+  },
+  "audio": "Original excerpt audio only; no music or generated voice",
+  "status": "local_asset"
+}

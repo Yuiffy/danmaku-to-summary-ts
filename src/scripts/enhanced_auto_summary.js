@@ -697,7 +697,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         const config = configLoader.getConfig();
         const enableSpeakerOnce = String(process.env.ASR_ENABLE_SPEAKER_ONCE || '').toLowerCase() === 'true';
         const speakerRequest = await require('./asr/participant_collection').prepareAsrSpeakerRequest(
-            mediaPath, config, options.asrContext || {}, mediaDurationSeconds, parseSpeakerRequestFromEnv());
+            mediaPath, config, { ...options.asrContext, generateItinerary: aiTextGenerator.generateTextWithDaiYu }, mediaDurationSeconds, parseSpeakerRequestFromEnv());
         if (enableSpeakerOnce) {
             config.asr = config.asr || {};
             config.asr.paraformer = {
@@ -1008,7 +1008,7 @@ function findXmlForMedia(mediaPath, xmlFiles = []) {
 
 async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomId = null, context = {}) {
     const config = configLoader.getConfig();
-    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config, roomId);
     if (!clipConfig.enabled) {
         return [];
     }
@@ -1026,6 +1026,7 @@ async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomI
         return [];
     }
 
+    if (!require('./workflow-runtime').loadWorkflow('clipping/ownCampaign').admitCampaignContent(clipConfig, { mediaPath, srtPath, xmlPath, roomId })) return [];
     console.log('\n🎞️  开始岁己直播有趣切片...');
     try {
         const results = await ownStreamClipper.generateOwnStreamClips({
@@ -1617,7 +1618,7 @@ const main = async () => {
                 const preparedContext = await liveGenerationContext.prepareLiveGenerationContext(
                     highlightPath,
                     finalRoomId,
-                    configLoader.getConfig(), { srtPath: srtFile }
+                    configLoader.getConfig(), { srtPath: srtFile, xmlPath: fullInputXmlPath, generateItinerary: aiTextGenerator.generateTextWithDaiYu }
                 );
                 const liveContext = preparedContext.context;
                 console.log(`🧭 本场事实上下文已保存: ${path.basename(preparedContext.outputPath)}`);
@@ -1708,7 +1709,8 @@ const main = async () => {
                     return null;
                 })
                 : null;
-            if (require('./clipping/stream_activity_plan').activityEnabled(configLoader.getConfig(), finalRoomId)) {
+            if (require('./clipping/stream_activity_plan').activityEnabled(configLoader.getConfig(), finalRoomId)
+                || ownStreamClipper.getOwnStreamClipsConfig(configLoader.getConfig(), finalRoomId).campaignContentGate) {
                 activitySummaryReady = liveContentSummaryPromise;
             }
             let liveContentSummaryWarmupAttempted = false;
@@ -1894,6 +1896,5 @@ const main = async () => {
     }
 }
 
-(async () => {
-    await main();
-})();
+module.exports = { processMedia };
+if (require.main === module) main();

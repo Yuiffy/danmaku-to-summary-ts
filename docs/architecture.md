@@ -76,14 +76,19 @@ must be updated before using the new task-list/cancellation adapter.
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
-| `services/live-vote/questions/SubtitleIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
+| `questions/RecordingBrowser`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, previews of maintained highlights/clip subtitles and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or broadcast starts |
+| `services/live-vote/questions/SubtitleIndex`, `SubtitleLexicalIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded full-text/semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
 | `tools/live-vote/subtitleIndex` | single-writer incremental index maintenance, daily Shanghai schedule and catch-up | vote admission, active workflow activation, public replies |
+| `questions/RecordingFtsIndex`, `RecordingFtsMaintenance`, `tools/live-vote/recordingIndex` | shared read-only SQLite FTS5 recall, atomic source replacement, independent incremental polling of trusted SRT/XML roots; source hashes verified by `RecordingEvidence` before citation | answer generation, recorder mutation, publication, embedding dependencies, agent-controlled paths |
 | `live-vote/question-lab`, `questions/EvidenceQuery`, `tools/live-vote/recordingQuery` | loopback question/evidence UI, read-only CLI retrieval, independent local test admission | Bilibili sending, comment publication, bot authorization changes, index mutation |
 | `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
+| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded text agent, target-video subtitles through fixed API/credential-free allowlisted CDN with asset/timeline checks, source-dated read-only room FTS/clip evidence, durable fair queue, quotas, token/send gates and explicit live CLI | desktop agent tools, arbitrary URLs/paths, media download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
+| `comment-replies/CommentVisibility`, `tools/bilibili/inspectComment` | bounded read-only anonymous/account comparison of exact reply IDs through fixed comment-list GETs; upstream selection is documented in `docs/bilibili-api-upstreams.md` | publication, model calls, state/queue writes, automatic retries or interpreting absence as permission to repost |
 | `handlers/mikufans` | resource admission, durable summary execution, reply coordination | publishing policy |
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
 | `src/workflows` | strictly typed, compiled stages called by source CLIs | importing source CLIs or services, runtime transpilers |
+| `workflows/itinerary` | evidence-bound cross-room plans, bounded extraction, private receipts and candidate-only recall | publication, queue mutation, attendance or sentence-speaker confirmation |
 | `scripts/clipping/*_selection.js` | recall, matching, scoring, boundaries | parent workflows, rendering, uploads |
 | `scripts/comic/storyboard.py`, `prompts.py` | script contracts and prompt presentation | provider/config/process IO |
 | `scripts/comic/screenshots.py` | local frame acquisition, sheet rendering, shared FFmpeg invocation | provider calls, room configuration |
@@ -110,6 +115,14 @@ write, including when merging a merged file again. Entry parsing tolerates old
 malformed preview markup; relative times still use segment durations plus the
 existing gap policy, and the remaining `p` fields retain their values.
 
+`core/media/CampaignEarlyPolicy` decides closed title-switch batches;
+`tools/clipping/campaignEarly` observes configured recording roots and delegates
+admission to the existing background queue through `scripts/campaign_early`.
+`core/media/RecordingCoverage` binds merged-source offsets and early reservations
+to media fingerprints. FileMerger writes this provenance; own selection and its
+boundary repairs exclude reserved source spans. This adds no separate media queue
+or publication authority. See the campaign contract in post-stream-residual-audit.md.
+
 Clip previews and cutting share `clipping/media_runtime.js` for FFmpeg execution
 and packet probing. `clipping/own_review_state.js` persists review artifacts using
 an injected Markdown renderer; `own_review_artifacts.js` owns refresh orchestration.
@@ -126,6 +139,18 @@ subtitles, including edit/creative timeline projection and CPU fallback. `subtit
 owns the extracted subtitle sizing policy; `topic_clipper` retains its export.
 `clip_upload_cli.py` forwards parser construction to the registry's current
 factory so both entrypoints expose the same commands and arguments.
+
+`workflows/clipping/editorialStyle` owns the three editorial modes, teaser/body
+repetition rules and subtitle timeline projection. `editorialSelection` chooses
+one mode per completed baseline, `editorialRuntime` composes immutable highlight
+revisions, and `editorialMedia` accepts a resource-scheduled FFmpeg adapter.
+`scripts/clipping/editorial_styles` connects both own and keyword producers to
+these stages and the existing creative precision runner before final review.
+`editorialEvidence` validates composing assets, OP provenance and projected SRT;
+final review and the Python worker bind these inputs and the complete timeline.
+The local `tools/clipping/styleRuntime` path remains a compatible facade.
+`tools/clipping/style` supplies the standalone pending-review command. See
+[three clip modes](clip-precision-experiment.md#三种切片模式与重点前置).
 
 Viewing black-transition cuts use `workflows/clipping/watchBlackPolicy.ts` for
 normalized movie-region validation, bounded scan windows and joint continuous
@@ -318,12 +343,17 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 
 ## Change guide
 
+Cross-room plan memory belongs to `workflows/itinerary`; source adapters attach it to
+ASR discovery and goodnight/image contexts. See [streamer itinerary memory](streamer-itinerary-memory.md)
+for rollout, time/citation contracts, token budgets and read-only accounting commands.
+
 | Symptom/change | Start here |
 | --- | --- |
 | recording order, reconnect, segment finalization | `MikufansWebhookHandler`, `LiveSessionManager` |
 | durable queue, GPU admission, child-process progress | `MikufansSummaryQueueWorker`, `MikufansAsrResourceController` |
 | room names or generated goodnight wording | `GoodnightReplyPolicy` |
 | @鹿饼 recording questions, agent tools, query limits | `live-vote/questions`; runtime/send composition stays in `runVoteBot` and `MultiRoomVoteBot` |
+| B站评论/@鹿饼Shikamochi 自动聊天、安全、额度与公平排队 | `bilibili/comment-replies`; explicit CLI composition in `tools/bilibili/commentReplies`; [comment reply contract](bilibili-comment-replies.md) |
 | 岁己 daily reminders, quiet windows, reminder commands | `live-vote/reminders`; share the bot send queue and persist intent before sending; contracts in `docs/live-vote.md` |
 | missing output path or delayed registration | `MikufansDelayedReplyCoordinator`, `DelayedReplyArtifactResolver` |
 | expiry, duplicate identity, retry classification | `DelayedReplyPolicy` |
@@ -332,6 +362,7 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | supplementary publications, durable intent and independent retries | `SupplementaryReplyWorkflow` |
 | summary/comment length or generation diagnostics | `LiveContentSummaryComposer`, `DelayedReplyDiagnostics` |
 | keyword window, candidate recall, subtitle boundaries | `clipping/topic_selection.js`, `clipping/own_selection.js` |
+| cross-room collab evidence, reviewed clock mapping, peer insets and solo audio | `workflows/clipping/collabPolicy`, `collabSync`, `collabRuntime`; local adapter in `tools/clipping/collab`; [collab contract](cross-room-collab-clips.md) |
 | storyboard JSON or comic prompt presentation | `comic/storyboard.py`, `comic/prompts.py` |
 | requested screenshots, source-video resolution, local FFmpeg capture | `comic/screenshots.py` |
 

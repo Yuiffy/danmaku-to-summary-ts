@@ -1,0 +1,22 @@
+{
+  "botUid": "412141275",
+  "unlimitedUids": [],
+  "speakerNames": { "14279": "带鱼", "1954091502": "岁己SUI" },
+  "fanQuota": {
+    "suiUid": "1954091502",
+    "relatedUids": ["1609526545", "1789460279", "1125641408", "2124647716"],
+    "hourly": { "sui": 20, "related": 6, "other": 2 },
+    "daily": { "sui": 100, "related": 15, "other": 5 }
+  },
+  "credentialConfigPath": "config/production.json",
+  "providerConfigPath": "config/production.json",
+  "dailyTokenBudget": 4096000,
+  "maxQueue": 200,
+  "maxUserQueue": 10,
+  "pollIntervalMs": 30000,
+  "knowledge": {
+    "runtimeConfigPath": "data/runtime/live-vote.json",
+    "roomId": "25788785",
+    "collaborationRooms": ["30655190", "1791260716", "26966466"]
+  }
+}

@@ -31,7 +31,7 @@ try:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
         terminal_upload_error_reason, format_upload_failure)
@@ -39,7 +39,7 @@ except ImportError:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -855,11 +855,7 @@ def show_clips(args: argparse.Namespace) -> int:
 def enqueue(args: argparse.Namespace) -> int:
     if getattr(args, "automatic", False):
         return clip_auto_publication.enqueue_automatic(args, sys.modules[__name__])
-    try:
-        from .clip_upload_enqueue import enqueue as run_enqueue
-    except ImportError:
-        from clip_upload_enqueue import enqueue as run_enqueue
-    return run_enqueue(args, sys.modules[__name__])
+    return clip_upload_enqueue.enqueue(args, sys.modules[__name__])
 
 
 def exclude_clips(args: argparse.Namespace) -> int:
@@ -1874,6 +1870,7 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     """
     errors: List[str] = validate_registry_qa(groups)
     for group in groups:
+        errors.extend(clip_upload_enqueue.saved_title_errors(sys.modules[__name__], group))
         errors.extend(f"clip {clip.get('id')} is editorially excluded: {clip['editorialExclusion'].get('reason')}"
                       for clip in group if clip.get("editorialExclusion"))
         errors.extend(f"candidate {clip.get('id')} needs cutting first" for clip in group if clip.get("pendingCut"))
@@ -2335,6 +2332,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", type=float, default=None)
     p.add_argument("--allow-long", action="store_true")
     p.add_argument("--allow-short", action="store_true", help="Accept a reviewed complete short event with --duration-note")
+    p.add_argument("--ordinary", action="store_true", help="Restore an editorial clip to source order without its inserted OP before rebuilding")
     p.add_argument("--duration-note", default=None)
     p.add_argument("--replan", action="store_true", help="Replan a rejected own-stream window with complete copy; validates overlap against retained clips")
     p.add_argument("--xml", default=None, help="Explicit original danmaku XML to bind when legacy topic metadata omitted it")

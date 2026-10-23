@@ -3,10 +3,12 @@ import { deferredSelectionRows, numberedDeferredRows } from './reviewSelectionHi
 
 type Data = Record<string, any>;
 /** A work index only. Durable IDs and every approval gate remain authoritative. */
-export function reviewAttentionLines(rows: Data[]): string[] {
+export function reviewAttentionLines(rows: Data[], metadata: Data = {}): string[] {
     const attention = rows.filter(row => !row.rejected && !/^(?:已投稿|已上传|已排队|正在上传|上传队列正在制作|已跳过|重复已跳过)/u.test(row.status));
     const changed = rows.filter(row => /当前资料待复核/u.test(row.status));
-    if (!attention.length && !changed.length) return ['本次无需人工处理成片；备选仅供按兴趣补切。'];
+    if (!attention.length && !changed.length) return [metadata.fatalError
+        ? '本批处理中断，候选统计和成片清单尚未确认完整；需先排查批次错误。'
+        : '本次无需人工处理成片；备选仅供按兴趣补切。'];
     return ['先处理这些编号（详情和对应原话在下方）:',
         ...[...attention, ...changed.map(row => ({ id: row.id, status: '已投稿资料有变动，请核对现有稿件' }))]
             .sort((a, b) => (a.id || Infinity) - (b.id || Infinity))
@@ -214,6 +216,18 @@ export function deferredReviewLines(metadata: Data, results: Data[] = [], option
 export function compactDiagnosticLines(metadata: Data): string[] {
     const status = metadata.aiStatus || {}, attribution = status.attribution || {}, values: string[] = [];
     const add = (phase: string, reason: unknown, fallback: string) => values.push(`${phase}：${shortChineseReason(reason, fallback)}`);
+    if (metadata.fatalError) {
+        // Keep the actionable error without credentials, URL parameters or a multiline stack.
+        const error = metadata.fatalError instanceof Error ? metadata.fatalError.message : String(metadata.fatalError);
+        const detail = short(error.split(/\r?\n/u)[0]
+            .replace(/https?:\/\/\S+/giu, '[链接已隐藏]')
+            .replace(/\b(Bearer|Basic)\s+[^\s"']+/giu, '$1 [redacted]')
+            .replace(/\b(api[_-]?key|authorization|access[_-]?token|token|password|secret)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, '$1=[redacted]')
+            .replace(/\bsk-[a-z0-9_-]+/giu, '[redacted]'), 200);
+        const reason = /Invalid ranked selection size/iu.test(detail)
+            ? '候选排序结果数量不合法' : shortChineseReason(detail, '处理未完成');
+        values.push(`批次处理：${reason}（原始错误：${detail}）`);
+    }
     for (const event of attribution.events || []) {
         const ids = (event.clipIds || []).map((id: string) => metadata.uploadRegistry?.clipIdsByReviewIndex?.[Number(String(id).replace(/^c/u, ''))]).filter(Boolean);
         add(`人物复核${ids.length ? `（编号${ids.join('、')}）` : ''}`, event.error || event.reason || event.status, '审核未完成');
@@ -227,6 +241,5 @@ export function compactDiagnosticLines(metadata: Data): string[] {
     const publication = metadata.automaticPublication;
     if (publication?.outcomeUnknown) values.push('自动入队：结果待确认，请以列表状态为准');
     if (publication?.error) add('自动入队', publication.error, '入队未完成');
-    if (metadata.fatalError) add('批次处理', metadata.fatalError, '处理未完成');
     return [...new Set(values)].slice(0, 4).map(value => `- ${value}`);
 }

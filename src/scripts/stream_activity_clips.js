@@ -9,7 +9,7 @@ function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
         const key = args[i];
-        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--review-audio', '--repair-timing', '--retry-publication', '--no-periodic', '--candidate'].includes(key)) options[key.slice(2)] = true;
+        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--review-audio', '--repair-timing', '--retry-publication', '--no-periodic', '--candidate', '--feedback-authorized'].includes(key)) options[key.slice(2)] = true;
         else if (/^--[a-z-]+$/u.test(key) && args[i + 1] && !args[i + 1].startsWith('--')) options[key.slice(2)] = args[++i];
         else throw new Error(`Unknown or incomplete argument: ${key}`);
     }
@@ -48,6 +48,7 @@ function songStatistics(root) {
 }
 async function main(argv = process.argv.slice(2)) {
     const { command, options } = parseArgs(argv);
+    if (options['feedback-authorized'] && command !== 'approve') throw new Error('--feedback-authorized supports explicit approve only');
     if (options.candidate && command !== 'watch-splits') throw new Error('--candidate supports local watch-splits previews only');
     if (command === 'watch-splits') {
         if (!options.media || !options.region || !options['output-dir'] || !options.start || !options.end) {
@@ -140,7 +141,7 @@ async function main(argv = process.argv.slice(2)) {
         if (!options.metadata || !options.note) throw new Error('approve requires --metadata and --note');
         const metadataPath = path.resolve(options.metadata);
         const approved = await execFileAsync('python', [path.join(__dirname, 'stream_activity_review.py'), '--metadata', metadataPath,
-            '--note', options.note], { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
+            '--note', options.note, ...(options['feedback-authorized'] ? ['--feedback-authorized'] : [])], { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
         console.log(approved.stdout.trim());
         const registered = await workflow.register(path.join(path.dirname(metadataPath), 'UPLOAD_MANIFEST.json'));
         if (options.enqueue) {
@@ -164,7 +165,7 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (command !== 'help') throw new Error(`Unknown command: ${command}`);
     console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--background] [--reuse-summary-only] [--no-notify] [--title-evidence <reviewed-names.json>] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--retry-publication --revision-note <note>] [--scan] [--room-id 25788785] [--no-register]\n'
-        + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--enqueue]\n'
+        + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--feedback-authorized] [--enqueue]\n'
         + 'activity:clips restyle --manifest <UPLOAD_MANIFEST.json> | --metadata <songs.json|watch.json> [--no-register]\n'
         + 'activity:clips stats --root <recording root>');
     console.log('activity:clips watch-splits --media <recording> --start <seconds> --end <seconds> --region <x,y,width,height 0..1> --output-dir <local directory> [--target-part-seconds 1500] [--max-part-seconds 1800] [--search-seconds 300] [--no-periodic] [--movie-part-seeds <two recording seconds>] [--candidate]\n'

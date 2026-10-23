@@ -169,6 +169,35 @@ describe('room-scoped subtitle proofreading', () => {
     expect(summarizeSubtitleProofreading(linked.segments, { start: 5, end: 9 }).automaticEdits).toHaveLength(0);
   });
 
+  test('global corrections reach plain and speaker SRT with evidence while room proofreading is disabled', () => {
+    const production = require('../../../config/production.json');
+    const source = [
+      { start: 8.649, end: 11, text: '然后就c几好像都赚了几十万了', speaker: 'Host' },
+      { start: 14.925, end: 16.212, text: '上播前看到一个切片是c几在那里', speaker: 'Host' },
+      { start: 20.539, end: 22.058, text: '谁跟陈荣说的c几赚了几十万', speaker: 'Host' }
+    ];
+    const result = asr.normalizeAsrResult({ backend: 'fixture', segments: source });
+    const options = { write_evidence: true, max_chars_per_line: 100,
+      corrections: asr.resolveAsrHotwords(production, { room_id: '23260993' }).corrections,
+      proofreading: resolveProofreadingOptions(production, { room_id: '23260993' }) };
+    expect(options.proofreading.enabled).toBe(false);
+    const file = path.join(directory, 'rhea.srt');
+    const baseline = path.join(directory, 'rhea-baseline.srt');
+    asr.writeSrt(result, baseline, { ...options, corrections: {} });
+    asr.writeSrt(result, file, options);
+    const speakerFile = asr.writeSpeakerReviewSrt(result, file, options);
+    const parsed = asr.parseSrt(file).segments;
+    expect(parsed.map(row => [row.start, row.end])).toEqual(asr.parseSrt(baseline).segments.map(row => [row.start, row.end]));
+    expect(parsed.map(row => row.text)).toEqual(source.map(row => row.text.replaceAll('c几', '岁己')));
+    expect(fs.readFileSync(speakerFile, 'utf8')).not.toContain('c几');
+    expect(fs.readFileSync(speakerFile, 'utf8')).toContain('[Host]');
+    const evidence = loadAsrEvidence(file, parsed);
+    expect(evidence.status).toBe('available');
+    expect(evidence.segments[0].asrEvidence).toMatchObject({ recognizedText: source[0].text,
+      correctedText: source[0].text.replaceAll('c几', '岁己'), aliasChanged: true });
+    expect(source[0].text).toContain('c几');
+  });
+
   test('preflight sees automatic normalization as provenance, not a user-verified edit', () => {
     const { buildPreflightEvidence, buildPreflightInput, buildPreflightPrompt } = require('../clipping/preflight_evidence');
     const evidence = buildPreflightEvidence([{ start: 0, end: 5, text: '打开WorkBuddy',

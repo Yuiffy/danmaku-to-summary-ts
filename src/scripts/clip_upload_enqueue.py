@@ -4,6 +4,52 @@ import argparse
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+
+def validate_saved_titles(api, registry, ids):
+    """A CLI recovery must not discard an operator's unresolved Web title choice.
+
+    Read only the latest explicitly selected/reset set; merely opening a new
+    evidence revision does not withdraw an earlier human choice. Never apply an
+    old choice to changed evidence here: the review workflow must resolve it.
+    """
+    for clip_id in ids:
+        file = Path(api.REGISTRY_PATH).parent / 'admin' / 'title-choices' / f'{clip_id}.json'
+        data = api.load_json(file, {'sets': []})
+        selected_sets = [item for item in data.get('sets', []) if item.get('history')]
+        if not selected_sets:
+            continue
+        latest = max(selected_sets, key=lambda item: item['history'][-1]['at'])
+        selection = latest.get('selection')
+        if selection is None:
+            continue
+        title = selection.get('title')
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f'ID{clip_id}: invalid saved Web title; refresh the title selection')
+        clip = registry['clips'][str(clip_id)]
+        metadata = api.load_json(Path(clip['metadataPath']), {}) if clip.get('metadataPath') else {}
+        prefix = clip.get('prefix') or ''
+
+        def normalized(value):
+            value = str(value or '').strip()
+            return value[len(prefix):] if prefix and value.startswith(prefix) else value
+
+        if any(normalized(value) != normalized(title) for value in
+               (clip.get('title'), (metadata.get('copy') or {}).get('title'))):
+            raise ValueError(f'ID{clip_id}: saved Web title has not been applied; use feedback-publish '
+                             'to apply/review the selected title, or explicitly reset the title selection')
+
+
+def saved_title_errors(api, clips):
+    # Manifest preflight also validates rows before numeric registry IDs exist.
+    clips = [clip for clip in clips if clip.get('id') is not None]
+    try:
+        validate_saved_titles(api, {'clips': {str(clip['id']): clip for clip in clips}},
+                              [clip['id'] for clip in clips])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return [str(error)]
+    return []
 
 
 def enqueue(args: argparse.Namespace, api) -> int:
@@ -25,6 +71,11 @@ def enqueue(args: argparse.Namespace, api) -> int:
     missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
     if missing:
         print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
+        return 2
+    try:
+        validate_saved_titles(api, registry, ids)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
         return 2
     held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("editorialExclusion") or (
             registry["clips"][str(clip_id)].get("reviewPending")
@@ -97,8 +148,10 @@ def enqueue(args: argparse.Namespace, api) -> int:
             print("[OK] requested IDs are already queued; no duplicate job created")
             return 0
         try:
+            validate_saved_titles(api, registry, ids)
             snapshots = api.clip_candidate_queue.approve_for_queue(api, registry, ids, args.note,
                 getattr(args, "expected_candidate_drafts", None))
+            validate_saved_titles(api, registry, ids)
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             print(f"[ERROR] {error}", file=sys.stderr)
             return 2

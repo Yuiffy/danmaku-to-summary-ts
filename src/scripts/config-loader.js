@@ -3,6 +3,9 @@ const path = require('path');
 const Joi = require('joi');
 const configLayers = require('./workflow-runtime').loadWorkflow('config/layers');
 const findSecretsPath = () => configLayers.findSecretsPath();
+const EditorialStylesSchema = Joi.object({ enabled: Joi.boolean(),
+    mode: Joi.string().valid('auto', 'ordinary', 'highlight_first', 'precision'), opManifest: Joi.string(),
+    opManifests: Joi.array().items(Joi.string().trim().min(1)).min(1).unique() });
 
 /**
  * 统一配置加载器
@@ -243,6 +246,7 @@ const ConfigSchema = Joi.object({
         fillerRegex: Joi.string().default('^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+')
     }).default(),
     clipTopics: Joi.object({
+        editorialStyles: EditorialStylesSchema,
         enabled: Joi.boolean().default(false),
         mode: Joi.string().default('local_review'),
         keywords: Joi.array().items(Joi.string()).default(['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI']),
@@ -349,6 +353,7 @@ const ConfigSchema = Joi.object({
             collection: Joi.object({ seasonId: Joi.number().integer().positive().allow(null), sectionId: Joi.number().integer().positive().allow(null) }) })).min(1).required()
     }).optional(),
     ownStreamClips: Joi.object({
+        editorialStyles: EditorialStylesSchema,
         enabled: Joi.boolean().default(false),
         mode: Joi.string().default('local_review'),
         roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),

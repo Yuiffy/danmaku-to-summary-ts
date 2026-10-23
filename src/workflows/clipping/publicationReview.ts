@@ -1,5 +1,6 @@
 import { SPEAKER_IDENTITY_RULE, voiceOnlyCopyIssues } from './speakerIdentity';
 import { parseModelJson } from '../text/json';
+import { EDITORIAL_REVIEW_RULE } from './editorialEvidence';
 import type { Artifact } from './enhancement';
 import type { Subtitle } from './editPlan';
 import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD, NARRATIVE_HOOK_STANDARD, KEYWORD_REFERENCE_STANDARD, SOURCE_SETTING_STANDARD, SPOKEN_QUOTE_STANDARD } from './reviewStandards';
@@ -14,7 +15,7 @@ export interface PublicationConfig {
     policyVersion?: string;
     scope?: 'configured_keywords'; enabled?: boolean; keywords?: string[]; ignoredRoomIds?: string[];
 }
-export interface PublicationDigests { video: string; subtitles: string; cover: string; copy: string; subtitleAudio?: string; timingAudio?: string; subtitleDiagnostic?: string }
+export interface PublicationDigests { video: string; subtitles: string; cover: string; copy: string; subtitleAudio?: string; timingAudio?: string; subtitleDiagnostic?: string; editorial?: string }
 /** Compatible with clipping/source_snapshot.js without importing a source CLI. */
 export interface PublicationSource {
     mediaPath: string; mediaBytes: string; mediaMtimeNs: string;
@@ -65,6 +66,7 @@ export interface PublicationReview {
     artifactWindow: { start: number; end: number; duration: number };
     roomId: string; reviewedAt: string; resolvedGroundingIssues: GroundingResolution[];
     topicEvidence?: Record<string, unknown>;
+    editorialTimeline?: unknown;
     subtitleAdvisoryEvidence?: unknown;
     resolvedSubtitleAdvisories?: SubtitleAdvisoryResolution[];
 }
@@ -360,6 +362,7 @@ function reviewPrompt(artifact: Artifact, input: PublicationInput, inspection: P
             excludedCategories: input.excludedCategories, sourceWindow: {
                 start: artifact.window.start, end: artifact.window.end, duration: artifact.window.duration },
             finalCopy: artifact.copy, completeSourceSpeechAndContext: input.speech, completeRetainedSubtitles: input.retainedSubtitles,
+            editorialTimeline: artifact.editorialTimeline || null, editorialRule: artifact.editorialTimeline ? EDITORIAL_REVIEW_RULE : null,
             sourceAudience: input.audience || [], editPlan: artifact.editPlan || null, creativePlan: artifact.creativePlan || null,
             grounding: artifact.grounding || null, attributionReview: artifact.attributionReview || null,
             qaResult: artifact.qaResult || null, audioQa: artifact.audioQa || null,
@@ -403,7 +406,8 @@ export async function reviewPublication(artifact: Artifact, input: PublicationIn
                 roomId: String(input.roomId), reviewedAt: input.now, resolvedGroundingIssues: resolutions,
                 ...(subtitleResolutions.length ? { resolvedSubtitleAdvisories: subtitleResolutions,
                     subtitleAdvisoryEvidence: JSON.parse(JSON.stringify(artifact.subtitleProofreading)) } : {}),
-                ...(topicEvidence ? { topicEvidence } : {}) },
+                ...(topicEvidence ? { topicEvidence } : {}),
+                ...(artifact.editorialTimeline ? { editorialTimeline: JSON.parse(JSON.stringify(artifact.editorialTimeline)) } : {}) },
             publicationDecision: { version: 1, action, reasons: status === 'passed' && input.config.mode === 'shadow' ? ['shadow_mode'] : reasons,
                 policyVersion } };
     };

@@ -2,6 +2,35 @@ export {};
 const fs=require('fs'),os=require('os'),path=require('path');
 const { produceOwnClips }=require('./own_production');
 
+test.each([false, true])('three-mode production defers legacy enhancements and never publishes baselines early (%s)', async streaming => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'styles-own-'));
+    const sourceMedia = path.join(directory, 'source.mp4'), sourceSrt = path.join(directory, 'source.srt');
+    fs.writeFileSync(sourceMedia, 'source'); fs.writeFileSync(sourceSrt, 'source');
+    const events: string[] = [], clips = [{ start: 0, end: 30, title: '片段' }];
+    const context = { clips, options: { mediaPath: sourceMedia, srtPath: sourceSrt }, outputRoot: directory,
+        info: { roomId: '25788785' }, parsed: { segments: [] }, danmaku: [], evidence: { sourceSha256: 'source', cues: [] },
+        diagnostics: {}, metadata: { aiStatus: {} }, rootConfig: {},
+        topic: { resolveFfprobePath: () => 'ffprobe' },
+        config: { streamReviewRendering: streaming, clipConcurrency: 1, clipResourceAdaptive: { enabled: false },
+            editorialStyles: { enabled: true, mode: 'ordinary' },
+            enhancements: { enabled: true, roomIds: ['25788785'], workflow: 'creative', experiment: { enabled: true } } } };
+    const hooks = { review: async (batch, options) => {
+        if (options?.onBatchReviewed) await options.onBatchReviewed(batch.map((clip, index) => ({ clip, index }))); return batch;
+    }, prepare: jest.fn(), ordinaryReady: jest.fn(), enhance: jest.fn(), stats: () => ({}), render: async (clip, index, execution) => {
+        expect(execution.deferEnhancement).toBe(true); events.push('baseline');
+        const row = { window: { index: index + 1, ...clip }, uploadReady: true, copy: { title: clip.title },
+            output: { metadataPath: path.join(directory, 'clip.json'), mediaPath: path.join(directory, 'clip.mp4'),
+                srtPath: path.join(directory, 'clip.srt'), burnedSubtitles: true } };
+        fs.writeFileSync(row.output.metadataPath, JSON.stringify(row)); fs.writeFileSync(row.output.mediaPath, 'video'); fs.writeFileSync(row.output.srtPath, 'subtitles');
+        await execution.finishMedia(false); return row;
+    } };
+    try {
+        const result = await produceOwnClips(context, hooks);
+        expect(events).toEqual(['baseline']); expect(result.results[0].style).toBe('ordinary');
+        expect(hooks.prepare).not.toHaveBeenCalled(); expect(hooks.enhance).not.toHaveBeenCalled(); expect(hooks.ordinaryReady).not.toHaveBeenCalled();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test.each([false,true])('source content review precedes all media work, including incremental batches (%s)',async streaming=>{
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'source-before-render-'));
     const mediaPath=path.join(directory,'source.mp4'),srtPath=path.join(directory,'source.srt');

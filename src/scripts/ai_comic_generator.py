@@ -1227,6 +1227,7 @@ def format_live_generation_context(context: Optional[Dict[str, Any]]) -> str:
     if content_hints:
         lines.append("- 主播内容歧义提示（只用于解释本场已经出现的词句，不得主动补写）：")
         lines.extend(f"  - {hint}" for hint in content_hints)
+    lines.append(comic_identity.itinerary_prompt(context))
     discovery = context.get("participantDiscovery")
     if isinstance(discovery, dict):
         lines.append("【本场参与者线索】候选/计划不是到场证明；到场证明也不能代替逐句声纹身份。")

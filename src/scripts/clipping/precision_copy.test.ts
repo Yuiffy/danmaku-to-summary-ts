@@ -14,7 +14,8 @@ function fixture() {
 test('discloses rendered effects on the final timeline including sound offsets and full music coverage', () => {
     const metadata = fixture();
     const copy = publicationCopy(metadata);
-    expect(copy.title).toBe('【小岁】驾驶反转（AI精切）');
+    expect(copy.title).toBe('【小岁】驾驶反转');
+    expect(publicationCopy(metadata, { ...copy, title: copy.title + '（AI精切）' }).title).toBe(copy.title);
     expect(copy.description).toContain('原有内容与来源');
     expect(copy.description).toContain('删减 5 秒，成片 30 秒');
     expect(copy.description).toContain('00:00.00-00:30.00 添加 BGM');
@@ -43,7 +44,7 @@ test('refuses fallback, failed audio, missing plans, invented timing and overflo
         { audioQa: { status: 'failed' } }, { creativePlan: null }]) {
         expect(() => publicationCopy({ ...metadata, ...change })).toThrow();
     }
-    expect(() => publicationCopy(metadata, { title: '长'.repeat(80), description: '' })).toThrow(/80-character/);
+    expect(() => publicationCopy(metadata, { title: '长'.repeat(81), description: '' })).toThrow(/80-character/);
     expect(() => publicationCopy(metadata, { title: '标题', description: '长'.repeat(2000) })).toThrow(/2000-character/);
     const unknown = { ...metadata, audioQa: null, creativePlan: { ...metadata.creativePlan,
         effects: [{ start: 29, end: 30, sound: { id: 'new_laugh' } }] } };

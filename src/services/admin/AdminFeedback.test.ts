@@ -116,6 +116,42 @@ it('uses explicit feedback acceptance for an existing video without rerendering 
   expect(f.planner).not.toHaveBeenCalled();
 });
 
+it.each(['planner', 'agent'])('prepares missing public copy before a bare publish request using the %s', async mode => {
+  const plan = { description: '讨论美甲建构', coverText: '美甲建构' };
+  const complete = jest.fn<ReturnType<FeedbackCompletion>, Parameters<FeedbackCompletion>>()
+    .mockImplementationOnce(async messages => {
+      expect(messages[0].content).toContain('缺失文案须根据当前片内证据补齐，保留已有标题和范围');
+      return agentCall('inspect_clip');
+    })
+    .mockResolvedValueOnce(agentCall('revise_and_review', { plan }))
+    .mockResolvedValueOnce(agentCall('enqueue_submission'));
+  const f = fixture(plan, mode === 'agent' ? complete : undefined, true);
+  const metadata = readJson(f.metadataPath), registry = readJson(f.registryPath);
+  metadata.copy.description = ''; metadata.copy.coverText = '';
+  registry.clips['3354'].description = '';
+  atomicJson(f.metadataPath, metadata); atomicJson(f.registryPath, registry);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining([
+    '--title', '美甲建构', '--description', plan.description, '--cover-text', plan.coverText, '--feedback-authorized'
+  ]));
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded', note: '投', plan });
+  expect(f.clips.detail('3354').title).toBe('美甲建构');
+  if (mode === 'agent') expect(complete).toHaveBeenCalledTimes(3);
+  else expect(f.planner).toHaveBeenCalledTimes(1);
+});
+
+it('uses directly supplied missing copy without model planning for a bare publish request', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath), registry = readJson(f.registryPath);
+  metadata.copy.description = ''; metadata.copy.coverText = ''; registry.clips['3354'].description = '';
+  atomicJson(f.metadataPath, metadata); atomicJson(f.registryPath, registry);
+  f.feedback.submit('3354', { ...f.input('投'), description: '讨论美甲建构', coverText: '美甲建构' });
+  await f.jobs.flush();
+  expect(f.planner).not.toHaveBeenCalled();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'enqueue']);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
 it('applies the requested changes before feedback-authorized rendering and enqueues without AI gating', async () => {
   const f = fixture({ title: '用户指定的新标题', corrections: [{ from: '建功', to: '建构' }] }, undefined, true);
   f.feedback.submit('3354', f.input()); await f.jobs.flush();
@@ -128,11 +164,29 @@ it('applies the requested changes before feedback-authorized rendering and enque
 });
 
 it('does not enqueue after feedback-authorized media creation fails', async () => {
-  const f = fixture({ title: '用户指定标题' }, undefined, true), original = f.run.getMockImplementation()!;
+  const f = fixture({ title: '用户指定标题', corrections: [{ from: '建功', to: '建构' }] }, undefined, true), original = f.run.getMockImplementation()!;
   f.run.mockImplementation(async (command, output) => command.action === 'cut' ? 2 : original(command, output));
-  f.feedback.submit('3354', f.input('按这个标题投')); await f.jobs.flush();
-  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut']);
+  f.feedback.submit('3354', f.input()); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'correct', 'cut']);
   expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('failed');
+});
+
+it('applies an explicit title to an existing highlight-first video without rebuilding its source window', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  metadata.editorialStyle = { selected: 'highlight_first', status: 'completed' };
+  metadata.window = { start: 10, end: 12, duration: 5.2 };
+  atomicJson(f.metadataPath, metadata);
+  const original = f.run.getMockImplementation()!;
+  f.run.mockImplementation(async (command, output) => {
+    if (command.action === 'rebuild') { output('Clip subtitles exceed the source window'); return 2; }
+    return original(command, output);
+  });
+  f.feedback.submit('3354', { ...f.input('投'), title: '用户手写的新标题' }); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['--title', '用户手写的新标题', '--feedback-authorized']));
+  expect(f.clips.detail('3354').title).toBe('用户手写的新标题');
+  expect(readJson(f.metadataPath).window.duration).toBe(5.2);
 });
 
 it('recovers source context for a rejected candidate whose formal window was lost', async () => {
@@ -306,6 +360,19 @@ it('repairs song boundaries through the fixed source CLI, then reviews before en
 it('reads rendered copy without sending an empty coverText to human review', () => {
   const f = fixture();
   expect(f.clips.detail('3354')).toMatchObject({ title: '美甲建构', description: '讨论建构', coverText: '建构不是贱狗' });
+});
+
+it('forwards direct feedback publication acceptance to the dedicated activity CLI', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  Object.assign(metadata, { type: 'stream_activity_submission', kind: 'songs',
+    source: { mediaPath: metadata.output.mediaPath, srtPath: f.srt },
+    activities: [{ id: 'activity-1', kind: 'song', start: 0, end: 2 }] });
+  atomicJson(f.metadataPath, metadata);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['approve', '--feedback-authorized', '--note', '投']));
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.planner).not.toHaveBeenCalled();
 });
 
 it('treats a short publication request as automatic review and keeps old holds for the final checker', async () => {

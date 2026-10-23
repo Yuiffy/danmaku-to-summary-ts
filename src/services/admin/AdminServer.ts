@@ -16,6 +16,8 @@ import { AdminFeedback } from './AdminFeedback';
 import { AdminCoverPreview } from './AdminCoverPreview';
 import { coverSelection } from '../../core/admin/cover';
 import { AdminTitles } from './AdminTitles';
+import { AdminBilibiliLogin } from './AdminBilibiliLogin';
+import { AdminCommentReplies } from './AdminCommentReplies';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -26,6 +28,8 @@ export interface AdminAdapters {
   feedback?: AdminFeedback;
   covers?: AdminCoverPreview;
   titles?: AdminTitles;
+  bilibiliLogin?: AdminBilibiliLogin;
+  commentReplies?: AdminCommentReplies;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -40,6 +44,28 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.use(express.json({ limit: '1mb' }));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  app.get('/comment-replies', (req, res) => {
+    if (!adapters.commentReplies) throw new AdminError('评论记录未配置', 503);
+    res.json(adapters.commentReplies.view(req.query));
+  });
+  app.route('/bilibili/login').get(loginRoute).post(loginRoute);
+  async function loginRoute(req: express.Request, res: express.Response) {
+    if (!adapters.bilibiliLogin) throw new AdminError('登录恢复未配置', 503);
+    if (Buffer.byteLength(JSON.stringify(req.body || {})) > 65536) throw new AdminError('登录信息过长', 413);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 25000);
+    const disconnect = () => { if (!res.writableEnded) controller.abort(); };
+    res.once('close', disconnect);
+    try {
+      const result = req.method === 'GET' ? await adapters.bilibiliLogin.status(controller.signal)
+        : await adapters.bilibiliLogin.save(req.body, controller.signal);
+      if (!res.destroyed) res.json(result);
+    } catch (error) {
+      if (!res.destroyed) {
+        if (controller.signal.aborted) res.status(504).json({ error: '登录检查超时，请重新检查状态后再操作' });
+        else throw error;
+      }
+    } finally { clearTimeout(timer); res.off('close', disconnect); }
+  }
   app.get('/questions/rooms', async (_req, res) => {
     try { res.json({ rooms: await adapters.queries?.rooms() || [] }); }
     catch { res.status(503).json({ error: '录播问答未配置或配置无效，请检查直播机器人配置' }); }

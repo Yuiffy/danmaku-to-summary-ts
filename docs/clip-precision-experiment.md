@@ -1,7 +1,100 @@
 # 精剪流程与实验模式
 
-岁己日常精切使用 `ownStreamClips.enhancements.workflow: "creative"`，每次整场选片最多选一条做精剪，
-普通切片先交付。`roomIds` 仍限定岁己房间；原停顿删减可显式切回 `pacing`，多版包装实验为 `legacy_packaging`。
+## 三种切片模式与重点前置
+
+切片先分为 `ordinary`（普通）、`highlight_first`（重点前置）、`precision`（精切）。
+普通保留现有完整切片；重点前置是 **2–20 秒重点 → 鹿饼 OP → 正文**；精切沿用下文
+故事删减、视觉强调及独立 QA。重点前置不要求精切；三种模式共用现有最终审核与投稿权限。
+
+自动本场切片和关键词切片共用 `editorialStyles`，分别配置在 `ownStreamClips` 和
+`clipTopics` 下：
+
+```json
+"editorialStyles": {
+  "enabled": true,
+  "mode": "auto",
+  "opManifests": [
+    "public/branding/shikamochi/OP-sad-v1.json",
+    "public/branding/shikamochi/OP-watch-v1.json"
+  ]
+}
+```
+
+`auto` 按每条已完成普通版的完整字幕选择普通、前置或精切，不按固定比例凑数。
+`ordinary`、`highlight_first`、`precision` 可固定模式；工作台「配置」中两个分组都提供
+对应选择框。每个新录播任务重新读取配置，同一任务的全部阶段共用该配置快照；常驻后台
+切片 worker 缓存 workflow release，代码部署时须在队列空闲后重启
+`background-clip-queue-runner`，不能以验证命令代替重启。
+生产配置启用自动三选一，开发默认关闭。它优先于旧的 enhancement 实验抽样（包括活动
+`all_eligible`）；关闭后保留旧行为。未通过选材、人物或关键词前置审核的底版不进入制作。
+
+两路均先生成普通版，三模式制作结束后才登记及最终审核。普通无需重编码；精切调用共享
+`creative_runner` 的故事、画面、音轨及 QA；关键词仍必须通过自己的 preflight 和关键词
+投稿策略。前置生成独立目录，保留底版的来源、关键词证据、人物证据和文案，重新绑定成片
+摘要，清除旧 QA/投稿审核，检查完整成片、OP 与接缝后才能按已有授权入队。模式选择、
+前置渲染或精切失败保留普通版，在 `editorialStyle` 中记录失败，不把回退称为精切成功。
+
+`window.start/end` 仍是原录播素材窗；`window.duration` 为最终成片时长，前置同时保留
+`sourceWindow`。`editorialTimeline` 保存片段映射、OP 录播来源、字幕及六份输入摘要。
+最终审核和上传 worker 均绑定该时间轴及输入文件，OP 原话不能成为当前房间事件的证据。
+
+统一的本地操作入口如下，中文模式名也可使用：
+
+```powershell
+# 普通：检查并返回现有底版，不重编码
+npm run clips:style -- --mode 普通 --metadata "D:\clips\clip.json"
+# 重点前置：根据底版字幕，调用现有 selection 模型给出源视频哈希绑定的选段建议
+npm run clips:style -- --mode 重点前置 --metadata "D:\clips\clip.json" --draft --output "temp/my-task/hook.json"
+# 检查建议后合成；输出目录必须不存在，保留每次审核版本
+npm run clips:style -- --mode 重点前置 --metadata "D:\clips\clip.json" --plan "temp/my-task/hook.json" --output "D:\clips\highlight-first-v1"
+# 精切：转交现有数字 ID 精切入口；无上传行为
+npm run clips:style -- --mode 精切 --id 123 --note "制作精切供审核"
+```
+
+新安装或代码变更后先运行 `npm run build:workflows` 准备候选依赖；本命令不会激活生产
+workflow。`--draft` 使用 `ownStreamClips.enhancements.stageDefaults`、`stages.selection`
+和原有 budget/ledger；缺少模型、额度或 room/session scope 时直接报错。它仅建议重点，
+不能证明原音边界、语境或最终审核已通过。也可手写经原音核对的计划：
+
+```json
+{
+  "version": 1,
+  "highlights": [{ "start": 25.3, "end": 30.2 }, { "start": 60.0, "end": 65.8 }],
+  "repetition": "auto",
+  "reason": "先展示两处反转，正文补全起因和解释"
+}
+```
+
+所有时间均是 **已渲染底版的本地秒数**，精切底版也使用其渲染后时间轴，不能填写原录播绝对
+时间。选段必须按时间排序、互不重叠、包含字幕证据，且不能从字幕句子中间切入或切出。
+`--draft` 绑定底版媒体 SHA-256，底版改变必须重新选段。AI 建议与手写计划都重新校验。
+
+- `auto`：重点是从 0 秒起无间断的连续开场时，正文从重点结束处接上，避免重复。
+- 从后文或多处抽取重点时，正文从 0 秒完整保留，补全预告的上下文和解释。
+- `keep` 可显式保留开场重复；`omit_prefix` 只能用于连续开场，禁止删除正文中散落的重点。
+
+底版必须已有烧录字幕；组合直接使用底版画面与原音，OP 按底版比例适配，保持字幕大小与词句。
+输出重排后的 SRT（含预告、OP、正文三段），新媒体、`editorialTimeline`、输入哈希和 `REVIEW.md`。
+独立本地命令的新 metadata 的 `style` 为 `highlight_first`，状态是 `pending_review`、`uploadReady: false`，
+不继承底版审核/投稿记录，不自动登记、通知或入上传队列。渲染失败写 `FAILED.json`，不会生成
+成功 metadata。底版和已投稿视频都不修改；发布重排版仍是独立任务。
+
+两路前置每条成片从 `opManifests` 等概率随机选一次：`OP-sad-v1.json` 为
+“鹿饼伤心了／鹿饼根本就没心”（3.20 秒），`OP-watch-v1.json` 为
+“鹿饼的切片你都要看”（约 3.27 秒）。数组必须非空且路径不重复；优先于旧单值
+`opManifest`。未配置数组时保留旧单值及 `public/branding/shikamochi/OP.json` 默认回退。
+本地命令也读取该池，显式 `--op <OP.json>` 可固定版本。抽选后审核及上传仅使用时间轴
+绑定的具体清单，不会再次抽选；既有成片和旧版约 6.49 秒 OP 文件保持可审核。
+资产均为 1080p/30 fps、H.264/AAC，包含账号头像、岁己原声、烧录字幕和对应 SRT。
+清单使用相对媒体/SRT 路径及 SHA-256，保留头像来源、直播日期和原录播选段秒数；替换资产必须
+同步更新清单，不能用同名文件静默覆盖已绑定的 OP。音频是实际录播摘录，装饰文字不作为台词。
+成片审核应检查预告是否完整、原话语境、两处 OP 接缝、字幕时间轴及正文重复策略。
+
+关闭三模式时，旧实验使用 `ownStreamClips.enhancements.workflow: "creative"`，默认每次整场选片最多选一条做精剪，
+普通切片先交付。`roomIds` 默认限定岁己房间；限时活动可用 `ownStreamClips.campaigns` 的房间策略开启
+`enhancements.selectionMode: "all_eligible"`，将已通过筛选及人物审核的候选全部精切，
+不改变其他房间的一条上限，也不放宽成片 QA。配置合同见 [活动策略](post-stream-residual-audit.md#限时活动的房间策略)。
+原停顿删减可显式切回 `pacing`，多版包装实验为 `legacy_packaging`。
 没有适合的内容或精切检查不通过时保留普通版。已有成片和投稿不会自动重做。
 日常默认 `creative.style: "compact"`：先判断内容类型与语气，再安排删减、原地放大和视听表达。
 `accent` 保留旧的连续时间轴轻效果流程。
@@ -13,6 +106,8 @@
 代码中的共享流程用于全批自动精选与按编号重渲染，不能只在临时脚本中保留用户认可的编辑做法。
 
 已回退为普通版的自有直播片可按原数字 ID 单独重跑：
+恢复入口按原片房间与录制日期解析活动精切设置，沿用活动期素材校验；
+不能使用全局日常房间列表误拒活动房间，也不因此给旧编号自动投稿权限。
 
 ```powershell
 python src/scripts/clip_upload_registry.py precision --id 123 --note "修复后重新制作精切供查看"
@@ -120,7 +215,7 @@ python src/scripts/clip_upload_registry.py precision --id 123 --avatar-mode circ
 
 `replace-precision --id ... --revision ... --review-note ...` 发布已确认的新版本到该编号原有 BV。
 `--dry-run` 只验证；实际替换保存用户授权和版本摘要，验证通过的 AI／音频审核与原素材后才上传新文件并编辑。
-标题沿用线上内容并追加 `（AI精切）`，简介保留线上正文、来源与时间，再附上程序生成的精切说明。
+标题沿用线上内容，不追加 `（AI精切）`；历史程序后缀在生成精切文案时移除。简介保留线上正文、来源与时间，再附上程序生成的精切说明。
 说明直接读取最终 `creativePlan` 和实际音轨审核中的区间，按成片进度列出 BGM、头像/人物/细节放大、
 原大小人脸保留窗、后期贴图、滤镜及罐头笑声/提示音效。笑声时间包含节点内延迟，结束时间不超过成片长度；
 被移除的 BGM、音效或滤镜不会列出。重复执行不会重复追加；不再调用 AI 写说明。
@@ -357,7 +452,7 @@ FFmpeg 的 [sidechaincompress](https://ffmpeg.org/ffmpeg-filters.html#sidechainc
 - 列表发送后另发“精切实验模式详情”，使用同一上传 ID，汇总理由、删减秒数、用量、耗时和质检结果。过长消息沿用企微的字节上限拆分。
 - 没有精切时仍另发“本批精切 0 条”，区分无符合条件的候选、批次不足、请求失败和 AI 主动未选。刷新审核通知时，去重摘要同时覆盖列表与精切详情。
 - 视频简介含 `【精切实验模式】`，并区分实际多段剪辑与保留连续时间轴。标注在最终质检及内容摘要绑定之前生成，不添加 token/费用明细。
-- 成功的创意精切与实际删减的节奏精切在标题末尾追加 `（AI精切）`；回退普通版不追加。
+- 创意精切与节奏精切的标题均不追加 `（AI精切）`，精切信息只在简介中说明。
   创意精切简介末尾附 `【AI精切说明】`，时间从成片起点计，明确音乐、罐头笑声和贴图为后期添加。
   制作说明由最终渲染记录生成，事实归属审核继续核对原文案，完整文案仍绑定成片质检摘要。
 - 逐片 JSON 的 `enhancement.baseline` 保留普通版媒体、字幕、封面及文案；`editPlan.removed` 保留实际删除区间。未选择的普通条目不触发逐片增强请求。
@@ -446,6 +541,8 @@ R-ID 时，程序直接单向扩展再复核，最多两次定点补边；该阶
 不能缩窗、猜编号或恢复原计划中的 drop 段。新增必要原话成为必留证据；扩窗边界用于提供
 素材和检查上下文，不要求成片保留边缘的新话题，否则会不断要求补完下一话题。
 审核的结构化问题对象会完整序列化保存与展示，不能显示为 `[object Object]` 或丢掉位置和原话。
+结构化问题（含已序列化的历史问题）内显式给出的 `requiredSourceCueIds` 与顶层编号合并去重，
+直接进入真实原字幕校验和扩窗，不再额外调用模型重新猜测已知编号；普通文字里的 R-ID 不自动提取。
 
 原有 keep 段和文案／人物引用仍按原绝对时间保护；旧结尾的原话保护止于原选材最后源字幕，不能机械延长
 到整个新素材窗。原普通版已确认的字词按时间绑定回源字幕，新增范围取源字幕；边缘原字幕

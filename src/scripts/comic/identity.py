@@ -4,6 +4,17 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+def itinerary_prompt(context):
+    """Private historical background cannot create an appeared character."""
+    memory = context.get('itineraryMemory') or {}
+    if not isinstance(memory, dict) or not memory.get('plans'):
+        return ''
+    return ('【跨场行程候选】以下仅为历史计划，不证明本场到场、连麦或逐句说话人；'
+            '仅在本场明确互动/画面/声纹支持时使用对应人物。不能将未来旅行画成本场经历，'
+            '不能因同住或计划会面就把对方加入图片，不公开酒店或私人行程。\n'
+            + str(memory.get('prompt') or ''))
+
+
 def validated_recording_discovery(discovery, highlight_path, room_id, context=None):
     """Accept metadata only for the adjacent recording and a known session time.
 

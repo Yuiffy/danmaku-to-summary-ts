@@ -97,4 +97,33 @@ describe('participant discovery reaches ASR and reply context', () => {
       expect(request.participantDiscovery.binding.sourceMediaPath).toBe(path.resolve(media));
     } finally { dynamicFetch.mockRestore(); vision.mockRestore(); }
   });
+
+  it('learns a cross-room dynamic before ASR and passes candidates through source-bound reply context', async () => {
+    const memoryConfig = { ...config, ai: { ...config.ai, itineraryMemory: {
+      enabled: true, scope: 'selected', streamerIds: ['host', 'guest'], directory: path.join(dir, 'memory')
+    } } };
+    const media = path.join(dir, filename + '.flv'); fs.writeFileSync(media, 'media');
+    const fetchDynamics = jest.spyOn(live, 'fetchRecentDynamics').mockImplementation(async (_c: any, room: any) => ({
+      status: 'success', dynamics: String(room) === '2'
+        ? [{ id: 'cross', publishTime: '2026-09-11T20:00:00+08:00', content: '明天房主和嘉宾在上海见面' }] : []
+    }));
+    const provider = jest.fn(async () => ({ text: JSON.stringify({ plans: [{ event: '上海会面', kind: 'meeting',
+      participants: ['host', 'guest'], startDay: '2026-09-12', endDay: '2026-09-12', status: 'planned', location: '上海',
+      citations: [{ id: 'Pcross', quote: '明天房主和嘉宾在上海见面' }] }] }) }));
+    try {
+      const discovered = await collection.prepareParticipantDiscovery(media, memoryConfig, {
+        title: '普通杂谈', durationSeconds: 3600, generateItinerary: provider
+      });
+      expect(discovered.participants.find((p: any) => p.streamerId === 'guest')).toMatchObject({
+        presence: 'historical_plan_only', status: 'candidate', planned: false
+      });
+      expect(collection.mergeDiscoveryRequest(null, discovered).rosterStreamerIds).toContain('guest');
+      expect(discovered.confirmedParticipantIds).toEqual([]);
+      const srt = path.join(dir, filename + '.srt'); fs.writeFileSync(srt, '');
+      const result = await live.prepareLiveGenerationContext(path.join(dir, filename + '_AI_HIGHLIGHT.txt'), '1', memoryConfig, { srtPath: srt });
+      expect(result.context.itineraryMemory.candidateIds).toEqual(['guest']);
+      expect(live.formatLiveGenerationContext(result.context)).toContain('跨直播间行程候选');
+      expect(provider).toHaveBeenCalledTimes(1);
+    } finally { fetchDynamics.mockRestore(); }
+  });
 });

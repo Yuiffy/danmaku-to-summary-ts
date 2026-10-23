@@ -1,4 +1,4 @@
-import { bindTranscriptTitles, namedEvents, songDate, songTitle, songSubmissionTitle, songCoverSubject,
+import { bindTranscriptTitles, namedEvents, songDate, songTitle, songSubmissionTitle, songSubmissionTags, songCoverSubject,
   watchTitleAppears, recoverWatchNames, recoverSongNames, watchCoverSubject, watchSubmissionTitle } from './activityTitles';
 
 test('titles use verified song names and the recording date without zero padding', () => {
@@ -11,6 +11,15 @@ test('titles use verified song names and the recording date without zero padding
 test('covers keep the first three distinct names visible and do not invent an unknown name', () => {
   expect(songCoverSubject([{ name: '泡泡' }, { name: '泡泡' }, { name: null }])).toBe('泡泡\n待确认歌名');
   expect(songCoverSubject([{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }])).toBe('A\nB\nC');
+});
+
+test('song tags keep distinct complete names in performance order before generic labels', () => {
+  expect(songSubmissionTags([{ name: ' 泡泡 ' }, { name: "Don't Look Back in Anger" }, { name: '泡泡' }, { name: null }, { name: ' ' }, { name: '待确认歌名' }],
+    ['岁己', '泡泡', '歌切'])).toEqual(['泡泡', "Don't Look Back in Anger", '岁己', '歌切']);
+  const parts = Array.from({ length: 11 }, (_, i) => ({ name: `歌曲${i + 1}` }));
+  expect(songSubmissionTags(parts.slice(0, 8), ['岁己', '小岁', '歌切', '虚拟主播']))
+    .toEqual([...parts.slice(0, 8).map(p => p.name), '岁己', '小岁']);
+  expect(songSubmissionTags(parts, ['岁己', '歌切'])).toEqual(parts.slice(0, 10).map(p => p.name));
 });
 
 test('multiple reviewed names bind source transcript rows and cannot borrow another performance title', () => {

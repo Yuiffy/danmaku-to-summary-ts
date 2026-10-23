@@ -781,6 +781,45 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
         self.assertTrue(saved_queue["jobs"][-1]["allowDuplicateTitle"])
 
+    def test_saved_web_title_blocks_recovery_enqueue_and_worker_until_applied_or_reset(self):
+        fixture = self.make_fixture(count=1)
+        fixture['runtime'].mkdir(parents=True)
+        clip = fixture['clips'][0]
+        metadata_path = fixture['root'] / 'clip.json'
+        clip['metadataPath'] = str(metadata_path)
+        registry.save_json(metadata_path, {'copy': {'title': clip['title']}})
+        registry.save_json(fixture['registry_path'], fixture['registry'])
+        choices_path = fixture['runtime'] / 'admin/title-choices/1.json'
+        choices_path.parent.mkdir(parents=True)
+        chosen = {'selection': {'title': '用户手写的新标题'},
+                  'history': [{'at': '2026-01-01T01:00:00.000Z'}]}
+        # A later read/refresh of changed evidence must not silently cancel intent.
+        choices = {'sets': [chosen, {'selection': None, 'history': []}]}
+        registry.save_json(choices_path, choices)
+        args = type('Args', (), {'ids': '1', 'force': True, 'dry_run': False,
+                                'delay': 0, 'rate_limit_wait': 30, 'rate_limit_retries': 1,
+                                'note': 'recover failed Web feedback'})()
+        with patch.object(registry, 'RUNTIME_DIR', fixture['runtime']), patch.object(
+            registry, 'REGISTRY_PATH', fixture['registry_path']
+        ), patch.object(registry, 'QUEUE_PATH', fixture['queue_path']):
+            self.assertEqual(registry.enqueue(args), 2)
+            self.assertFalse(fixture['queue_path'].exists())
+            self.assertEqual(registry.load_json(fixture['registry_path'], {}), fixture['registry'])
+            self.assertTrue(any('saved Web title' in error for error in registry.validate_groups([[clip]])))
+            # Changing only the registry cannot conceal an old title in uploader metadata.
+            clip['title'] = '用户手写的新标题'
+            self.assertTrue(any('saved Web title' in error for error in registry.validate_groups([[clip]])))
+            registry.save_json(metadata_path, {'copy': {'title': '【小岁】用户手写的新标题'}})
+            self.assertEqual(registry.validate_groups([[clip]]), [])
+            registry.save_json(fixture['registry_path'], fixture['registry'])
+            self.assertEqual(registry.enqueue(args), 0)
+            self.assertEqual(len(registry.load_json(fixture['queue_path'], {})['jobs']), 1)
+            # An explicit reset is a new decision, unlike a fresh unselected set.
+            choices['sets'].append({'selection': None, 'history': [{'at': '2026-01-01T02:00:00.000Z'}]})
+            registry.save_json(choices_path, choices)
+            clip['title'] = '另一个经过审核的标题'
+            self.assertEqual(registry.validate_groups([[clip]]), [])
+
     def test_editorial_exclusion_cancels_only_selected_ids_and_blocks_force(self):
         fixture = self.make_fixture(count=2)
         fixture["runtime"].mkdir(parents=True, exist_ok=True)

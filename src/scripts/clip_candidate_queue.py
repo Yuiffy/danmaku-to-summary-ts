@@ -205,6 +205,7 @@ def prepare_rebuild(args, api):
             "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml", "transcript_record")}
         options["allow_long"] = "yes" if args.allow_long else None
         options["allow_short"] = "yes" if getattr(args, "allow_short", False) else None
+        options["ordinary"] = "yes" if getattr(args, "ordinary", False) else None
         options["replan"] = "yes" if getattr(args, "replan", False) else None
         options["feedback_authorized"] = "yes" if getattr(args, "feedback_authorized", False) else None
         result = candidate_action(api, clip, "prepare", options, timeout=120)

@@ -42,7 +42,10 @@ async function selectExperimentBatch(clips, parsed, config, rootConfig, info, op
     }
     const { buildExperimentSelection, parseExperimentSelection, assignExperiment } = loadWorkflow('clipping/experiment');
     const creative = settings.workflow === 'creative';
-    const packet = buildExperimentSelection(clips, parsed.segments, creative ? { ratio: 1, maxClips: Math.min(1, settings.experiment.maxClips) } : settings.experiment, buildSubtitleEvidence(parsed.segments).sourceSha256);
+    const allEligible = creative && settings.selectionMode === 'all_eligible';
+    const packet = buildExperimentSelection(clips, parsed.segments, creative
+        ? { ratio: 1, maxClips: allEligible ? clips.length : Math.min(1, settings.experiment.maxClips) }
+        : settings.experiment, buildSubtitleEvidence(parsed.segments).sourceSha256);
     if (creative) packet.prompt = packet.prompt.replace('conservative pacing edits or stronger factual title/cover packaging',
         settings.creative?.style === 'compact'
             ? 'content-aware precision editing: preserve gameplay actions, conversation context, tutorial steps or continuous performance as appropriate; remove only redundant complete exchanges, emphasize the actual subject or text in place, and use music/laughter only when the tone supports it; titles stay unchanged'
@@ -57,6 +60,12 @@ async function selectExperimentBatch(clips, parsed, config, rootConfig, info, op
     if (!packet.maxSelected || !packet.eligibleIds.length) {
         summary.reason = !packet.maxSelected ? 'batch_below_minimum' : 'no_eligible_candidates';
         return { clips: assignExperiment(clips, packet, []), summary };
+    }
+    if (allEligible) {
+        const choices = packet.eligibleIds.map(id => ({ id, reason: '已配置全部合格入选片精切；后续故事、画面、音轨和成片审核仍须通过' }));
+        return { clips: assignExperiment(clips, packet, choices), summary: {
+            ...summary, selected: choices, status: 'selected', reason: 'configured_all_eligible'
+        } };
     }
     const stageConfig = { ...settings.stageDefaults, ...settings.stages?.selection,
         retry: { ...settings.stageDefaults?.retry, ...settings.stages?.selection?.retry } };

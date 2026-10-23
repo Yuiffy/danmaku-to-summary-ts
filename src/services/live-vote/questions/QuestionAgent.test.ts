@@ -42,6 +42,59 @@ it('follows search and context tools, returning a citation verified against loca
   expect(turns[0].messages[1].content).toBe(JSON.stringify({ untrustedQuestion: request.question }));
 });
 
+it('locates an event then searches the entire anchored multipart session for a distant detail', async () => {
+  const base = '2024_10_01_00_50_09_秋日';
+  await fs.writeFile(path.join(fixture, `${base}_1_fix.srt`), '1\n00:26:48,000 --> 00:26:51,000\n昨天去体检了\n');
+  await fs.writeFile(path.join(fixture, `${base}_3_fix.srt`), '1\n02:21:12,000 --> 02:21:15,000\n体检是普通的身高体重，没有报具体身高\n');
+  await fs.writeFile(path.join(fixture, '2024_10_01_18_00_00_其他场_1_fix.srt'), '1\n00:00:01,000 --> 00:00:03,000\n开玩笑身高一米八\n');
+  const signal = new AbortController().signal;
+  let turn = 0;
+  const result = await runQuestionAgent({ ...request, question: '体检有没有测身高' }, signal, new RecordingEvidence([fixture], signal), async input => {
+    if (++turn === 1) return { content: null, tool_calls: [tool('search_recordings', { terms: ['昨天去体检'], kind: 'subtitle', date: null, query: '去体检的经历', withinEvidenceId: null })] };
+    const hits = latestEvidence(input).hits;
+    if (turn === 2) return { content: JSON.stringify({ action: 'search', rankedEvidenceIds: [hits[0].evidenceId], search: {
+      terms: ['身高'], kind: 'subtitle', date: null, query: '体检测量项目', withinEvidenceId: hits[0].evidenceId
+    } }) };
+    expect(hits).toHaveLength(1);
+    expect(hits[0].excerpt).toContain('普通的身高体重');
+    return answer({ answer: '提到普通的身高体重项目，未找到具体身高数值。', shortAnswer: '提到身高项目，未报数值。', rankedEvidenceIds: [hits[0].evidenceId], evidenceIds: [hits[0].evidenceId] });
+  });
+  expect(turn).toBe(3);
+  expect(result.source).toMatchObject({ date: '2024-10-01', time: '02:21:12' });
+  expect(result.clues?.[0].excerpt).toContain('普通的身高体重');
+});
+
+it('preserves a supported transition interval with citations to both dated states without a fallback', async () => {
+  await fs.writeFile(path.join(fixture, '2025-11-24.srt'), '1\n00:21:55,000 --> 00:21:59,000\n我现在没有每天洗澡。\n');
+  await fs.writeFile(path.join(fixture, '2025-12-05.srt'), '1\n00:05:20,000 --> 00:05:24,000\n我现在就是每天洗澡呀。\n');
+  const signal = new AbortController().signal, steps: QuestionAgentStep[] = [];
+  const complete = jest.fn<ReturnType<AgentComplete>, Parameters<AgentComplete>>()
+    .mockImplementationOnce(async input => {
+      expect(input.messages[0].content).toContain('查找不同日期的前后状态');
+      return { content: null, tool_calls: [tool('search_recordings', { terms: ['每天洗澡'], kind: 'subtitle', date: '2025' })] };
+    })
+    .mockImplementationOnce(async input => {
+      const review = input.messages.at(-1)?.content;
+      expect(review).toContain('引用两端证据');
+      expect(review).toContain('只有一端时只答');
+      expect(review).toContain('不能据此声称穷尽历史');
+      const hits = latestEvidence(input).hits;
+      const ids = ['2025-11-24', '2025-12-05'].map(date => hits.find((hit: { date: string }) => hit.date === date).evidenceId);
+      return answer({ answer: '据前后自述推定，在2025-11-24至12-05之间开始每天洗澡，不能确定具体哪一天。',
+        shortAnswer: '据记录推定：2025-11-24至12-05间。', rankedEvidenceIds: ids, evidenceIds: ids });
+    });
+  const result = await runQuestionAgent({ ...request, question: '什么时候开始每天洗澡？' }, signal,
+    new RecordingEvidence([fixture], signal), complete, step => steps.push(step));
+  expect(result.answer).toContain('2025-11-24至12-05之间');
+  expect(result.shortAnswer).toBe('据记录推定：2025-11-24至12-05间。');
+  expect(result.clues).toEqual([
+    expect.objectContaining({ date: '2025-11-24', excerpt: '我现在没有每天洗澡。' }),
+    expect.objectContaining({ date: '2025-12-05', excerpt: '我现在就是每天洗澡呀。' })
+  ]);
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(steps.some(step => step.contextFallback)).toBe(false);
+});
+
 it('anchors relative dates to the request in Shanghai and can answer directly from inline context', async () => {
   const signal = new AbortController().signal;
   const steps: QuestionAgentStep[] = [];
@@ -77,6 +130,86 @@ it('records failed model steps without putting provider errors into timing diagn
   expect(JSON.stringify(observe.mock.calls)).not.toContain('provider-private-error');
 });
 
+it('replans a failed listing instead of accepting a no-evidence verdict, then reads the recordings', async () => {
+  await fs.writeFile(path.join(fixture, '2026-10-01.srt'), '1\n00:06:02,000 --> 00:06:05,000\n大家晚上好，能听到吗？\n');
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const observe = jest.fn(), list = jest.spyOn(evidence, 'list');
+  const listing = { collection: 'recordings', kind: 'subtitle', date: '2026-10', offset: 0, limit: 7,
+    preview: 'head', cuesPerRecording: 8 };
+  const complete = jest.fn<ReturnType<AgentComplete>, Parameters<AgentComplete>>()
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool('list_recordings', { ...listing, date: '2026-10-01/2026-10-07' })] })
+    .mockImplementationOnce(async input => {
+      expect(latestEvidence(input)).toMatchObject({ code: 'invalid_arguments' });
+      return { content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) };
+    })
+    .mockImplementationOnce(async input => {
+      expect(input.messages.some(message => message.role === 'system' && message.content?.includes('上次是工具失败'))).toBe(true);
+      return { content: JSON.stringify({ action: 'tool', rankedEvidenceIds: [], tool: { name: 'list_recordings', arguments: listing } }) };
+    })
+    .mockImplementationOnce(async input => {
+      expect(latestEvidence(input).recordings[0].preview[0].excerpt).toContain('晚上好');
+      return answer({ answer: '已读样本在录制约6分钟出现开场问候，实际开播起点未核实。', shortAnswer: '已读样本约6分钟出现问候。' });
+    });
+  const result = await runQuestionAgent({ ...request, askedAt: Date.UTC(2026, 9, 8, 12), question: '之前7天的开播OP时长多少（开播多久后开始说话）' }, signal, evidence, complete, observe);
+  expect(result.source?.time).toBe('00:06:02');
+  expect(list).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ phase: 'list_recordings', status: 'failed', toolIssue: 'invalid_arguments' }));
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ validationIssue: 'tool_failure_not_absence' }));
+});
+
+it('reports retrieval failure when listing cannot recover, without logging private adapter errors', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  jest.spyOn(evidence, 'list').mockRejectedValue(new Error('private-path-and-provider-secret'));
+  const observe = jest.fn();
+  const complete = jest.fn<ReturnType<AgentComplete>, Parameters<AgentComplete>>()
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool('list_recordings', {
+      collection: 'recordings', kind: 'subtitle', date: null, offset: 0, limit: 7, preview: 'head', cuesPerRecording: 8
+    })] })
+    .mockImplementation(async input => {
+      expect(JSON.stringify(latestEvidence(input))).not.toContain('private-path-and-provider-secret');
+      return { content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) };
+    });
+  await expect(runQuestionAgent(request, signal, evidence, complete, observe)).rejects.toThrow('Question evidence retrieval failed');
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(JSON.stringify(observe.mock.calls)).not.toContain('private-path-and-provider-secret');
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ phase: 'list_recordings', toolIssue: 'unavailable' }));
+});
+
+it('still returns no evidence after a successful empty listing', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [tool('list_recordings', {
+    collection: 'recordings', kind: 'subtitle', date: '2025-01', offset: 0, limit: 7, preview: 'head', cuesPerRecording: 8
+  })] }).mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) });
+  expect(await runQuestionAgent(request, signal, evidence, complete)).toEqual({ answer: NO_EVIDENCE });
+  expect(complete).toHaveBeenCalledTimes(2);
+});
+
+it('replans one limited search before accepting an empty ranking as no evidence', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const search = jest.spyOn(evidence, 'search');
+  search.mockResolvedValueOnce({ hits: [], limited: true });
+  const complete = jest.fn<ReturnType<AgentComplete>, Parameters<AgentComplete>>()
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool()] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) })
+    .mockImplementationOnce(async input => {
+      expect(input.messages.some(message => message.role === 'system' && message.content?.includes('覆盖受限'))).toBe(true);
+      return { content: JSON.stringify({ action: 'search', rankedEvidenceIds: [], search: {
+        terms: ['法环'], kind: 'subtitle', date: null
+      } }) };
+    }).mockResolvedValueOnce(answer());
+  expect((await runQuestionAgent(request, signal, evidence, complete)).answer).toBe('玩过法环。');
+  expect(search).toHaveBeenCalledTimes(2);
+});
+
+it('bounds replanning when a limited search still provides no relevant evidence', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  jest.spyOn(evidence, 'search').mockResolvedValue({ hits: [], limited: true });
+  const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [tool()] })
+    .mockResolvedValue({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) });
+  expect(await runQuestionAgent(request, signal, evidence, complete)).toEqual({ answer: NO_EVIDENCE });
+  expect(complete).toHaveBeenCalledTimes(3);
+});
+
 it('can answer general questions in one model turn without searching recordings', async () => {
   const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
   const search = jest.spyOn(evidence, 'search');
@@ -85,7 +218,36 @@ it('can answer general questions in one model turn without searching recordings'
   expect(result).toMatchObject({ basis: 'general', answer: 'CPU用内存运行模型。' });
   expect(search).not.toHaveBeenCalled();
   expect(complete).toHaveBeenCalledTimes(1);
-  expect(await runQuestionAgent(request, signal, evidence, complete)).toEqual({ answer: NO_EVIDENCE });
+  await expect(runQuestionAgent(request, signal, evidence, complete)).rejects.toThrow('planning validation failed');
+});
+
+it('replans an unsupported no-tool conclusion before reporting an evidence result', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const observe = jest.fn(), search = jest.spyOn(evidence, 'search');
+  const complete = jest.fn().mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient' }) })
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool()] }).mockResolvedValueOnce(answer());
+  expect((await runQuestionAgent({ ...request, question: '找到岁己的黑点吐槽她一下' }, signal, evidence, complete, observe)).source).toBeDefined();
+  expect(search).toHaveBeenCalledTimes(1);
+  expect(complete.mock.calls[1][0]).toMatchObject({ phase: 'plan', toolChoice: 'required' });
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ validationIssue: 'evidence_not_requested' }));
+});
+
+it('replies to a named warm-message request without searching or dropping the answer', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const search = jest.spyOn(evidence, 'search');
+  const complete = jest.fn().mockResolvedValue({ content: JSON.stringify({ action: 'general',
+    answer: '岁己，愿你今晚被温柔以待，累了就好好休息。', shortAnswer: '岁己，愿你今晚被温柔以待。' }) });
+  expect((await runQuestionAgent({ ...request, question: '发点温情的话温暖岁己' }, signal, evidence, complete)).basis).toBe('general');
+  expect(search).not.toHaveBeenCalled();
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+it('can still give a warm message after an unnecessary search finds nothing', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [tool('search_recordings', { terms: ['温情'], kind: 'all', date: null })] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'general', answer: '岁己，愿你今晚被温柔以待。', shortAnswer: '岁己，愿你今晚被温柔以待。' }) });
+  expect((await runQuestionAgent({ ...request, question: '发点温情的话温暖岁己' }, signal, evidence, complete)).basis).toBe('general');
+  expect(complete).toHaveBeenCalledTimes(2);
 });
 
 it('uses the recent tool and still validates the final citations', async () => {
@@ -251,7 +413,7 @@ it('pins daiYu/gpt-6-luna, keeps credentials outside context, prevents redirects
   const body = JSON.parse(options.body);
   expect(body).toMatchObject({ model: 'gpt-6-luna', tool_choice: 'required', parallel_tool_calls: false, max_tokens: 2048 });
   expect(options.body).not.toContain('provider-secret');
-  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent']);
+  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent', 'list_recordings', 'read_recordings', 'aggregate_evidence']);
   transport.mockRejectedValue(new Error('provider-secret raw private response'));
   await expect(complete(input, new AbortController().signal)).rejects.toThrow(/^daiYu question request failed$/u);
   expect(() => questionProviderSettings({ ai: { text: { daiYu: { apiKey: 'x', baseUrl: 'http://external.example/v1' } } } })).toThrow('HTTPS');

@@ -117,7 +117,9 @@ class PrecisionPublicationTests(unittest.TestCase):
                 'effects': [{'start': 2, 'end': 6, 'sound': {'id': 'sitcom_laugh', 'offsetSeconds': 3}}]},
             'audioQa': {'status': 'passed', 'effects': [{'id': 'sitcom_laugh', 'start': 5, 'end': 7.6}]}}
         result = precision_public_copy(metadata, {'title': '【小岁】标题', 'description': '线上原有来源'})
-        self.assertEqual(result['title'], '【小岁】标题（AI精切）')
+        self.assertEqual(result['title'], '【小岁】标题')
+        legacy = precision_public_copy(metadata, {'title': '【小岁】标题（AI精切）', 'description': result['description']})
+        self.assertEqual(legacy, result)
         self.assertIn('线上原有来源', result['description'])
         self.assertIn('00:05.00-00:07.60 后期罐头笑声', result['description'])
 

@@ -56,9 +56,11 @@ export class LiveQuestionSession {
     }
     while (this.hourlyStarts.length && now - this.hourlyStarts[0] >= 3600000) this.hourlyStarts.shift();
     for (const [uid, at] of this.users) if (now - at >= this.limits.userCooldownMs) this.users.delete(uid);
-    if (now - this.lastStartedAt < this.limits.globalCooldownMs ||
+    // Trusted configuration grants frequency exemption only after authorization and scope checks.
+    const unlimited = this.config.unlimitedUids?.includes(message.uid) === true;
+    if (!unlimited && (now - this.lastStartedAt < this.limits.globalCooldownMs ||
         now - (this.users.get(message.uid) ?? -Infinity) < this.limits.userCooldownMs ||
-        this.hourlyStarts.length >= this.limits.maxQuestionsPerHour) {
+        this.hourlyStarts.length >= this.limits.maxQuestionsPerHour)) {
       notice('查询频率较高，请稍后再问。');
       return true;
     }
@@ -67,9 +69,11 @@ export class LiveQuestionSession {
       controller: new AbortController(), valid: true, isRoomCurrent
     };
     this.active = task; // Acquire synchronously before invoking asynchronous adapters.
-    this.lastStartedAt = now;
-    this.users.set(message.uid, now);
-    this.hourlyStarts.push(now);
+    if (!unlimited) {
+      this.lastStartedAt = now;
+      this.users.set(message.uid, now);
+      this.hourlyStarts.push(now);
+    }
     const current = () => !this.stopped && task.valid && task.isRoomCurrent();
     this.announce(task.request.roomId, receivedQuestionMessage(question, this.maxChars), current);
     const timeout = setTimeout(() => {

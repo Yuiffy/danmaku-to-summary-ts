@@ -96,6 +96,7 @@ export function bundleCommand(id: string, body: any, category: 'activity' | 'gam
       if (body.titleEvidencePath) args.push('--title-evidence', text(body, 'titleEvidencePath'));
       if (body.contentName) args.push('--content-name', text(body, 'contentName', 300), '--evidence-frame', text(body, 'evidenceFrame'), '--evidence-note', text(body, 'note', 1000));
     }
+    if (action === 'approve-review' && category === 'activity' && body.feedbackAuthorized === true) args.push('--feedback-authorized');
     return { executable: 'node', args, action, target: id };
   }
   throw new AdminError('完整投稿包使用专用审核流程；普通改词和精剪不适用');

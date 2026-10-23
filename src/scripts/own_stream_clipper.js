@@ -52,136 +52,7 @@ const {
     buildFullContextSource
 } = fullLiveContext;
 
-const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
-    enabled: false,
-    mode: 'local_review',
-    roomIds: [],
-    windowSeconds: 110,
-    prePaddingSeconds: 18,
-    postPaddingSeconds: 26,
-    mergeGapSeconds: 45,
-    // Local signal window construction only; AI selections use complete source-backed topics.
-    maxClipSeconds: 210,
-    minClipSeconds: 35,
-    maxCandidates: 80,
-    maxClips: 50,
-    chunkSeconds: 2700,
-    aiConcurrency: 3,
-    clipConcurrency: 2,
-    enhancementConcurrency: 3,
-    clipFfmpegThreads: 2,
-    clipResourceAdaptive: {
-        enabled: true,
-        busyConcurrency: 1,
-        busyFfmpegThreads: 1,
-        pollIntervalMs: 3000,
-        busyCpuPercentThreshold: 70,
-        busyGpuUtilizationThreshold: 35,
-        foregroundGpuUtilizationThreshold: 20,
-        externalGpuActivityThreshold: 25,
-        busySamples: 2,
-        idleSamples: 3
-    },
-    maxSubtitleCharsPerChunk: 14000,
-    chunkOverlapSeconds: 30,
-    enhancements: { enabled: false, roomIds: [], editing: false },
-    maxDanmakuLinesPerChunk: 220,
-    fullContextDanmakuMergeWindowSeconds: 30,
-    avoidOverlappingClips: true,
-    finalOverlapToleranceSeconds: 0,
-    alignBoundaries: true,
-    boundaryStartBacktrackSeconds: 12,
-    boundaryEndExtendSeconds: 35,
-    boundarySilenceGapSeconds: 2.0,
-    boundaryTrailingSilenceLookbackSeconds: 14,
-    densityWindowSeconds: 30,
-    densityPercentile: 0.2,
-    minDanmakuCount: 12,
-    burnSubtitles: true,
-    twoStageSubtitleBurn: true,
-    twoStageMode: 'copy',
-    twoStagePreRollSeconds: 8,
-    twoStagePostRollSeconds: 2,
-    subtitleVideoEncoder: 'h264_nvenc',
-    subtitleVideoPreset: 'p4',
-    subtitleVideoCrf: 23,
-    subtitleVideoCq: 23,
-    subtitleHwaccel: 'cuda',
-    subtitleFontSizeRatio: 0.094,
-    subtitlePortraitFontSizeRatio: 0.044,
-    outputDirName: 'own_stream_fun_clips',
-    ai: {
-        enabled: true,
-        strategy: 'staged',
-        model: null,
-        timeoutMs: 600000,
-        rerankTimeoutMs: 1200000,
-        rerankMaxAttempts: 2,
-        maxCandidateLines: 100,
-        recallMaxClipsPerChunk: 12,
-        maxCandidateSubtitleChars: 520,
-        maxCandidateDanmakuLines: 14,
-        fallbackToLocalRules: true
-    },
-    parallel: {
-        enabled: false,
-        danmakuHeatClips: 6,
-        modelClips: 12,
-        dedupeAcrossSources: true,
-        overlapToleranceSeconds: 12,
-        preferModelOnOverlap: true
-    },
-    emotionScoring: {
-        enabled: true,
-        minCandidateScore: 20,
-        transitionScore: 20,
-        maxContextLines: 160,
-        emotionScores: {
-            SURPRISE: 38,
-            FEAR: 36,
-            SAD: 32,
-            DISGUST: 32,
-            CONTEMPT: 26,
-            ANGRY: 14,
-            HAPPY: 6,
-            NEUTRAL: 0
-        },
-        eventScores: {
-            Cry: 44,
-            Laughter: 34,
-            Applause: 28,
-            Sneeze: 8,
-            BGM: 0,
-            Speech: 0
-        }
-    },
-    selectionPolicy: {
-        requireTimeCoverage: false,
-        excludedCategories: [],
-        priorityCategories: []
-    },
-    residualAudit: {
-        enabled: false,
-        reviewOnly: true,
-        windowSeconds: 90,
-        stepSeconds: 45,
-        maxCandidates: 12
-    },
-    notify: {
-        enabled: true
-    },
-    reactionKeywords: [
-        '哈哈', '笑死', '绷不住', '乐', '可爱', '好可爱', '太可爱', '萌',
-        '傻', '笨', '呆', '憨', '逆天', '怪', '特别', '天才', '神人',
-        '啊？', '？', '草', '什么东西', '怎么会', '小岁'
-    ],
-    subtitleKeywords: [
-        '我觉得', '我的想法', '我认为', '为什么', '但是', '不对',
-        '好奇怪', '好像', '我刚刚', '我忘了', '我傻', '笨蛋', '完蛋',
-        '怎么办', '不是', '等一下', '等下'
-    ]
-};
-
+const { DEFAULT_OWN_STREAM_CLIPS_CONFIG, getOwnStreamClipsConfig } = require('./clipping/own_config');
 const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案、简介和理由不得把一方的发言或行为归给另一方。';
 const CUE_BOUNDARY_PROMPT_LINES = [
     'startCueId 要包含起因与铺垫，不能直接从笑点中间开始；endCueId 要包含解释、后续反应和完整收束。',
@@ -214,64 +85,6 @@ function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI'
     ];
 }
 
-function getOwnStreamClipsConfig(config = {}, roomId = null) {
-    const raw = config.ownStreamClips || {};
-    return {
-        ...DEFAULT_OWN_STREAM_CLIPS_CONFIG,
-        ...raw,
-        reactionKeywords: Array.isArray(raw.reactionKeywords)
-            ? raw.reactionKeywords
-            : DEFAULT_OWN_STREAM_CLIPS_CONFIG.reactionKeywords,
-        subtitleKeywords: Array.isArray(raw.subtitleKeywords)
-            ? raw.subtitleKeywords
-            : DEFAULT_OWN_STREAM_CLIPS_CONFIG.subtitleKeywords,
-        roomIds: Array.isArray(raw.roomIds)
-            ? raw.roomIds.map(value => String(value)).filter(Boolean)
-            : DEFAULT_OWN_STREAM_CLIPS_CONFIG.roomIds,
-        ai: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.ai,
-            ...(raw.ai || {})
-        },
-        parallel: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.parallel,
-            ...(raw.parallel || {})
-        },
-        clipResourceAdaptive: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.clipResourceAdaptive,
-            ...(raw.clipResourceAdaptive || {})
-        },
-        emotionScoring: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring,
-            ...(raw.emotionScoring || {}),
-            emotionScores: {
-                ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring.emotionScores,
-                ...(raw.emotionScoring?.emotionScores || {})
-            },
-            eventScores: {
-                ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring.eventScores,
-                ...(raw.emotionScoring?.eventScores || {})
-            }
-        },
-        selectionPolicy: require('./clipping/selection_policy').resolveSelectionPolicy({
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy,
-            ...(raw.selectionPolicy || {}),
-            excludedCategories: Array.isArray(raw.selectionPolicy?.excludedCategories)
-                ? raw.selectionPolicy.excludedCategories
-                : DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy.excludedCategories,
-            priorityCategories: Array.isArray(raw.selectionPolicy?.priorityCategories)
-                ? raw.selectionPolicy.priorityCategories
-                : DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy.priorityCategories
-        }, roomId),
-        residualAudit: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.residualAudit,
-            ...(raw.residualAudit || {})
-        },
-        notify: {
-            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.notify,
-            ...(raw.notify || {})
-        }
-    };
-}
 
 function buildCutClipMediaConfig(config = {}, options = {}) {
     return {
@@ -422,10 +235,11 @@ function buildClipDescription({ streamerName, streamTitle, recordedAt, start, en
     return lines.join('\n');
 }
 
-function buildClipTags(config, roomId, streamerName) {
+function buildClipTags(config, roomId, streamerName, clipConfig = getOwnStreamClipsConfig(config, roomId)) {
     const registryTags = topicClipper.resolveStreamerTags(config || {}, roomId);
     const tags = Array.from(new Set([
         ...registryTags,
+        ...(clipConfig.uploadTags || []),
         ...(String(roomId || '') === '25788785' ? ['小岁', '岁AI切片'] : []),
         streamerName,
         '虚拟主播',
@@ -1410,7 +1224,7 @@ async function generateOwnStreamClipJob(context) {
             description: clip.description,
             emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
         }),
-        tags: buildClipTags(options.config || {}, info.roomId, streamerName)
+        tags: buildClipTags(options.config || {}, info.roomId, streamerName, config)
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
     const copy = { ...rawCopy, ...processedCopy };
@@ -1573,7 +1387,7 @@ async function finishOwnStreamClipJob(metadata, { clip, config, info, parsed, da
 async function generateOwnStreamClipsInternal(options = {}) {
     const rootConfig = options.config || {};
     const recordingInfo = parseRecordingInfo(options.mediaPath, options.context || {});
-    const config = getOwnStreamClipsConfig(rootConfig, recordingInfo.roomId);
+    const config = getOwnStreamClipsConfig(rootConfig, recordingInfo.roomId, recordingInfo.recordedAt, Date.now(), Boolean(options.planPath));
     const hasContentExclusions = config.selectionPolicy.excludedCategories.length > 0;
     const clipConcurrency = Math.max(
         1,
@@ -1587,7 +1401,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         ...config,
         clipFfmpegThreads
     };
-    if (!config.enabled) return [];
+    if (!config.enabled || !require('./workflow-runtime').loadWorkflow('clipping/ownCampaign').admitCampaignContent(config, { ...options, roomId: recordingInfo.roomId })) return [];
     if (!options.mediaPath || !fs.existsSync(options.mediaPath)) {
         throw new Error(`mediaPath not found: ${options.mediaPath || ''}`);
     }
@@ -1817,7 +1631,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
-    const publication = publicationPolicy.selectPublication(clips, {
+    const publication = publicationPolicy.selectPublication(require('../core/media/RecordingCoverage.ts').filterCampaignCoverage(clips, options.mediaPath), {
         ...config.publicationPolicy, ...(options.publicationMode ? { mode: options.publicationMode } : {})
     }, info.roomId);
     clips = publication.clips;
@@ -1837,7 +1651,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         && !options.planPath ? require('./workflow-runtime').loadWorkflow('clipping/publicationRuntime') : null;
     if (publicationRuntime) reviewMetadata.automaticPublication = { enabled: true, mode: 'auto' };
     const production = await require('./clipping/own_production').produceOwnClips({ clips, options, config, rootConfig,
-        parsed, danmaku, evidence: finalEvidence, info, outputRoot, diagnostics: aiDiagnostics, metadata: reviewMetadata }, {
+        parsed, danmaku, evidence: finalEvidence, info, outputRoot, diagnostics: aiDiagnostics, metadata: reviewMetadata, topic: topicClipper }, {
         review: (batch, hooks) => reviewClipActors(batch, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics, hooks),
         prepare: (batch, batchOptions) => require('./clipping/enhancement_runner').selectExperimentBatch(batch, parsed, config, rootConfig, info, batchOptions),
         replan: (candidate, feedback) => refineCandidatesWithAI([candidate], parsed, danmaku, info,

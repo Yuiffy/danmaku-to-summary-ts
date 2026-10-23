@@ -38,7 +38,7 @@ const token=${JSON.stringify(token)},byId=id=>document.getElementById(id),form=b
 let controller;
 function element(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el}
 function appendQuestion(text,room){const node=element('div',room+' · '+text,'message question');messages.append(node)}
-function evidence(parent,clue){const row=element('div',undefined,'clue');const kind=clue.kind==='gift-catalog'?'舰礼档案 · 礼物所属月 '+clue.catalogMonth:clue.kind==='subtitle'?'录像字幕':'观众弹幕';row.append(element('time',(clue.roomName||clue.roomId||'')+' · '+(clue.date||'日期不详')+' '+clue.time+' · '+kind));row.append(element('div',clue.excerpt));parent.append(row)}
+function evidence(parent,clue){const row=element('div',undefined,'clue');const kind=clue.kind==='gift-catalog'?'舰礼档案 · 礼物所属月 '+clue.catalogMonth:clue.kind==='subtitle'?'录像字幕':clue.kind==='highlight'?'精选摘要（粗略线索）':clue.kind==='clip-subtitle'?'切片字幕（切片内时间）':'观众弹幕';row.append(element('time',(clue.roomName||clue.roomId||'')+' · '+(clue.date||'日期不详')+' '+clue.time+' · '+kind));row.append(element('div',clue.excerpt));parent.append(row)}
 function finish(){controller=undefined;byId('send').disabled=false;byId('cancel').hidden=true;byId('room').disabled=false;byId('clear').disabled=false;byId('status').textContent='每次独立检索 · 最长等待 90 秒';}
 document.querySelectorAll('[name=mode]').forEach(input=>input.addEventListener('change',()=>{byId('search-options').hidden=document.querySelector('[name=mode]:checked').value!=='search'}));
 document.querySelectorAll('.examples button').forEach(button=>button.addEventListener('click',()=>{byId('question').value=button.textContent;byId('question').focus()}));

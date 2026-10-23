@@ -16,11 +16,12 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
   }
   const endpoint = url.pathname.slice('/api/admin'.length);
   const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/actions)?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
-  if (!allowed.test(endpoint)) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  if (!allowed.test(endpoint) && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies') return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  if (endpoint === '/comment-replies' && request.method !== 'GET') return NextResponse.json({ error: '评论记录仅可读取' }, { status: 405 });
   let body: string | undefined;
   if (!['GET', 'HEAD'].includes(request.method)) {
     body = await request.text();
-    if (Buffer.byteLength(body) > 1024 * 1024) return NextResponse.json({ error: '请求内容过大' }, { status: 413 });
+    if (Buffer.byteLength(body) > (endpoint === '/bilibili/login' ? 65536 : 1024 * 1024)) return NextResponse.json({ error: '请求内容过大' }, { status: 413 });
     try { if (body) JSON.parse(body); } catch { return NextResponse.json({ error: '请求 JSON 无效' }, { status: 400 }); }
   }
   try {

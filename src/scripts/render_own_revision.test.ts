@@ -52,6 +52,21 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test('an explicit ordinary rebuild removes inserted OP cues and stale editorial mappings under the same ID', async () => {
+    metadata.style = 'highlight_first';
+    metadata.editorialStyle = { selected: 'highlight_first' };
+    metadata.editorialTimeline = { pieces: [{ kind: 'op' }, { kind: 'body' }] };
+    fs.writeFileSync(metadata.output.srtPath, '1\n00:00:00,000 --> 00:00:03,000\nBrand OP\n'); save();
+    await expect(updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config))
+      .rejects.toThrow('requires --ordinary');
+    await updateRevision(file, { ...options, action: 'prepare', ordinary: 'yes', sourceKind: 'live_speech' }, config);
+    expect(load()).toMatchObject({ uploadId: 7, style: 'ordinary', rebuildRequired: true,
+      window: { start: 1, end: 61 }, renderedSubtitles: { cues: [{ start: 0, end: 60, text: 'Hello world' }] } });
+    expect(load().editorialTimeline).toBeUndefined(); expect(load().editorialStyle).toBeUndefined();
+    expect(fs.readFileSync(metadata.output.srtPath, 'utf8')).toContain('Brand OP');
+    expect(render).not.toHaveBeenCalled();
+  });
+
   test('a partial keyword result with complete burned artifacts can prepare and correct a revision', async () => {
     metadata.mode = 'local_review'; metadata.publicationKind = 'keyword_topic'; metadata.status = 'partial';
     metadata.aiReview = { sourceSha256: metadata.grounding.sourceSha256 };
@@ -158,6 +173,19 @@ describe('own-stream subtitle revisions', () => {
     expect(final).toHaveBeenCalledTimes(1);
     expect(load()).toMatchObject({ uploadId: 7, publicationReview: { status } });
     expect(load().ownStreamHumanReview).toBeUndefined();
+  });
+
+  test('an explicit rebuilt window does not reuse diagnostics from the previous window', async () => {
+    metadata.automaticSubtitleRepairAttempt = { status: 'inconclusive', evidencePath: 'old-window/audio.json' };
+    metadata.automaticSubtitleRepairError = 'old diagnostic failure';
+    save();
+    const before = fs.readFileSync(file, 'utf8');
+    await updateRevision(file, { ...options, action: 'prepare', start: 2, end: 70, sourceKind: 'live_speech' }, config);
+    expect(load().automaticSubtitleRepairAttempt).toBeUndefined();
+    expect(load().automaticSubtitleRepairError).toBeUndefined();
+    expect(load().rebuildRequired).toBe(true);
+    const history = path.join(directory, 'subtitle_revisions', '7', 'history');
+    expect(fs.readdirSync(history).map(name => fs.readFileSync(path.join(history, name), 'utf8'))).toContain(before);
   });
 
   test('literal corrections preserve old artifacts, cue times, ID and revision history', async () => {

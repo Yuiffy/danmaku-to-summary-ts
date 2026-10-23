@@ -1,6 +1,6 @@
 'use strict';
 const path = require('path');
-const { sha } = require('./stream_activity_plan');
+const { sha, getActivityConfig } = require('./stream_activity_plan');
 const VERSION = 2;
 const WATCH_VERSION = 4;
 const titleStage = () => require('../workflow-runtime').loadWorkflow('clipping/activityTitles');
@@ -10,7 +10,7 @@ const PROFILES = Object.freeze({
     watch: { prefix: '【岁己同步视听】', label: '同步视听', style: 'cinema_session', edition: 'WATCH ALONG' }
 });
 
-function presentationFor(plan, kind, renderedParts, titleEvidence = null) {
+function presentationFor(plan, kind, renderedParts, titleEvidence = null, baseTags = null) {
     const profile = PROFILES[kind];
     if (!profile) throw new Error(`Unknown activity presentation kind: ${kind}`);
     let events = plan.events.filter(event => event.kind === (kind === 'songs' ? 'song' : 'watch'));
@@ -44,10 +44,12 @@ function presentationFor(plan, kind, renderedParts, titleEvidence = null) {
         ...(kind === 'songs' ? { caption: parts.length > 1 ? `直播演唱 · 共 ${parts.length} 首`
             : events[0]?.performance === 'fragment' ? '片段演唱' : '直播演唱' } : {}),
         streamerName: plan.streamerName, parts: parts.length };
-    const signature = sha({ cover, copy, ...(publicNames ? { publicNames } : {}), ...(titleEvidence ? { titleEvidence } : {}),
+    const tags = kind === 'songs' ? titleStage().songSubmissionTags(parts, baseTags || getActivityConfig().songs.tags)
+        : watchStage().WATCH_PUBLIC_TAGS;
+    const signature = sha({ cover, copy, ...(kind === 'songs' ? { tags } : {}), ...(publicNames ? { publicNames } : {}), ...(titleEvidence ? { titleEvidence } : {}),
         parts: parts.map(part => ({ sha256: part.sha256, title: part.title })) });
-    return { version: kind === 'watch' ? WATCH_VERSION : VERSION, signature, profile, copy, cover, parts, recordingDate,
-        ...(publicNames ? { publicNames, tags: watchStage().WATCH_PUBLIC_TAGS } : {}) };
+    return { version: kind === 'watch' ? WATCH_VERSION : VERSION, signature, profile, copy, cover, parts, recordingDate, tags,
+        ...(publicNames ? { publicNames } : {}) };
 }
 function coverPathFor(metadataPath, presentation) {
     return path.join(path.dirname(metadataPath), `${presentation.cover.kind}.cover-v${presentation.version}-${presentation.signature.slice(0, 12)}.jpg`);

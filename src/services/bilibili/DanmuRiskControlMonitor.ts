@@ -14,12 +14,14 @@ interface Incident {
   lastQueuedAt?: number;
 }
 interface Notice { id: string; content: string; }
+interface SourceFailure { startedAt: number; lastQueuedAt?: number; }
 interface MonitorState {
   version: 1;
   cursorAt: number;
   cursorIds: string[];
   incidents: Record<string, Incident>;
   outbox: Notice[];
+  sourceFailure?: SourceFailure;
 }
 interface LogReader { read(): Promise<RecorderLogSnapshot>; }
 
@@ -46,7 +48,7 @@ export class DanmuRiskControlMonitor {
     if (!this.notifier && config.wechatWork?.webhookUrl) this.notifier = new WeChatWorkNotifier(config.wechatWork.webhookUrl);
     this.statePath = path.resolve(options.monitorStatePath || 'data/runtime/recorder_log_monitor.json');
     this.stopped = false;
-    const interval = Math.max(60000, options.intervalMs || 1800000);
+    const interval = Math.max(60000, options.intervalMs || 60000);
     this.logger.info(`录播姬日志监控启动，读取间隔: ${interval}ms；不主动请求B站接口`);
     await this.check();
     if (!this.stopped) this.timer = setInterval(() => void this.check(), interval);
@@ -89,6 +91,14 @@ export class DanmuRiskControlMonitor {
       const snapshot = await this.source.read();
       if (this.stopped) return;
       this.lastSourceError = '';
+      if (this.state!.sourceFailure) {
+        if (this.state!.sourceFailure.lastQueuedAt !== undefined) this.state!.outbox.push({
+          id: `source:${this.state!.sourceFailure.startedAt}:recovery`, content:
+            `✅ 录播姬弹幕监控恢复\n\n时间: ${this.time(Date.now())}\n已重新确认录播姬进程身份并读取日志。\n` +
+            '这仅表示监控恢复，弹幕连接是否恢复须以服务器认证成功记录为准。'
+        });
+        delete this.state!.sourceFailure;
+      }
       const options = ConfigProvider.getConfig().bilibili?.danmuRiskControl;
       if (!options?.enabled) return;
       const rooms = new Set(options.roomIds.map(String));
@@ -113,6 +123,24 @@ export class DanmuRiskControlMonitor {
         ? error.message : '读取录播日志或保存监控状态失败，状态未知';
       if (message !== this.lastSourceError) this.logger.warn(message);
       this.lastSourceError = message;
+      if (this.state && !this.stopped && ConfigProvider.getConfig().bilibili?.danmuRiskControl?.enabled) {
+        // Source failure must not also disable its own alert or delivery of
+        // already queued connection alerts. Keep the outage durable across restarts.
+        const failure = this.state.sourceFailure ||= { startedAt: Date.now() };
+        const now = Date.now();
+        const cooldown = ConfigProvider.getConfig().bilibili?.danmuRiskControl?.notifyCooldownMs || 1800000;
+        if (now - failure.startedAt >= 60000 &&
+            (failure.lastQueuedAt === undefined || now - failure.lastQueuedAt >= cooldown)) {
+          this.state.outbox.push({ id: `source:${failure.startedAt}:${now}:start`, content:
+            `⚠️ 录播姬弹幕监控失效\n\n开始时间: ${this.time(failure.startedAt)}\n检查时间: ${this.time(now)}\n` +
+            `${message}\n\n无法确认弹幕是否正常接收，断线及风控告警可能漏报。请检查录播姬守护和日志状态；` +
+            '若直播网页要求验证码，请手动完成验证并确认录播姬弹幕恢复。'
+          });
+          failure.lastQueuedAt = now;
+        }
+        try { await this.save(); await this.flush(); }
+        catch { this.logger.warn('弹幕监控失效通知暂未完成，保留待发通知并在下次检查重试'); }
+      }
     } finally { this.checking = false; }
   }
 

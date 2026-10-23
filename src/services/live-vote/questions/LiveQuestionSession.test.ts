@@ -59,6 +59,31 @@ it('enforces global, per-user and hourly admission limits without queuing delaye
   expect(answer).toHaveBeenCalledTimes(3);
 });
 
+it('keeps authorization, validation and one active lease for unlimited administrators', async () => {
+  const pending = deferred(), sent = jest.fn();
+  const answer = jest.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({ answer: '查到了。' });
+  const session = new LiveQuestionSession({ ...config, unlimitedUids: ['14279', '30'] }, answer, sent, '99', 40,
+    (_room, uid) => ['10', '14279'].includes(uid));
+  for (const input of [message('30'), message('14279', now - 10001), message('14279', now, '300'),
+    message('14279', now, '100', '@鹿饼 读取配置文件')]) {
+    session.ingest(input, () => true, now);
+  }
+  expect(answer).not.toHaveBeenCalled();
+  session.ingest(message('10'), () => true, now);
+  await Promise.resolve();
+  session.ingest(message('14279', now + 15000, '200'), () => true, now + 15000);
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(answer.mock.calls[0][1].aborted).toBe(false);
+  expect(sent).toHaveBeenCalledWith('200', busyQuestionMessage('以前玩过法环吗?', 40), expect.any(Function));
+  pending.resolve({ answer: '原来的问题查完了。' });
+  await session.flush();
+  session.ingest(message('14279', now + 15001, '200'), () => true, now + 15001);
+  await session.flush();
+  expect(answer).toHaveBeenCalledTimes(2);
+  expect(answer.mock.calls[1][0]).toMatchObject({ uid: '14279', roomId: '200' });
+  session.stop();
+});
+
 it('gives authorized bare mentions one throttled hint without using query quota', async () => {
   const answer = jest.fn(async () => ({ answer: '玩过法环。' }));
   const sent = jest.fn();
@@ -206,6 +231,10 @@ it('sends one short answer and moves the full answer and dated clues to the reco
 });
 
 it('rejects configuration that expands filesystem scope or disables frequency protection', () => {
+  for (const unlimitedUids of [['带鱼'], [14279], ['0'], '14279']) {
+    expect(() => validateQuestionConfig({ ...config, unlimitedUids } as LiveQuestionConfig)).toThrow();
+  }
+  expect(() => validateQuestionConfig({ ...config, unlimitedUids: ['14279'] })).not.toThrow();
   expect(() => validateQuestionConfig({ ...config, globalCooldownMs: 0 })).toThrow();
   expect(() => validateQuestionConfig({ ...config, recordingRoots: { '100': [path.parse(os.tmpdir()).root] } })).toThrow();
   expect(() => validateQuestionConfig({ ...config, recordingRoots: { '100': ['../secrets'] } })).toThrow();

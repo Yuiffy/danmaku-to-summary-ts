@@ -61,6 +61,40 @@ do not enqueue each song or viewing P as a standalone short clip.
 
 ### Precision editing and feedback
 
+For cross-room collab highlights (one primary POV with peer face/chat insets and
+independent muted-call cutaways), read `docs/cross-room-collab-clips.md` and use
+`npm run clips:collab -- --help`. Build reviewed per-segment clock mappings and a
+room-scoped evidence dossier before selecting shots. Keep one audio source per
+shot; never infer speakers from the transcript's room or overlay unsynchronized
+peer media. The command produces a separate pending-review revision, without
+queue/publication authority. Multi-source revisions must not masquerade as a
+single-source numeric candidate rebuild.
+
+Use the three editorial modes documented in
+`docs/clip-precision-experiment.md#三种切片模式与重点前置`: 普通 preserves the existing
+baseline, 重点前置 uses 2–20 seconds of strongest complete lines followed by the
+hash-bound 鹿饼 OP and the body, and 精切 uses the existing numeric precision flow.
+Both automatic own-stream and keyword production use their `editorialStyles`
+setting: auto chooses among all three based on the complete baseline subtitles;
+ordinary/highlight_first/precision fixes one mode. The workspace config editor
+offers these choices.
+`opManifests` is a nonempty unique pool sampled equally once per front-loaded
+revision. Production uses the separate “鹿饼伤心了／鹿饼根本就没心” and
+“鹿饼的切片你都要看” manifests. The selected concrete asset stays hash-bound
+through review/upload; keep old OP files immutable. Legacy `opManifest` remains
+the fallback when no pool is configured; local `--op` explicitly fixes a version.
+This setting supersedes legacy experiment sampling while
+enabled. Failed selection/rendering retains an honestly labelled ordinary clip.
+Final review still checks the current media, OP provenance/seams and keyword or
+actor evidence; no style grants publication authority. Each new recording job
+refreshes configuration once. Restart the idle background clip worker after
+activating a code release because it pins that release for its process lifetime.
+Run `npm run clips:style -- --help` for the separate local entry. Draft highlights
+from the rendered baseline timeline, review original audio/context, then render
+a separate pending-review revision. A contiguous opening normally moves ahead of
+the OP without repetition; a montage from later positions keeps the complete
+body to explain it. This command never approves, registers or uploads the revision.
+
 For the “快乐小岁” episodic game highlight series, read
 [happy-sui-series](../happy-sui-series/SKILL.md). It covers dense multi-stream
 selection, chronological story bridges, speech tails, teasers and continuation points.
@@ -87,6 +121,14 @@ Use the existing numeric `rebuild`, `cut`, or `approve-review` command with
 titles and corrections. This records feedback acceptance, never a claim of
 audio/visual review. Missing files, failed renders/audits, source changes and
 duplicate publication of the same ID still require actual execution repair.
+
+When recovering a failed Web feedback job, first read its saved `edits` and
+`titleChoice` and the current saved title selection. Apply that exact title
+through the existing review command before enqueueing; the original metadata
+does not supersede a failed job's user intent. A title-only change on complete
+media uses `approve-review --title ... --feedback-authorized`, without rebuilding
+the video. CLI enqueue and worker title guards must pass; never clear a saved
+selection just to unblock recovery unless the user explicitly withdraws it.
 
 Own-stream rendered clips, including held/failed clips and rejected candidates,
 also reserve numeric IDs. Their single review sorted by numeric upload ID lists the blocking

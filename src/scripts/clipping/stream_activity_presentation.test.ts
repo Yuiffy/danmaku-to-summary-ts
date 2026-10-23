@@ -17,6 +17,18 @@ test('a multipart song cover lists the actual songs instead of a generic collect
     expect(result.cover).toMatchObject({ subject: "Don't Look Back in Anger\nMoon River", date: '2026.10.2', caption: '直播演唱 · 共 2 首' });
     expect(result.copy.coverText).not.toContain('歌切');
     expect(result.copy.title).toBe("Don't Look Back in Anger / Moon River-2026.10.2");
+    expect(result.tags).toEqual(["Don't Look Back in Anger", 'Moon River', '岁己', '小岁', '歌切', '虚拟主播']);
+});
+
+test('song tags follow submitted Ps and reviewed names without borrowing unsubmitted songs', () => {
+    const plan = { recordedAt: '2026-10-02', streamerName: '岁己', streamTitle: '唱聊',
+        events: [{ id: 's1', kind: 'song', name: null }, { id: 's2', kind: 'song', name: '未收录歌曲' }] };
+    const parts = [{ activityId: 's1', sha256: 'one' }];
+    const evidence = { items: [{ activityId: 's1', name: '泡泡' }] };
+    const result = presentationFor(plan, 'songs', parts, evidence, ['自定义标签', '歌切']);
+    expect(result.tags).toEqual(['泡泡', '自定义标签', '歌切']);
+    expect(presentationFor(plan, 'songs', parts).tags).not.toContain('待确认歌名');
+    expect(presentationFor(plan, 'songs', parts, evidence, ['歌切']).signature).not.toBe(result.signature);
 });
 
 test('viewing titles and screenshot covers identify the watched movie rather than a generic category', () => {

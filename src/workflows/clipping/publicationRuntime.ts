@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { randomUUID } from 'crypto';
 import { artifactDigests, fileDigest, Artifact } from './enhancement';
+import { editorialEvidenceDigest } from './editorialEvidence';
 import { publicationEnabled, publicationPolicyVersion, topicPublicationEvidence, reviewPublication,
     PublicationConfig, PublicationInspection, PublicationSnapshot, TOPIC_PUBLICATION_POLICY_VERSION } from './publicationReview';
 import type { Subtitle } from './editPlan';
@@ -61,6 +62,8 @@ export async function publicationSnapshot(artifact: Artifact): Promise<Publicati
     const diagnostic = subtitleDiagnosticEvidence(artifact, snapshot.source);
     if (diagnostic) snapshot.digests.subtitleDiagnostic = diagnostic.digest;
     if (timingAudio) snapshot.digests.timingAudio = timingAudio;
+    const editorial = editorialEvidenceDigest(artifact);
+    if (editorial) snapshot.digests.editorial = editorial;
     return snapshot;
 }
 
@@ -91,8 +94,12 @@ export function publicationFrameTimes(artifact: Artifact, subtitles: Subtitle[],
             const cue = subtitles[index];
             return cue.text === change.after && cue.end > cue.start ? [Math.max(cue.start, cue.end - .1)] : [];
         })).slice(-2) : [];
-    return [...new Set([0.25, cueMid(subtitles[0]), duration / 2, cueMid(subtitles.at(-1)!), duration - 0.25, ...changed]
-        .map(time => Math.max(0, Math.min(duration - .05, lastSampleTime, time))))];
+    const seams = (artifact.editorialTimeline?.pieces || []).flatMap((piece: any) =>
+        [piece.outputStart + .1, piece.outputStart + (piece.end - piece.start) / 2, piece.outputStart + piece.end - piece.start - .1]);
+    // QA inlines the cover plus these samples and text requests hard-cap inline images at MAX_INLINE_IMAGES (8);
+    // long multi-seam editorial timelines must drop extra seam samples instead of failing the whole QA call.
+    return [...new Set([0.25, cueMid(subtitles[0]), duration / 2, cueMid(subtitles.at(-1)!), duration - 0.25, ...changed, ...seams]
+        .map(time => Math.max(0, Math.min(duration - .05, lastSampleTime, time))))].slice(0, 7);
 }
 
 /** Full decode checks media integrity; the AI sees explicitly labelled sampled frames, not a fictitious full-video review. */

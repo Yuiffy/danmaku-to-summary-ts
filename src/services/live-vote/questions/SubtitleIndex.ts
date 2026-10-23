@@ -3,14 +3,16 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { createServer } from 'net';
 import { Embedder, EmbeddingConfig } from './EmbeddingClient';
-import { chunkSubtitles, digest, listSubtitles, parseSubtitle, readSubtitle, SubtitleSource, within } from './SubtitleCorpus';
+import { chunkSubtitles, digest, listSubtitles, parseSubtitle, readSubtitle, recordingFolderDate, SubtitleSource, within } from './SubtitleCorpus';
+import { writeSubtitleLexical } from './SubtitleLexicalIndex';
 
 export interface IndexedSource extends SubtitleSource { hash: string; key: string; chunks: number }
 export interface IndexManifest {
   version: string; roomId: string; roots: string[]; updatedAt: string; incomplete: boolean; sources: IndexedSource[];
 }
 export interface SemanticMatch extends SubtitleSource { hash: string; cue: number; score: number }
-export type SemanticSearch = (date: string | null, terms: string[]) => Promise<SemanticMatch[]>;
+export interface SemanticFocus { query?: string; files?: ReadonlySet<string>; session?: SubtitleSource }
+export type SemanticSearch = (date: string | null, terms: string[], focus?: SemanticFocus) => Promise<SemanticMatch[]>;
 export function indexVersion(config: EmbeddingConfig): string {
   return digest(JSON.stringify(['subtitle-v1-400chars-15cues-overlap1', config.backend, config.model, config.dimensions]));
 }
@@ -95,7 +97,7 @@ export async function updateSubtitleRoom(config: EmbeddingConfig, roomId: string
       let snapshot: Awaited<ReturnType<typeof readSubtitle>>;
       try { snapshot = await readSubtitle(source, signal); }
       catch { signal.throwIfAborted(); incomplete = true; continue; }
-      const chunks = chunkSubtitles(parseSubtitle(snapshot.content));
+      const cues = parseSubtitle(snapshot.content), chunks = chunkSubtitles(cues);
       const key = digest(indexVersion(config) + snapshot.hash);
       if (!(await shardValid(directory, key, chunks.length, config.dimensions))) {
         const file = path.join(directory, `${key}.f32`);
@@ -120,6 +122,7 @@ export async function updateSubtitleRoom(config: EmbeddingConfig, roomId: string
       }
       // Metadata is deterministic, inexpensive to restore after interruption.
       await atomicJson(path.join(directory, `${key}.json`), chunks.map(chunk => chunk.cue));
+      await writeSubtitleLexical(directory, key, cues);
       sources.push({ ...source, hash: snapshot.hash, key, chunks: chunks.length });
       await progress(++processed, embedded);
       if (processed % 20 === 0) {
@@ -148,7 +151,7 @@ export async function pruneSubtitleShards(directory: string, now = Date.now()): 
   const shards = path.join(directory, 'shards');
   let removed = 0;
   for (const name of await fs.readdir(shards)) {
-    const key = /^([a-f0-9]{64})\.(?:json|f32)(?:\.[a-f0-9-]+\.tmp)?$/u.exec(name)?.[1];
+    const key = /^([a-f0-9]{64})\.(?:json|f32|lex\.json\.gz)(?:\.[a-f0-9-]+\.tmp)?$/u.exec(name)?.[1];
     if (!key || used.has(key)) continue;
     const file = path.join(shards, name), stat = await fs.lstat(file);
     if (stat.isFile() && !stat.isSymbolicLink() && now - stat.mtimeMs > 7 * 86400000) { await fs.unlink(file); removed++; }
@@ -158,7 +161,7 @@ export async function pruneSubtitleShards(directory: string, now = Date.now()): 
 
 /** Stream blocks off SSD: no full-room vector matrix retained in the vote process. */
 export async function searchSubtitleIndex(config: EmbeddingConfig, roomId: string, roots: string[],
-  vector: Float32Array, date: string | null, signal: AbortSignal): Promise<SemanticMatch[]> {
+  vector: Float32Array, date: string | null, signal: AbortSignal, files?: ReadonlySet<string>): Promise<SemanticMatch[]> {
   if (vector.length !== config.dimensions) throw new Error('Query/index dimension mismatch');
   const manifest = await loadManifest(config, roomId, roots);
   if (!manifest) return [];
@@ -170,10 +173,10 @@ export async function searchSubtitleIndex(config: EmbeddingConfig, roomId: strin
   const buffer = Buffer.alloc(blockRows * rowBytes);
   for (const source of manifest.sources) {
     signal.throwIfAborted();
-    if (!allowedRoots.has(source.root) || date && !source.date?.startsWith(date) || dedupe.has(source.key)) continue;
+    if (files && !files.has(source.file) || !allowedRoots.has(source.root) || date && !source.date?.startsWith(date) || dedupe.has(source.key)) continue;
     // Current filesystem membership is checked again before evidence registration.
     const relative = path.relative(source.root, source.file).split(path.sep);
-    if (relative.length > 2 || relative.length === 2 && !/^\d{4}[-_]\d{2}[-_]\d{2}$/u.test(relative[0]) || !/\.srt$/iu.test(source.file)) continue;
+    if (relative.length > 2 || relative.length === 2 && !recordingFolderDate(relative[0]) || !/\.srt$/iu.test(source.file)) continue;
     dedupe.add(source.key);
     let handle: Awaited<ReturnType<typeof fs.open>>;
     try { handle = await fs.open(path.join(config.directory, 'shards', `${source.key}.f32`), 'r'); } catch { continue; }

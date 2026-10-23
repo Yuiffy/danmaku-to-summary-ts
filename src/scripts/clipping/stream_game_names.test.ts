@@ -13,4 +13,14 @@ describe('game chapter names from literal original frames', () => {
       expect(() => parse({ ...row, ...patch })).toThrow(/literal visible label/);
     }
   });
+  test('a visible canonical name replaces an ungrounded nickname without adding claims', () => {
+    const canonical = { ...row, label: '英雄石像鬼', correctedTitle: '英雄石像鬼' };
+    expect(parseNameReview({ text: JSON.stringify(canonical) }, { proposedTitle: '双石像鬼战斗' }, frames))
+      .toMatchObject({ supported: true, correctedTitle: '英雄石像鬼' });
+    for (const correctedTitle of ['双石像鬼', '击败英雄石像鬼', '']) {
+      expect(() => parseNameReview({ text: JSON.stringify({ ...canonical, correctedTitle }) },
+        { proposedTitle: '双石像鬼战斗' }, frames)).toThrow(/literal visible label/);
+    }
+    expect(() => parse({ ...canonical, activity: 'watching_game' })).toThrow(/literal visible label/);
+  });
 });

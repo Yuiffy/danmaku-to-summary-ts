@@ -46,7 +46,20 @@ async function prepareParticipantDiscovery(mediaPath, config = {}, options = {})
             if (result.directory) sources.visualEvidenceDirectory = result.directory;
         } catch (error) { sources.visual = 'unavailable'; sources.visualError = String(error.message); }
     }
-    const discovery = discoverParticipants({ ...session, evidence }, config);
+    let discovery = discoverParticipants({ ...session, evidence }, config);
+    if (config.ai?.itineraryMemory?.enabled === true) {
+        try {
+            const itinerary = require('../workflow-runtime').loadWorkflow('itinerary/runtime');
+            if (options.generateItinerary) sources.itineraryDynamics = await itinerary.refreshDynamics(
+                { root: path.resolve(__dirname, '../../..'), config, session }, {
+                    fetch: (roomId, asOf) => require('../live_generation_context').fetchRecentDynamics(config, roomId, asOf,
+                        { fetcher: options.fetcher, dynamicOptions: { limit: 5, lookbackHours: 168, preferNearby: false, maxContentChars: 1800 } }),
+                    generate: options.generateItinerary
+                });
+            const recalled = itinerary.recallPlans({ root: path.resolve(__dirname, '../../..'), config, session });
+            discovery = itinerary.augmentDiscovery(discovery, recalled, config);
+        } catch (error) { sources.itineraryMemory = `unavailable: ${error.message}`; }
+    }
     const payload = { ...discovery, binding, sources, recentDynamics,
         registrySha256: hash(config.ai?.streamerRegistry || {}), generatedAt: new Date().toISOString() };
     const target = discoveryPath(mediaPath);
@@ -73,7 +86,8 @@ async function prepareAsrSpeakerRequest(mediaPath, config, asrContext = {}, dura
         discovery = await prepareParticipantDiscovery(mediaPath, config, {
             roomId: asrContext.room_id || asrContext.roomId,
             durationSeconds: durationSeconds || undefined,
-            visualMediaPath: asrContext.sourceMediaPath || mediaPath
+            visualMediaPath: asrContext.sourceMediaPath || mediaPath,
+            generateItinerary: asrContext.generateItinerary
         });
     } catch (error) { console.warn(`[ASR] 参与者线索不可用，保留开放集识别: ${error.message}`); }
     return mergeDiscoveryRequest(manualRequest, discovery);

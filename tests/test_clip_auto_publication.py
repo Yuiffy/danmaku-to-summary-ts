@@ -20,6 +20,24 @@ from src.scripts.clip_upload_manifest import load_upload_manifest
 
 
 class AutomaticPublicationTests(unittest.TestCase):
+    def test_campaign_policy_is_separate_and_keeps_queued_in_period_artifacts_valid(self):
+        policy = {"mode": "auto", "roomIds": ["event"], "policyVersion": "own-stream-v1",
+                  "activatedAt": "2026-10-23T09:00:00Z", "authorizationNote": "explicit campaign authority"}
+        config = {"ownStreamClips": {"automaticPublication": {"mode": "off"}, "campaigns": [{
+            "enabled": True, "roomIds": ["event"], "startsAt": "2026-10-22T00:00:00+08:00",
+            "endsAt": "2026-11-06T00:00:00+08:00", "settings": {"automaticPublication": policy}}]}}
+        metadata = {"mode": "own_stream_fun_review", "roomId": "event", "recordedAt": "2026-10-23 14:02:55", "generatedAt": "2026-10-23T09:30:00Z"}
+        self.assertEqual(publication.validate_policy(metadata, config), policy)
+        self.assertEqual(publication.validate_policy({**metadata, "generatedAt": "2026-11-06T00:00:00+08:00"}, config), policy)
+        for changes in ({"roomId": "other"}, {"recordedAt": "2026-10-21 14:02:55"},
+                        {"recordedAt": "2026-11-06 00:00:00"}, {"generatedAt": "2026-10-23T08:59:59Z"},
+                        {"recordedAt": ""}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                publication.validate_policy({**metadata, **changes}, config)
+        config["ownStreamClips"]["campaigns"][0]["enabled"] = False
+        with self.assertRaises(ValueError):
+            publication.validate_policy(metadata, config)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -77,6 +95,33 @@ class AutomaticPublicationTests(unittest.TestCase):
     def write_metadata(self):
         self.metadata_path = self.root / "clip.json"
         self.metadata_path.write_text(json.dumps(self.metadata), encoding="utf-8")
+
+    def test_front_loaded_timeline_and_every_composing_asset_remain_bound_at_worker_gate(self):
+        files = []
+        for name in ('metadata', 'media', 'subtitles', 'opManifest', 'opMedia', 'opSubtitles'):
+            file = self.root / f'editorial-{name}'
+            file.write_text(name, encoding='utf-8')
+            files.append(str(file))
+        keys = ('metadata', 'media', 'subtitles', 'opManifest', 'opMedia', 'opSubtitles')
+        hashes = [publication.file_digest(file) for file in files]
+        timeline = {'version': 1, 'baseline': dict(zip(keys[:3], files[:3])),
+                    **dict(zip(keys[3:], files[3:])), 'binding': dict(zip(keys, hashes)),
+                    'pieces': [{'kind': 'op', 'outputStart': 3, 'start': 0, 'end': 6}]}
+        self.metadata['style'] = 'highlight_first'
+        self.metadata['editorialTimeline'] = timeline
+        self.metadata['publicationReview']['editorialTimeline'] = copy.deepcopy(timeline)
+        self.metadata['publicationReview']['digests']['editorial'] = hashlib.sha256('\0'.join(hashes).encode()).hexdigest()
+        publication.validate_publication_review(self.metadata)
+        timeline['pieces'][0]['outputStart'] = 2
+        with self.assertRaisesRegex(ValueError, 'timeline changed'):
+            publication.validate_publication_review(self.metadata)
+        timeline['pieces'][0]['outputStart'] = 3
+        for file in files:
+            original = Path(file).read_bytes()
+            Path(file).write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'composing source changed'):
+                publication.validate_publication_review(self.metadata)
+            Path(file).write_bytes(original)
 
     def enqueue(self, ids="1", **kwargs):
         args = argparse.Namespace(ids=ids, automatic=True, force=False, dry_run=False, **kwargs)

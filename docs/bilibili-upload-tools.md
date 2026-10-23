@@ -1,5 +1,8 @@
 # Bilibili Upload Tools
 
+For SDK ownership, maintained upstream references and upgrade contracts, see
+[Bilibili API upstreams and diagnostics](bilibili-api-upstreams.md).
+
 This repo has two categories of upload-related scripts:
 
 - Reusable tools live in the relevant `src/scripts` subdirectory or as documented root-level helpers.

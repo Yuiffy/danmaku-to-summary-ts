@@ -4,7 +4,7 @@ const { renderPrecisionRevision } = require('./precision_revision');
 const { fileDigest } = require('./source_snapshot');
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
-test.each(['edited', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
+test.each(['edited', 'rebuilt', 'campaign', 'campaign_wrong_date', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-revision-'));
     const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
     const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
@@ -19,6 +19,7 @@ test.each(['edited', 'no_attribution_review', 'sound_override', 'invalid_sound_o
             artifactDigests: { video: fileDigest(output.mediaPath), subtitles: fileDigest(output.srtPath) } },
         creativeResult: { status: 'kept_original' } };
     if (outcome === 'no_attribution_review') delete original.attributionReview;
+    if (outcome.startsWith('campaign')) original.recordedAt = outcome === 'campaign' ? '2026-10-23 14:02:55' : '1999-01-01 00:00:00';
     if (outcome.startsWith('automatic_')) {
         original.enhancement = { baseline: { ...output, copy: original.copy, window: original.window } };
         original.output = { ...output, mediaPath: path.join(dir, 'automatic.mp4'), srtPath: path.join(dir, 'automatic.srt'), coverPath: path.join(dir, 'automatic.jpg') };
@@ -35,9 +36,21 @@ test.each(['edited', 'no_attribution_review', 'sound_override', 'invalid_sound_o
         fs.writeFileSync(path.join(oldScratch, 'qa-response.json'), JSON.stringify({ text: '{"approved":true}' }));
         if (outcome === 'automatic_missing_baseline') delete original.enhancement.baseline;
     }
+    if (outcome === 'rebuilt') {
+        const { copyDigest } = require('./actor_review');
+        original.attributionRequired = true;
+        original.attributionReview = { ...original.attributionReview, version: 1, status: 'passed', start: 100, end: 160,
+            proposedCopy: original.copy, copyDigest: copyDigest(original.copy), artifactCopyDigest: copyDigest(original.copy), issues: [] };
+        original.renderedSubtitles = { version: 1, sourceSha256: buildSubtitleEvidence(sourceCues).sourceSha256,
+            sourceSnapshot: require('./source_snapshot').sourceSnapshot(original), window: { start: 100, end: 160 }, review: { note: 'Rebuilt current baseline' } };
+        original.publicationReview = { status: 'passed', issues: [], technical: { passed: true }, artifactWindow: { start: 100, end: 160 },
+            checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true },
+            ...await require('../workflow-runtime').loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original) };
+    }
     fs.writeFileSync(metadataPath, JSON.stringify(original));
     const reviewPlanPath = path.join(dir, 'PLAN.json');
-    fs.writeFileSync(reviewPlanPath, JSON.stringify({ clips: [{ start: 100, end: 160 }] }));
+    fs.writeFileSync(reviewPlanPath, JSON.stringify({ clips: [outcome === 'rebuilt'
+        ? { start: 1, end: 200, publicCopyPending: true } : { start: 100, end: 160 }] }));
     fs.writeFileSync(registryPath, JSON.stringify({ clips: { 17: { metadataPath, reviewPlanPath, reviewIndex: 1,
         status: 'uploaded', pendingRebuild: outcome === 'pending', uploadState: { bvid: 'BVfixture' } } } }));
     const registryBefore = fs.readFileSync(registryPath, 'utf8'), before = fs.readFileSync(metadataPath, 'utf8');
@@ -67,9 +80,14 @@ test.each(['edited', 'no_attribution_review', 'sound_override', 'invalid_sound_o
         return { ...baseline, output: { ...baseline.output, mediaPath }, creativeResult: { status: 'edited' },
             creativePlan: { effects: [{ id: 'M1' }] }, qaResult: { status: 'passed' } };
     });
-    const dependencies = { enhance, rootConfig: { ownStreamClips: { enhancements: { enabled: true,
+    const dependencies: any = { enhance, rootConfig: { ownStreamClips: { enhancements: { enabled: true,
         roomIds: ['room'], workflow: 'creative' } } }, topic: { parseTopicSrt: file => ({ segments: file === source.srtPath
         ? sourceCues : [{ start: 1, end: 3, text: '看看这里' }] }) } };
+    if (outcome.startsWith('campaign')) {
+        dependencies.rootConfig.ownStreamClips.enhancements.roomIds = ['daily'];
+        dependencies.rootConfig.ownStreamClips.campaigns = [{ enabled: true, roomIds: ['room'],
+            startsAt: '2000-01-01T00:00:00+08:00', endsAt: '2026-11-06T00:00:00+08:00', settings: {} }];
+    }
     try {
         if (outcome === 'stale_subtitles') fs.appendFileSync(output.srtPath, 'unreviewed edit');
         if (outcome === 'automatic_tampered') fs.appendFileSync(original.output.mediaPath, 'modified');
@@ -78,11 +96,13 @@ test.each(['edited', 'no_attribution_review', 'sound_override', 'invalid_sound_o
             sourceMetadataSha256: '0'.repeat(64), timelineSha256: '1'.repeat(64), insets: [] }));
         const promise = renderPrecisionRevision({ id: 17, registryPath, note: '重做精切', insetPlanPath, resumeFrom, soundLevelOverridesPath,
             coverTextPosition: outcome === 'sound_override' ? 'bottom' : undefined }, dependencies);
-        if (['source_changed', 'stale_subtitles', 'pending', 'foreign_inset', 'invalid_sound_override', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline'].includes(outcome)) await expect(promise).rejects.toThrow(/changed|active|not bound|baseline/);
+        if (outcome === 'campaign_wrong_date') await expect(promise).rejects.toThrow('Creative enhancement is not enabled for this room');
+        else if (['source_changed', 'stale_subtitles', 'pending', 'foreign_inset', 'invalid_sound_override', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline'].includes(outcome)) await expect(promise).rejects.toThrow(/changed|active|not bound|baseline/);
         else {
             const result = await promise;
-            expect(result.status).toBe(['edited', 'no_attribution_review', 'sound_override', 'automatic_edited'].includes(outcome) ? 'pending_review' : 'failed');
+            expect(result.status).toBe(['edited', 'campaign', 'no_attribution_review', 'sound_override', 'automatic_edited'].includes(outcome) ? 'pending_review' : 'failed');
             const saved = JSON.parse(fs.readFileSync(result.metadataPath, 'utf8'));
+            if (outcome === 'rebuilt') expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
             expect(saved.uploadReady).toBe(false); expect(saved.precisionRevision.uploadAuthorized).toBe(false);
             expect(saved.precisionRevision.clipId).toBe(17);
             if (outcome === 'sound_override') {

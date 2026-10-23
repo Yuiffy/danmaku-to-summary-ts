@@ -1,6 +1,6 @@
 import { assignExperiment, buildExperimentSelection, parseExperimentSelection, labelExperimentDescription, labelExperimentTitle,
     stripExperimentTitle, stripExperimentDescription,
-    PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown } from './experiment';
+    PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown, rebuiltPrecisionCandidate } from './experiment';
 import { createHash } from 'crypto';
 
 const clips = Array.from({ length: 20 }, (_, i) => ({ start: i * 100, end: i * 100 + 80, title: `Story ${i}` }));
@@ -8,6 +8,37 @@ const speech = clips.map(clip => ({ start: clip.start, end: clip.end, text: `${c
 const settings = { ratio: 0.25, maxClips: 5 };
 const copyHash = (copy: any) => createHash('sha256').update(['title', 'coverText', 'description']
     .map(key => String(copy[key] || '')).join('\0')).digest('hex');
+
+test('rebuilt precision uses the independently reviewed current window and copy, retaining only matching topic plans', () => {
+    const factual = { title: '姓氏选了爷', description: '念出来像爷爷', coverText: '爷爷' };
+    const snapshot = { source: { media: 'original' }, digests: { video: 'v', subtitles: 's', cover: 'c', copy: 'p' } };
+    const artifact: any = { uploadReady: true, window: { start: 10, end: 50 }, copy: { ...factual, description: 'Source header\n' + factual.description },
+        grounding: { sourceSha256: 'current' }, renderedSubtitles: { version: 1, sourceSha256: 'current', window: { start: 10, end: 50 }, review: { note: 'Rebuild' } },
+        attributionReview: { version: 1, status: 'passed', sourceSha256: 'current', start: 10, end: 50,
+            copyDigest: copyHash(factual), proposedCopy: factual, issues: [] },
+        publicationReview: { status: 'passed', issues: [], technical: { passed: true }, artifactWindow: { start: 10, end: 50 }, ...snapshot,
+            checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true } },
+        topicEditPlan: { sourceSha256: 'current', sourceStart: 1, sourceEnd: 90, ranges: ['obsolete'] } };
+    artifact.attributionReview.artifactCopyDigest = copyHash(artifact.copy);
+    const before = JSON.stringify(artifact);
+    expect(rebuiltPrecisionCandidate(artifact, 'current', snapshot)).toMatchObject({ start: 10, end: 50, ...factual });
+    expect(rebuiltPrecisionCandidate(artifact, 'current', snapshot).topicEditPlan).toBeUndefined();
+    expect(JSON.stringify(artifact)).toBe(before);
+    artifact.topicEditPlan = { ...artifact.topicEditPlan, sourceStart: 10, sourceEnd: 50 };
+    expect(rebuiltPrecisionCandidate(artifact, 'current', snapshot).topicEditPlan).toEqual(artifact.topicEditPlan);
+    for (const change of [
+        { uploadReady: false }, { publicCopyPending: true }, { rebuildRequired: true },
+        { renderedSubtitles: { ...artifact.renderedSubtitles, sourceSha256: 'old' } },
+        { renderedSubtitles: { ...artifact.renderedSubtitles, window: { start: 1, end: 90 } } },
+        { copy: { ...artifact.copy, title: 'Unreviewed claim' } },
+        { attributionReview: { ...artifact.attributionReview, sourceSha256: 'old' } },
+        { attributionReview: { ...artifact.attributionReview, proposedCopy: { ...factual, title: 'Unreviewed' } } },
+        { publicationReview: { ...artifact.publicationReview, status: 'needs_review' } },
+        { publicationReview: { ...artifact.publicationReview, artifactWindow: { start: 1, end: 90 } } },
+        { publicationReview: { ...artifact.publicationReview, source: { media: 'different' } } },
+        { publicationReview: { ...artifact.publicationReview, digests: { ...snapshot.digests, video: 'changed' } } }
+    ]) expect(() => rebuiltPrecisionCandidate({ ...artifact, ...change }, 'current', snapshot)).toThrow(/review|stale/);
+});
 
 test('a fully attribution-reviewed batch still offers its passed clips for precision selection', () => {
     const reviewed = Array.from({ length: 23 }, (_, i) => {
@@ -66,7 +97,11 @@ test('public disclosure is deterministic and does not claim a deletion when timi
     expect(labelExperimentDescription('Story', false, true)).toBe('Story');
     expect(labelExperimentDescription(description, true, true).split(PRECISION_EXPERIMENT_MARKER)).toHaveLength(2);
     const title = labelExperimentTitle('Story', true);
-    expect(title).toBe('Story（AI精切）');
+    expect(title).toBe('Story');
+    expect(labelExperimentTitle('Story（AI精切）', true)).toBe('Story');
+    expect(labelExperimentTitle('精切过程中的故事', true)).toBe('精切过程中的故事');
+    expect(labelExperimentTitle('长'.repeat(80), true)).toBe('长'.repeat(80));
+    expect(() => labelExperimentTitle('长'.repeat(81), true)).toThrow(/80-character/);
     expect(labelExperimentTitle(title, true)).toBe(title);
     expect(stripExperimentTitle(title)).toBe('Story');
     const withDetail = labelExperimentDescription('Story', true, true, '【AI精切说明】\n00:01-00:03 头像放大');

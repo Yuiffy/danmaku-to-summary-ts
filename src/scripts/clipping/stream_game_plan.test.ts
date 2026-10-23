@@ -55,6 +55,33 @@ describe('complete game recordings', () => {
     expect(merged[0].reviewIssues).toContain('end_boundary_unconfirmed');
   });
 
+  test('citation IDs in nameEvidence request detector repair rather than losing known names', () => {
+    const window = { index: 1, start: 0, end: 100, from: 0, to: 100,
+      rows: [{ id: 'D1', start: 12, end: 12, text: '这里是熔炉骑士' }] };
+    const chapter = { start: 10, title: '熔炉骑士', kind: 'boss', nameEvidence: 'D1',
+      description: '挑战熔炉骑士。', evidenceIds: ['D1'] };
+    const raw = { events: [{ ...event(5, 90), evidenceIds: ['D1'], chapters: [chapter] }] };
+    expect(() => plan.parseEvents(raw, window, 100, config)).toThrow(/literal name text, not a citation ID/);
+    chapter.nameEvidence = '熔炉骑士';
+    expect(plan.parseEvents(raw, window, 100, config)[0].chapters[0])
+      .toMatchObject({ title: '熔炉骑士', kind: 'boss', nameEvidence: '熔炉骑士' });
+  });
+
+  test('archive and P titles keep three evidenced destinations after setup', () => {
+    const chapters = [
+      { start: 0, title: '启动与载入', kind: 'phase', description: '启动游戏。' },
+      { start: 100, title: '导水桥大矛熔炉骑士', kind: 'boss', nameEvidence: '熔炉骑士' },
+      { start: 700, title: '双石像鬼', kind: 'boss', nameEvidence: '石像鬼' },
+      { start: 1300, title: '回魔法学院补探索', kind: 'location', nameEvidence: '魔法学院' },
+    ];
+    const parts = render.singleParts([event(0, 2400, { chapters })], config, { maxVideoSeconds: 10800 });
+    expect(parts[0].title).toBe('导水桥大矛熔炉骑士');
+    const copy = render.publicCopy({ streamerName: '岁己', recordedAt: '2026-10-20 19:51:17', streamTitle: '游戏' },
+      { name: '艾尔登法环' }, parts, 17, 1, 1);
+    expect(copy.title).toContain('导水桥大矛熔炉骑士、双石像鬼、回魔法学院补探索');
+    expect(copy.title.length + '【小岁】'.length).toBeLessThanOrEqual(80);
+  });
+
   test('dense audience context shrinks without dropping source rows or leaving coverage gaps', () => {
     const rows = plan.evidenceRows([], Array.from({ length: 12 }, (_, i) => ({ time: i * 10 + 5, text: '弹'.repeat(3000) })));
     const windows = plan.detectionWindows(rows, 120, { ...config, chunkSeconds: 60, contextSeconds: 180, maxEvidenceChars: 19000 });

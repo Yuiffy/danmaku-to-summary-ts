@@ -3,6 +3,7 @@ import { parseModelJson } from '../text/json';
 import type { Artifact } from './enhancement';
 import type { PublicationConfig, PublicationInspection, PublicationSnapshot } from './publicationReview';
 import { publicationEnabled } from './publicationReview';
+import { EDITORIAL_REVIEW_RULE } from './editorialEvidence';
 import { PUBLIC_COPY_MATERIALITY_STANDARD, SUBTITLE_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
 
 type Data = Record<string, any>;
@@ -11,7 +12,9 @@ const CHECKS = ['meaning', 'attribution', 'title', 'cover', 'subtitles', 'comple
 
 /** Admission to another automatic review is distinct from approval to publish. */
 export function ownAutomaticReviewEligible(artifact: Artifact, config: PublicationConfig & Data): boolean {
-    return artifact.mode === 'own_stream_fun_review' && config.mode === 'auto' && publicationEnabled(config, artifact.roomId)
+    const supported = artifact.mode === 'own_stream_fun_review'
+        || artifact.publicationKind === 'keyword_topic' && artifact.aiReview?.status === 'ready' && artifact.aiReview?.applied === true;
+    return supported && config.mode === 'auto' && publicationEnabled(config, artifact.roomId)
         && Boolean(config.authorizationNote?.trim()) && Number.isFinite(Date.parse(config.activatedAt))
         && Date.parse(artifact.generatedAt) >= Date.parse(config.activatedAt)
         && !artifact.selectionRejection && !artifact.preRenderHold && !artifact.rebuildRequired
@@ -60,6 +63,7 @@ export async function reviewOwnRequiredQa(artifact: Artifact, config: Publicatio
                 excludedCategories: evidence.excludedCategories, grounding: artifact.grounding,
                 attribution: artifact.attributionReview ? { status: artifact.attributionReview.status, claims: artifact.attributionReview.claims } : null,
                 editPlan: artifact.editPlan || null, creativePlan: artifact.creativePlan || null,
+                editorialTimeline: artifact.editorialTimeline || null, editorialRule: artifact.editorialTimeline ? EDITORIAL_REVIEW_RULE : null,
                 finalMediaAudio: artifact.renderedTimingRepair?.finalAudio?.windows || null,
                 technicalFacts: facts, priorIssues: artifact.qaResult?.issues || [] })
         ].join('\n'), inspection.frames);

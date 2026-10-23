@@ -89,14 +89,14 @@ describe('room-scoped Shiori and Mizuki subtitle names', () => {
       expect.objectContaining({ original: '小明', suggestion: '小弥', type: 'ambiguous_term' })
     ]));
     const other = ['弥月今天直播', '小康和小看来了'];
-    expect(check('30655190', other).texts).toEqual(other);
+    expect(check('30655190', other).texts).toEqual(['弥月今天直播', '小栞和小看来了']);
   });
 
   test('does not bootstrap one person from another correction or carry names over a long gap', () => {
     const input = ['小康和小明来了'];
-    expect(check('25788785', input).texts).toEqual(input);
+    expect(check('25788785', input).texts).toEqual(['小栞和小明来了']);
     expect(check('25788785', ['弥月和栞栞昨天来了', '小明小迷小刊小看小康签签康康'], 60).texts)
-      .toEqual(['弥月和栞栞昨天来了', '小明小迷小刊小看小康签签康康']);
+      .toEqual(['弥月和栞栞昨天来了', '小明小迷小刊小看小栞签签康康']);
     expect(check('123', ['弥月和栞栞', '小明小迷小刊小看小康签签康康']).texts)
       .toEqual(['弥月和栞栞', '小明小迷小刊小看小康签签康康']);
   });
@@ -111,10 +111,22 @@ describe('room-scoped Shiori and Mizuki subtitle names', () => {
 
   test('requires local name evidence even in each person’s own room', () => {
     for (const [roomId, input] of [
-      ['26966466', ['今天直播', '小康接了电话']],
+      ['26966466', ['今天直播', '小刊接了电话']],
       ['30655190', ['今天直播', '小明来了']]
     ] as [string, string[]][]) {
       expect(check(roomId, input).texts).toEqual(input);
     }
+  });
+
+  test.each(configs)('normalizes the user-confirmed 小康 alias only in the three configured rooms', config => {
+    for (const roomId of ['25788785', '26966466', '30655190']) {
+      expect(check(roomId, ['小康来了', '不会是小岁小康吧'], 60, config).texts)
+        .toEqual(['小栞来了', '不会是小岁小栞吧']);
+      for (const text of ['小康社会', '全面小康', '小康家庭', '小康生活', '不是小康', '另一个小康', '小康同学']) {
+        expect(check(roomId, [text], 4, config)).toMatchObject({ texts: [text], edits: [], checks: [] });
+      }
+    }
+    expect(check('23260993', ['不会是小岁小康吧'], 4, config).texts).toEqual(['不会是小岁小康吧']);
+    expect(check('123', ['小康来了'], 4, config).texts).toEqual(['小康来了']);
   });
 });

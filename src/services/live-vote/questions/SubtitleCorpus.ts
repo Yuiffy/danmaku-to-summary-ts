@@ -4,7 +4,19 @@ import { createHash } from 'crypto';
 
 export interface SubtitleCue { seconds: number; text: string }
 export interface SubtitleSource { file: string; root: string; date: string | null }
+/** Recognized timestamped multipart exports share a session; unknown names stay source-bound. */
+export function recordingSessionKey(source: SubtitleSource): string {
+  const stem = path.basename(source.file).replace(/\.(?:srt|xml)$/iu, '').replace(/\.(?:live|speaker)$/iu, '');
+  const session = /^\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}_.+/u.test(stem) ? stem.replace(/_\d+_fix$/u, '') : stem;
+  return `${source.root}\0${path.dirname(source.file)}\0${session}`;
+}
 export const MAX_SUBTITLE_BYTES = 8 * 1024 * 1024;
+/** Historical YY date folders use 20YY; retain the session-folder date over export filenames. */
+export function recordingFolderDate(name: string): string | null {
+  const date = name.replace(/_/gu, '-');
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(date)) return date;
+  return /^\d{2}-\d{2}-\d{2}$/u.test(date) ? `20${date}` : null;
+}
 export function digest(value: string | Buffer): string { return createHash('sha256').update(value).digest('hex'); }
 export function within(root: string, file: string): boolean {
   const relative = path.relative(root, file);
@@ -56,8 +68,8 @@ export async function listSubtitles(configuredRoot: string, signal: AbortSignal)
   const entries = await fs.readdir(root, { withFileTypes: true });
   const folders = [{ folder: root, date: null as string | null }];
   for (const entry of entries) {
-    const date = entry.name.replace(/_/gu, '-');
-    if (entry.isDirectory() && !entry.isSymbolicLink() && /^\d{4}-\d{2}-\d{2}$/u.test(date)) folders.push({ folder: path.join(root, entry.name), date });
+    const date = recordingFolderDate(entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink() && date) folders.push({ folder: path.join(root, entry.name), date });
   }
   const results: SubtitleSource[] = [];
   for (const folder of folders) {

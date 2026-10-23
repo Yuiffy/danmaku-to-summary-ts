@@ -14,6 +14,14 @@ const normalizedText = value => String(value).normalize('NFKC').replace(/[\s\p{P
 const evenly = (rows, count) => count <= 0 ? [] : rows.length <= count ? rows
     : Array.from({ length: count }, (_, index) => rows[Math.floor(index * rows.length / count)]);
 
+function conversationWorkflow() {
+    try { return require('../workflow-runtime').loadWorkflow('clipping/preflightConversation'); }
+    catch (error) {
+        if (error.message !== 'Unknown compiled workflow: clipping/preflightConversation') throw error;
+        return null;
+    }
+}
+
 function samplePreflightAudience(audience, subtitles, names, cap) {
     if (audience.length <= cap) return audience;
     const targets = names.map(normalizedText).filter(Boolean);
@@ -45,7 +53,9 @@ function samplePreflightAudience(audience, subtitles, names, cap) {
     [...evenly(keywordRows, keywordQuota), ...evenly(repeatedRows, repeatedQuota)]
         .forEach(row => chosen.add(row.id));
     const priorityIds = new Set([...keywordRows, ...repeatedRows].map(row => row.id));
-    evenly(audience.filter(row => !priorityIds.has(row.id)), cap - chosen.size).forEach(row => chosen.add(row.id));
+    const context = audience.filter(row => !priorityIds.has(row.id));
+    const sample = conversationWorkflow()?.sampleConversationComments || evenly;
+    sample(context, cap - chosen.size).forEach(row => chosen.add(row.id));
     evenly(audience.filter(row => !chosen.has(row.id)), cap - chosen.size).forEach(row => chosen.add(row.id));
     return audience.filter(row => chosen.has(row.id));
 }
@@ -96,7 +106,7 @@ function buildPreflightInput(group, evidence, config, source = {}, danmaku = [],
         target: { names: config.keywords,
             possibleAsrForms: ['小C', '小c', '小Z', 'C级', 'c级', 'CG', '小碎', '小四', '小翠', '碎级', '碎机', '碎即', '穗吉'] },
         limits: { minSeconds: config.minClipSeconds, preferredSeconds: config.preferredClipSeconds,
-            maxSeconds: config.maxClipSeconds },
+            maxSeconds: config.maxClipSeconds, maxEvidenceChars: config.review?.maxEvidenceChars || 80000 },
         hits, subtitles, originalAsrSpans: rawSpans,
         ...(source.competitionGuard ? { competitionGuard: source.competitionGuard } : {}),
         ...(requiresBoundaryReview(config) ? { boundaryReviewRequired: true } : {}),
@@ -107,12 +117,14 @@ function buildPreflightInput(group, evidence, config, source = {}, danmaku = [],
 }
 
 function buildPreflightPrompt(input, phase = 'single', lockedClip = null, extraRules = []) {
+    const contextualSubtitles = input.audience?.length
+        ? conversationWorkflow()?.interleaveAudienceContext(input.subtitles, input.audience) : null;
     const single = phase === 'single';
     const finishing = phase === 'finish';
     const task = single ? 'Produce the complete final pre-render plan in ONE response: choose independent events and exact boundaries, proofread subtitles, and write title/description/two-line cover.'
         : finishing ? 'Write title/description/two-line cover for ONE locked event using its approved subtitles. Do not change its boundaries, subtitles or event.'
             : 'Plan independent publishable events and exact boundaries, assess keyword identities, and proofread their subtitles. Do NOT write public copy yet.';
-    return [
+    const lines = [
         'You are the pre-render editor for Chinese Bilibili livestream keyword clips.',
         task,
         'FIRST read the entire supplied source. Keyword hits are recall anchors, not facts or boundaries. Prefer a coherent setup, development, reversal and immediate reaction. Merge repeated windows of the SAME event; separate genuinely new topics. Do not force a clip count or truncate a story to fit a preferred duration.',
@@ -178,8 +190,13 @@ function buildPreflightPrompt(input, phase = 'single', lockedClip = null, extraR
                     + (input.boundaryReviewRequired ? `,${BOUNDARY_REVIEW_SCHEMA}` : '') + '}'),
         `Use IDs beginning ${input.groupId}- for proposed clips.`,
         ...(lockedClip ? [`LOCKED EVENT: ${JSON.stringify(lockedClip)}`] : []),
-        'SOURCE EVIDENCE:', JSON.stringify(input)
-    ].join('\n');
+    ];
+    const plain = [...lines, 'SOURCE EVIDENCE:', JSON.stringify(input)].join('\n');
+    if (!contextualSubtitles) return plain;
+    const enriched = [...lines,
+        '阅读语境：subtitles 每行的 audienceBefore 是上条字幕之后、此行开始前出现的原始弹幕，时间与 D-ID 均保留；它不是自动判定的回复关系。请把它与此行及随后字幕连起来读，就像看直播同时看弹幕。主播常不把弹幕问题念出来，也不重复问题里的名词：刚才讲一件事，接着可能已在回答观众新提到的另一件事。问句和实际回答合起来能自然交代省略的对象，不需要为了理解对话而要求主播再说一遍物品名。弹幕仍是观众文字，延迟回答也可能跨过插话。无需增加任何输出字段或问答报告。',
+        'SOURCE EVIDENCE:', JSON.stringify({ ...input, subtitles: contextualSubtitles })].join('\n');
+    return enriched.length <= (input.limits?.maxEvidenceChars || 80000) ? enriched : plain;
 }
 
 module.exports = { buildPreflightEvidence, buildPreflightInput, buildPreflightPrompt, samplePreflightAudience, ENDING_RULES };

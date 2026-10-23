@@ -15,6 +15,42 @@ const gpuTdrEnv = {
 module.exports = {
   apps: [
     {
+      name: 'campaign-early-trigger',
+      script: 'src/tools/clipping/campaignEarly.ts',
+      interpreter: process.execPath,
+      args: ['--loop'],
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      restart_delay: 10000,
+      watch: false,
+      windowsHide: true,
+      env: { NODE_ENV: 'production' },
+      error_file: path.join(__dirname, 'logs', 'campaign-early-error.log'),
+      out_file: path.join(__dirname, 'logs', 'campaign-early-out.log'),
+      time: true
+    },
+    {
+      name: 'shikamochi-comment-replies',
+      script: 'dist/comment-replies/tools/bilibili/commentReplies.js',
+      args: ['--config', 'config/comment-replies.example.json', '--live'],
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      stop_exit_codes: [0, 2],
+      restart_delay: 10000,
+      watch: false,
+      shutdown_with_message: true,
+      kill_timeout: 25000,
+      windowsHide: true,
+      env: { NODE_ENV: 'production', DANMAKU_PROJECT_ROOT: __dirname },
+      error_file: path.join(__dirname, 'logs', 'comment-replies-error.log'),
+      out_file: path.join(__dirname, 'logs', 'comment-replies-out.log'),
+      time: true
+    },
+    {
       name: 'sui-live-asr',
       script: 'dist/tools/live-asr/runLiveAsr.js',
       cwd: __dirname,
@@ -98,6 +134,23 @@ module.exports = {
       log_date_format: '',
       error_file: path.join(__dirname, 'logs', 'tuzi-balance-error.log'),
       out_file: path.join(__dirname, 'logs', 'tuzi-balance-out.log'),
+      time: false
+    },
+    {
+      name: 'recording-fts-index',
+      script: 'dist/tools/live-vote/recordingIndex.js',
+      args: '--loop --first-room 25788785',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      restart_delay: 30000,
+      kill_timeout: 10000,
+      windowsHide: true,
+      env: { NODE_ENV: 'production' },
+      error_file: path.join(__dirname, 'logs', 'recording-fts-index-error.log'),
+      out_file: path.join(__dirname, 'logs', 'recording-fts-index-out.log'),
       time: false
     },
     {

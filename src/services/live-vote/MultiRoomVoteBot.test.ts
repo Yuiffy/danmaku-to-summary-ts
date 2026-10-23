@@ -212,6 +212,36 @@ it('accepts question requests only from the local owner or configured global adm
   bot.stop();
 });
 
+it('lets global administrators query without cooldown or hourly quota across rooms while retaining owner limits', async () => {
+  const send = jest.fn(async () => {});
+  const answer = jest.fn(async () => ({ answer: '查到了。' }));
+  const bot = new MultiRoomVoteBot({ globalAdminUids: ['14279'], botUid: '99',
+    questions: { ...questionConfig, maxQuestionsPerHour: 1, unlimitedUids: ['14279'] } }, send, jest.fn(), answer);
+  bot.updateRooms(rooms);
+  const ask = async (roomId: string, uid: string, offset: number) => {
+    bot.ingest(message(roomId, uid, '@鹿饼 以前玩过什么？', now + offset), now + offset);
+    await bot.flush();
+  };
+  try {
+    // Administrators neither consume nor wait on ordinary admission quota.
+    await ask('100', '14279', 0);
+    await ask('200', '14279', 1);
+    await ask('100', '14279', 2);
+    await ask('100', '10', 3);
+    expect(answer).toHaveBeenCalledTimes(4);
+    // An ordinary user's global cooldown and exhausted hourly quota do not block an administrator.
+    await ask('200', '14279', 4);
+    await ask('100', '14279', 5);
+    expect(answer).toHaveBeenCalledTimes(6);
+    await ask('200', '20', 40000);
+    expect(answer).toHaveBeenCalledTimes(6);
+    expect(send).toHaveBeenCalledWith('200', '查询频率较高，请稍后再问。', expect.any(Function));
+    // A display name or the text of a command cannot grant the exemption to a viewer.
+    await ask('100', '30', 40001);
+    expect(answer).toHaveBeenCalledTimes(6);
+  } finally { bot.stop(); }
+});
+
 it('integrates target-room reminders with the existing queue, invalidating a pending reminder on an admin switch', async () => {
   jest.useFakeTimers({ now });
   let saved: ReminderState = initialReminderState();

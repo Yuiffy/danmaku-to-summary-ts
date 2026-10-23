@@ -151,6 +151,10 @@
         "C级": "岁己",
         "c 级": "岁己",
         "C 级": "岁己",
+        "c几": "岁己",
+        "C几": "岁己",
+        "c 几": "岁己",
+        "C 几": "岁己",
         "c自己": "岁己",
         "C自己": "岁己",
         "c 自己": "岁己",
@@ -905,6 +909,13 @@
     "strip_punctuation": true
   },
   "ai": {
+    "itineraryMemory": {
+      "enabled": true,
+      "scope": "selected",
+      "streamerIds": ["sui", "shiori", "mizuki", "miting", "mofu"],
+      "model": "gpt-6-luna",
+      "directory": "data/runtime/itinerary-memory"
+    },
     "providers": {
       "daiYu": {
         "type": "openai",
@@ -1165,20 +1176,56 @@
       "mit3uri": {
         "displayName": "三理Mit3uri",
         "uid": "2030198123",
-        "roomIds": ["1967216004"],
-        "speakerLabels": ["三理", "三理Mit3uri", "Mit3uri"],
-        "mentionLabels": ["三理Mit3uri", "三理", "Mit3uri"],
-        "referenceImages": ["public/reference_images/mit3uri_standing.png"]
+        "roomIds": [
+          "1967216004"
+        ],
+        "speakerLabels": [
+          "三理",
+          "三理Mit3uri",
+          "Mit3uri"
+        ],
+        "mentionLabels": [
+          "三理Mit3uri",
+          "三理",
+          "Mit3uri"
+        ],
+        "referenceImages": [
+          "public/reference_images/mit3uri_standing.png"
+        ],
+        "uploadTags": [
+          "三理Mit3uri"
+        ]
       },
       "mofu": {
+        "uid": "1125641408",
         "displayName": "犬绒Mofu",
         "aiClipName": "小绒",
-        "roomIds": ["1791260716"],
-        "searchTags": ["犬绒", "犬绒Mofu"],
-        "mentionLabels": ["犬绒", "小绒", "犬绒Mofu"],
-        "speakerLabels": ["犬绒Mofu", "Mofu"],
-        "aliases": ["犬绒", "小绒"],
-        "referenceImages": ["public/reference_images/mofu_standing_sheet.png"]
+        "roomIds": [
+          "1791260716"
+        ],
+        "searchTags": [
+          "犬绒",
+          "犬绒Mofu"
+        ],
+        "mentionLabels": [
+          "犬绒",
+          "小绒",
+          "犬绒Mofu"
+        ],
+        "speakerLabels": [
+          "犬绒Mofu",
+          "Mofu"
+        ],
+        "aliases": [
+          "犬绒",
+          "小绒"
+        ],
+        "referenceImages": [
+          "public/reference_images/mofu_standing_sheet.png"
+        ],
+        "uploadTags": [
+          "犬绒Mofu"
+        ]
       },
       "sui": {
         "displayName": "岁己SUI",
@@ -1230,17 +1277,38 @@
       "mizuki": {
         "displayName": "弥月Mizuki",
         "uid": "1789460279",
-        "roomIds": ["30655190"],
-        "searchTags": ["弥月Mizuki", "弥月"],
-        "mentionLabels": ["弥月Mizuki", "弥月", "老弥", "Mizuki"],
-        "speakerLabels": ["弥月Mizuki", "弥月", "Mizuki"],
-        "aliases": ["兔川弥月", "小弥", "老弥"],
+        "roomIds": [
+          "30655190"
+        ],
+        "searchTags": [
+          "弥月Mizuki",
+          "弥月"
+        ],
+        "mentionLabels": [
+          "弥月Mizuki",
+          "弥月",
+          "老弥",
+          "Mizuki"
+        ],
+        "speakerLabels": [
+          "弥月Mizuki",
+          "弥月",
+          "Mizuki"
+        ],
+        "aliases": [
+          "兔川弥月",
+          "小弥",
+          "老弥"
+        ],
         "referenceImages": [
           "public/reference_images/弥月Mizuki参考图.png"
         ],
         "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
         "contentHints": [
           "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
+        ],
+        "uploadTags": [
+          "弥月Mizuki"
         ]
       },
       "miting": {
@@ -1278,15 +1346,38 @@
       },
       "hazel": {
         "displayName": "灰泽满Hazel",
-        "roomIds": ["1713546334"],
-        "searchTags": ["灰泽满Hazel", "灰泽满"],
-        "mentionLabels": ["灰泽满Hazel", "灰泽满", "满满", "满神", "Hazel"],
-        "speakerLabels": ["灰泽满Hazel", "灰泽满", "Hazel"],
-        "aliases": ["满满", "满神", "会在卖", "会在买"],
+        "roomIds": [
+          "1713546334"
+        ],
+        "searchTags": [
+          "灰泽满Hazel",
+          "灰泽满"
+        ],
+        "mentionLabels": [
+          "灰泽满Hazel",
+          "灰泽满",
+          "满满",
+          "满神",
+          "Hazel"
+        ],
+        "speakerLabels": [
+          "灰泽满Hazel",
+          "灰泽满",
+          "Hazel"
+        ],
+        "aliases": [
+          "满满",
+          "满神",
+          "会在卖",
+          "会在买"
+        ],
         "referenceImages": [
           "public/reference_images/Hazel_灰泽满_立绘.png"
         ],
-        "characterDescription": "灰泽满Hazel，灰色短发、绿瞳，带绿色线条的螺旋马尾，风纪委员，常带果冻饰品。"
+        "characterDescription": "灰泽满Hazel，灰色短发、绿瞳，带绿色线条的螺旋马尾，风纪委员，常带果冻饰品。",
+        "uploadTags": [
+          "灰泽满Hazel"
+        ]
       },
       "liko": {
         "displayName": "莉蔻Liko",
@@ -1339,9 +1430,17 @@
       "viridis": {
         "displayName": "小松绿Viridis",
         "aiClipName": "小松",
-        "roomIds": ["1727071052"],
-        "searchTags": ["小松绿Viridis", "小松绿"],
-        "uploadTags": ["Viridis"],
+        "roomIds": [
+          "1727071052"
+        ],
+        "searchTags": [
+          "小松绿Viridis",
+          "小松绿"
+        ],
+        "uploadTags": [
+          "Viridis",
+          "小松绿Viridis"
+        ],
         "referenceImages": [
           "public/reference_images/viridis_official_standing.png"
         ]
@@ -1349,9 +1448,17 @@
       "chu2u": {
         "displayName": "羽啾chu2u",
         "aiClipName": "小羽",
-        "roomIds": ["1727074031"],
-        "searchTags": ["羽啾chu2u", "羽啾"],
-        "uploadTags": ["chu2u"],
+        "roomIds": [
+          "1727074031"
+        ],
+        "searchTags": [
+          "羽啾chu2u",
+          "羽啾"
+        ],
+        "uploadTags": [
+          "chu2u",
+          "羽啾chu2u"
+        ],
         "referenceImages": [
           "public/reference_images/chu2u_standing.png"
         ]
@@ -1435,7 +1542,11 @@
       "26966466": {
         "audioOnly": true,
         "anchorName": "小栞",
-        "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
+        "anchorNicknames": [
+          "栞栞",
+          "栞栞Shiori",
+          "Shiori"
+        ],
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
@@ -1519,6 +1630,34 @@
             "enabled": false
           }
         }
+      },
+      "1967216004": {
+        "anchorName": "三理Mit3uri",
+        "audioOnly": false
+      },
+      "1791260716": {
+        "anchorName": "犬绒Mofu",
+        "audioOnly": false
+      },
+      "25034104": {
+        "anchorName": "明前奶绿",
+        "audioOnly": false
+      },
+      "1713546334": {
+        "anchorName": "灰泽满Hazel",
+        "audioOnly": false
+      },
+      "1727071052": {
+        "anchorName": "小松绿Viridis",
+        "audioOnly": false
+      },
+      "30655190": {
+        "anchorName": "弥月Mizuki",
+        "audioOnly": false
+      },
+      "1727074031": {
+        "anchorName": "羽啾chu2u",
+        "audioOnly": false
       }
     }
   },
@@ -1531,6 +1670,7 @@
     "fillerRegex": "^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+"
   },
   "clipTopics": {
+    "editorialStyles": { "enabled": false, "mode": "auto", "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
     "enabled": false,
     "mode": "local_review",
     "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
@@ -1651,6 +1791,69 @@
     }
   },
   "ownStreamClips": {
+    "editorialStyles": { "enabled": false, "mode": "auto", "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
+    "campaigns": [
+      {
+        "id": "fuya-pilgrimage-2026-10",
+        "earlyTrigger": {
+          "enabled": false,
+          "titleKeywords": ["芙娅之魂", "我魂"],
+          "activatedAt": "2026-10-23T23:48:00+08:00"
+        },
+        "requiredGames": ["芙娅之魂", "芙娅之魂巡礼测试"],
+        "enabled": true,
+        "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
+        "startsAt": "2026-10-22T10:51:05+08:00",
+        "endsAt": "2026-11-06T00:00:00+08:00",
+        "roomIds": [
+          "1967216004",
+          "1791260716",
+          "25034104",
+          "1713546334",
+          "1727071052",
+          "30655190",
+          "1727074031"
+        ],
+        "settings": {
+          "maxClips": 2,
+          "uploadTags": [
+            "芙娅之魂",
+            "芙娅之魂巡礼测试"
+          ],
+          "ai": {
+            "fallbackToLocalRules": false
+          },
+          "publicationPolicy": {
+            "mode": "curated",
+            "minScore": 88,
+            "maxStandalone": 2,
+            "standoutScore": 100,
+            "bundles": {
+              "enabled": false
+            }
+          },
+          "enhancements": {
+            "enabled": true,
+            "workflow": "creative",
+            "selectionMode": "all_eligible",
+            "experiment": {
+              "enabled": true,
+              "ratio": 1,
+              "maxClips": 2
+            }
+          },
+          "selectionPolicy": {
+            "requireTimeCoverage": false,
+            "excludedCategories": [
+              "仅选活动期芙娅之魂游戏相关内容；排除其他游戏、与芙娅之魂无关的独立杂谈、唱歌、看视频、谢礼、待机和广告时段。可保留芙娅之魂游戏内自然发生的聊天、反应、与本游戏直接有关的讨论和必要铺垫。直播标题或只提到游戏名不能证明整个候选属于游戏环节，必须以片内原话与上下文核实。"
+            ],
+            "priorityCategories": [
+              "面向不熟悉主播的观众仍能看懂的强反差、翻车后反应、意外操作、独特怪话和有铺垫回扣的完整名场面。评分须比较本场独立传播看点与开头吸引力，不能仅因是工商、弹幕多或游戏热度打高分；相同笑点只留最好一条，没有突出内容可返回零条。"
+            ]
+          }
+        }
+      }
+    ],
     "radioDanmaku": { "enabled": true, "mode": "portrait", "roomIds": ["25788785"], "fontScale": 2, "fps": 30 },
     "enabled": true,
     "automaticPublication": {
@@ -1908,7 +2111,7 @@
     },
     "danmuRiskControl": {
       "enabled": false,
-      "intervalMs": 1800000,
+      "intervalMs": 60000,
       "logDirectory": "",
       "recorderStatePath": "data/runtime/recorder_watchdog.state.json",
       "monitorStatePath": "data/runtime/recorder_log_monitor.json",

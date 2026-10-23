@@ -467,6 +467,9 @@ python src/scripts/clip_upload_registry.py approve-review --id 123 --review-note
 该命令不调用 AI、不重做 ASR，也不投稿；只验证文案出处、生成对应封面并保存绑定
 视频、字幕、封面、文案、窗口和原始来源的人工确认。原 AI 复核结果不覆盖。
 原文不支持的引号/数字、来源变动、缺失或失败的媒体仍会拦截。
+已审核就绪的片段仍会应用显式传入的标题、简介、封面文字或来源类型；
+`--feedback-authorized` 也会保存本次反馈接受记录。仅在没有这些新输入时直接返回。
+已入队或已投稿的片段仍不能通过此命令修改。
 简介中的自动来源、录制/片段时间和有对应候选证据的情绪比例使用原生成器逐字
 识别并与内容正文分开校验；人工批准保留这些生成信息，正文的引号与数字仍须原文支持。
 已剔除但未切出的项必须先确认窗口并重新生成；连贯长片可使用下文的逐条时长授权，不能仅凭确认文字直接发布。
@@ -513,6 +516,17 @@ python src/scripts/clip_upload_registry.py rebuild --id 123 --review-note "已�
 ```
 
 `rebuild` 只准备待重压资料，不立即压制或投稿。
+
+重点前置片的字幕包含 OP 和重排时间轴，不能直接套回原录播。需要去掉 OP 并恢复
+原片顺序时，显式使用 `rebuild --ordinary`，再执行 `cut --automatic-review`。
+该操作保留原 ID、原窗口和旧成片，从源字幕重建普通片并清除旧重排映射；已有逐字
+字幕修订时拒绝丢弃修订。未指定 `--ordinary` 的重排片重建会说明原因并停止。
+
+显式 `rebuild` 会把旧的局部字幕诊断尝试留在修订历史，并为本次成片重新开始审核，
+避免旧外窗的音频诊断阻断新窗口。它不把改窗或编辑备注当作审核通过。
+自有直播修订完成独立人物和成片审核后，可沿原 ID 使用 `precision`。
+精切读取修订后的窗口、发布文案及当前媒体哈希；旧选材计划中的待核标记不覆盖新审核，
+旧窗口的 keep/drop 计划也不套用到新窗口。来源、字幕、封面、文案或审核变化仍须重新处理。
 
 若原字幕存在已确认的时间轴错配，使用绑定原录播/字幕及证据哈希的校准转写描述符：
 
@@ -842,6 +856,18 @@ Within the existing audience-row budget, target-name messages and messages
 closely repeated in nearby speech receive shared priority; remaining slots keep
 context coverage. A flood of keyword messages must not erase a delayed question.
 This affects evidence recall only, never speech attribution or identity approval.
+Initial generation can receive `subtitles[].audienceBefore`: sampled chat since
+the previous subtitle start is placed directly before the next spoken row,
+preserving source labels, IDs, times and exact text. This helps the model read
+chat-driven topic changes and replies with omitted objects together, without
+inferring a question/answer link in code or duplicating the spoken transcript.
+Within existing context slots, distinct substantive comments take precedence over
+repeated laughter/emotes; keyword and repeated-speech priority shares remain intact.
+The existing row and request budgets still apply; the optional inline view falls
+back to the original presentation when it would exceed the request budget.
+No new output report, reference
+validation or publication hold is introduced. Older active workflow releases use
+the original input presentation until the new helper is available.
 Candidate 2268 exposed both failures: uniform sampling dropped the introduction
 and delayed question, and the selected answer lost its earlier group-chat setup.
 Regression coverage lives in `preflight_boundaries.test.ts`; live semantic quality

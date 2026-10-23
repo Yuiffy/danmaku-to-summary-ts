@@ -16,6 +16,7 @@ export interface EvidenceQueryInput {
 export interface EvidenceQueryResult {
   roomId: string; question: string; elapsedMs: number;
   embeddingStatus: 'disabled' | 'ready' | 'unavailable'; indexedFiles: number; indexComplete: boolean; limited: boolean;
+  lexicalStatus?: 'disabled' | 'ready' | 'partial';
   hits: Array<EvidenceSearchHit & { expanded?: { hit: EvidenceHit; context: EvidenceSearchHit['context'] } | { error: string } }>;
   searchedRooms?: Array<{ roomId: string; name: string }>;
 }
@@ -64,6 +65,7 @@ export async function queryRecordingEvidence(runtime: QuestionRuntime, input: Ev
     return {
       roomId, question, elapsedMs: Date.now() - started, embeddingStatus: evidence.embeddingStatus,
       indexedFiles: coverage.reduce((sum, room) => sum + room.indexedFiles, 0), indexComplete: coverage.every(room => room.indexComplete),
+      lexicalStatus: coverage.every(room => room.lexicalStatus === 'ready') ? 'ready' : coverage.every(room => room.lexicalStatus === 'disabled') ? 'disabled' : 'partial',
       searchedRooms: evidence.rooms.map(({ roomId, name }) => ({ roomId, name })), limited: result.limited,
       hits: result.hits.map((hit, index) => ({ ...hit,
         ...(index < input.expandTop ? { expanded: evidence.context({ evidenceId: hit.evidenceId }) } : {}) }))

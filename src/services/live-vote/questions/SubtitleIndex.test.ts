@@ -22,6 +22,27 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(directory, { recursive: true, force: true }); });
 
+it('indexes and verifies semantic citations from legacy date folders without traversing linked or arbitrary folders', async () => {
+  const archive = path.join(room, '24_09_30');
+  await fs.mkdir(archive);
+  const archivedFile = path.join(archive, '2024_10_01_export.srt');
+  await fs.writeFile(archivedFile, text('体检量了身高和体重'));
+  const outside = path.join(directory, 'outside');
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'private.srt'), text('不能读取'));
+  await fs.symlink(outside, path.join(room, '24_09_29'), process.platform === 'win32' ? 'junction' : 'dir');
+  await fs.mkdir(path.join(room, 'clips'));
+  await fs.writeFile(path.join(room, 'clips', 'clip.srt'), text('剪辑副本'));
+  const manifest = await updateSubtitleRoom(config, '100', [room], embedder, signal);
+  expect(manifest.sources).toHaveLength(2);
+  expect(manifest.sources).toContainEqual(expect.objectContaining({ file: archivedFile, date: '2024-09-30' }));
+  const vector = (await embedder.embed(['query'], signal))[0];
+  const semanticSearch = (date: string | null) => searchSubtitleIndex(config, '100', [room], vector, date, signal);
+  const result = await new RecordingEvidence([room], signal, { semanticSearch })
+    .search({ terms: ['健康检查'], kind: 'subtitle', date: '2024-09' });
+  expect(result.hits).toEqual([expect.objectContaining({ date: '2024-09-30', excerpt: '体检量了身高和体重' })]);
+});
+
 it('builds incrementally, ranks and scopes by room/date/version, and removes deleted sources', async () => {
   const roots = [room];
   const first = await updateSubtitleRoom(config, '100', roots, embedder, signal);
@@ -29,6 +50,11 @@ it('builds incrementally, ranks and scopes by room/date/version, and removes del
   expect(embedder.embed).toHaveBeenCalledTimes(1);
   await updateSubtitleRoom(config, '100', roots, embedder, signal);
   expect(embedder.embed).toHaveBeenCalledTimes(1);
+  const lexical = path.join(config.directory, 'shards', `${first.sources[0].key}.lex.json.gz`);
+  await fs.unlink(lexical);
+  await updateSubtitleRoom(config, '100', roots, embedder, signal);
+  expect((await fs.stat(lexical)).size).toBeGreaterThan(0);
+  expect(embedder.embed).toHaveBeenCalledTimes(1); // Legacy databases gain full-text metadata without re-embedding.
   const vector = (await embedder.embed(['question'], signal))[0];
   expect(await searchSubtitleIndex(config, '100', roots, vector, '2025', signal)).toMatchObject([{ file, cue: 0, score: 1 }]);
   expect(await searchSubtitleIndex(config, '200', roots, vector, null, signal)).toEqual([]);
@@ -124,9 +150,12 @@ it('publishes partial checkpoints and only prunes unreferenced shards after the 
   expect(partial?.sources).toHaveLength(20);
   expect(embedder.embed).toHaveBeenCalledTimes(1); // Identical exports reuse a content-addressed shard.
   const orphan = path.join(config.directory, 'shards', 'a'.repeat(64) + '.f32');
+  const orphanLexical = path.join(config.directory, 'shards', 'a'.repeat(64) + '.lex.json.gz');
   await fs.writeFile(orphan, 'unused');
+  await fs.writeFile(orphanLexical, 'unused');
   expect(await pruneSubtitleShards(config.directory)).toBe(0);
   await fs.utimes(orphan, new Date(0), new Date(0));
-  expect(await pruneSubtitleShards(config.directory)).toBe(1);
+  await fs.utimes(orphanLexical, new Date(0), new Date(0));
+  expect(await pruneSubtitleShards(config.directory)).toBe(2);
   expect(await loadManifest(config, '100', [room])).toEqual(partial);
 });

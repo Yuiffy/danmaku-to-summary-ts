@@ -18,6 +18,7 @@ async function produceOwnClips(context, hooks) {
     const sourceReview = batch => require('../workflow-runtime').loadWorkflow('clipping/ownSourceReview').reviewOwnSourceCandidates(batch, {
         enabled: config.attribution?.sourceReviewBeforeRender === true && (config.attribution.roomIds || []).map(String).includes(String(info.roomId)),
         roomId: info.roomId, streamerName: info.streamerName || metadata.streamerName, sourceSha256: evidence.sourceSha256,
+        campaignContext: require('../workflow-runtime').loadWorkflow('clipping/ownCampaign').campaignReviewContext(config, { ...options, roomId: info.roomId }),
         cues: evidence.cues, audience: danmaku, excludedCategories: config.selectionPolicy?.excludedCategories || [],
         aiEnabled: config.ai?.enabled === true && rootConfig.ai?.text?.enabled !== false,
         diagnostics, maxRequests: config.attribution?.maxRequests, maxBatchChars: config.attribution?.maxBatchChars
@@ -27,6 +28,9 @@ async function produceOwnClips(context, hooks) {
                 || row.clip.candidateIndex !== undefined && String(row.clip.candidateIndex) === String(original.candidateIndex)
                 || row.start === original.start && row.end === original.end);
             const checkOverlap = candidate => {
+                if (!require('../../core/media/RecordingCoverage.ts').filterCampaignCoverage([candidate], options.mediaPath).length) {
+                    throw new Error('切前边界修复进入已提前处理的活动录像');
+                }
                 if (!reservation || reservedWindows.some(row => row !== reservation
                     && Math.min(candidate.end, row.end) - Math.max(candidate.start, row.start) > .001)) {
                     throw new Error('切前边界修复与另一保留片段重叠');
@@ -73,7 +77,9 @@ async function produceOwnClips(context, hooks) {
             ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {}), clips: current });
     };
     const scheduler = createClipResourceAdaptiveScheduler({ ownConfig: config, rootConfig });
-    const enhancementsEnabled = require('./enhancement_runner').enhancementEnabled(config.enhancements, info.roomId);
+    const stylesEnabled = config.editorialStyles?.enabled === true;
+    const prepare = (batch, settings) => stylesEnabled ? { clips: batch.map(clip => ({ ...clip, precisionExperiment: undefined })) } : hooks.prepare(batch, settings);
+    const enhancementsEnabled = !stylesEnabled && require('./enhancement_runner').enhancementEnabled(config.enhancements, info.roomId);
     const creative = enhancementsEnabled && config.enhancements.workflow === 'creative';
     const pipelineOptions = { scheduler, mediaConcurrency: scheduler.enabled ? scheduler.maxConcurrency : config.clipConcurrency,
         enhancementConcurrency: Number(config.enhancementConcurrency) || 3,
@@ -90,8 +96,8 @@ async function produceOwnClips(context, hooks) {
         const incremental = createIncrementalRender({ outputRoot, source, config, initialClips: clips, pipelineOptions, label: base || 'PLAN',
             // Global creative selection happens after ordinary baselines, never in each review batch.
             prepare: batch => creative ? { clips: batch.map(clip => ({ ...clip, precisionExperiment: undefined })) }
-                : hooks.prepare(batch, { ...options, pacingScanBudget }),
-            render: (clip, index, execution) => hooks.render(clip, index, { ...execution, deferEnhancement: creative }) });
+                : prepare(batch, { ...options, pacingScanBudget }),
+            render: (clip, index, execution) => hooks.render(clip, index, { ...execution, deferEnhancement: creative || stylesEnabled }) });
         metadata.progressPath = incremental.progressPath;
         savePlan(clips.map(clip => ({ ...clip, publicCopyPending: true, uploadReady: false })), 'reviewing');
         let reviewError;
@@ -138,7 +144,7 @@ async function produceOwnClips(context, hooks) {
         savePlan(clips, 'complete');
     } else {
         clips = await sourceReview(await hooks.review(clips));
-        experiment = await hooks.prepare(clips, options); clips = experiment.clips;
+        experiment = await prepare(clips, options); clips = experiment.clips;
         savePlan(clips, 'complete');
         if (!options.planOnly) {
             started = new Date();
@@ -156,7 +162,14 @@ async function produceOwnClips(context, hooks) {
                 results = await pipeline.drain();
                 metadata.precisionDelivery.phase = 'precision_complete';
                 savePlan(clips, 'complete');
-            } else results = await runClipPipeline(clips.map((clip, index) => execution => hooks.render(clip, index, execution)), pipelineOptions);
+            } else results = await runClipPipeline(clips.map((clip, index) => execution => hooks.render(clip, index,
+                stylesEnabled ? { ...execution, deferEnhancement: true } : execution)), pipelineOptions);
+        }
+    }
+    if (stylesEnabled && !options.planOnly) results = await require('./editorial_styles').applyStyles(results, { ...context, clips });
+    for (const result of results) {
+        if (!require('../../core/media/RecordingCoverage.ts').filterCampaignCoverage([result.window], options.mediaPath).length) {
+            throw new Error('成片范围进入已处理的活动录像，保留供复核');
         }
     }
     if (experiment?.summary) metadata.precisionExperiment = experiment.summary;
@@ -175,6 +188,9 @@ async function produceOwnClips(context, hooks) {
             const [reviewed] = await sourceReview(await hooks.review([clip]));
             if (!reviewed || reviewed.publicCopyPending || reviewed.preRenderHold || reviewed.sourceReview?.status === 'needs_review') {
                 throw new Error('Boundary revision failed source or actor review');
+            }
+            if (!require('../../core/media/RecordingCoverage.ts').filterCampaignCoverage([reviewed], options.mediaPath).length) {
+                throw new Error('Boundary revision overlaps an already processed campaign source');
             }
             const directory = path.join(outputRoot, 'automatic_boundary_revisions', require('crypto').randomUUID());
             fs.mkdirSync(directory, { recursive: true });

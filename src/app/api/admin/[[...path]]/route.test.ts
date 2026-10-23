@@ -15,6 +15,14 @@ afterEach(() => { global.fetch = fetchOriginal; delete process.env.ADMIN_TOKEN_F
 function request(endpoint: string, options: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000/api/admin${endpoint}`, { ...options, headers: { Host: '127.0.0.1:3000', ...options.headers } });
 }
+it('exposes comment history as read-only and rejects writes and arbitrary subpaths', async () => {
+  fetchMock.mockResolvedValue(Response.json({ rows: [] }));
+  expect((await forwardAdmin(request('/comment-replies?status=active'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/comment-replies');
+  expect((await forwardAdmin(request('/comment-replies', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/comment-replies/resume'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
 it('blocks cross-site and arbitrary endpoints before reading credentials or contacting services', async () => {
   expect((await forwardAdmin(request('/configs', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
   expect((await forwardAdmin(request('/configs', { headers: { 'Sec-Fetch-Site': 'cross-site' } }))).status).toBe(403);
@@ -29,6 +37,14 @@ it('proxies title choices and statistics only through fixed registered-ID routes
   }
   expect((await forwardAdmin(request('/clips/path/titles'))).status).toBe(404);
   expect((await forwardAdmin(request('/clips/1/titles/set-default'))).status).toBe(404);
+});
+it('proxies login recovery through the fixed local route with a bounded body', async () => {
+  fetchMock.mockResolvedValue(Response.json({ login: 'valid' }));
+  expect((await forwardAdmin(request('/bilibili/login'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/bilibili/login');
+  expect((await forwardAdmin(request('/bilibili/login/arbitrary'))).status).toBe(404);
+  expect((await forwardAdmin(request('/bilibili/login', { method: 'POST', body: JSON.stringify({ cookie: 'x'.repeat(66000) }) }))).status).toBe(413);
+  expect((await forwardAdmin(request('/bilibili/login', { method: 'POST', headers: { Origin: 'https://evil.test' }, body: '{}' }))).status).toBe(403);
 });
 it('preserves ranges and translates SRT display to VTT without leaking the server credential', async () => {
   fetchMock.mockResolvedValue(new Response('part', { status: 206, headers: { 'Content-Range': 'bytes 0-3/100', 'Accept-Ranges': 'bytes' } }));

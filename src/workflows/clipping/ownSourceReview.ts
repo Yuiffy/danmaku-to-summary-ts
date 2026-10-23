@@ -11,6 +11,7 @@ export interface OwnSourceReviewInput {
     cues: Data[]; audience: Data[]; excludedCategories: string[];
     batchSize?: number; maxBatchChars?: number; maxRequests?: number; aiEnabled: boolean;
     diagnostics: Data;
+    campaignContext?: Data | null;
 }
 export interface OwnSourceReviewAdapters {
     snapshot(): string;
@@ -83,6 +84,7 @@ export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceR
                 SUBTITLE_MATERIALITY_STANDARD,
                 PUBLIC_COPY_MATERIALITY_STANDARD,
                 SELECTION_SCOPE_STANDARD,
+                'campaignContext若存在，是与当前完整字幕/弹幕哈希绑定的已验证整场游戏摘要，不是标题推测。结合片内玩法、角色、道具和上下文核对游戏归属；不要求每段战斗或游戏反应都复读游戏名。它也不证明所有窗口都属于该游戏，其他游戏、独立杂谈和观看内容仍须排除。',
                 `主播：${input.streamerName}；明确排除的选材范围：${JSON.stringify(input.excludedCategories)}。区分影视对白、假设与主播现实经历；触及排除范围为rejected。`,
                 '不能用窗口外原话撑文案；没有首尾完整依据为needs_review。此前人物复核通过不等于字幕、故事和选材已通过。没有视频/音频时不声称看过或听过。',
                 '每片只给1–2条具体中文阻塞理由，每条60字以内，保留疑词/数字/时间并说明事实影响；通过时issues为空，不写小错、英文审核标签或重复的通过说明。',
@@ -91,7 +93,7 @@ export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceR
                 'revise_window: {"tool":"revise_window","startCueId":"G1","endCueId":"G9","reason":"如何保留原事件并完整收束"}；仅已提供ID，最多一次。系统重新详细编辑、独立边界和人物审核，再回本步骤复核，尚不渲染。',
                 'hold: {"tool":"hold","reason":"具体为何无法补齐"}；源耗尽或不能用原文解决才保留待核。passed时不可返回工具。已有的工具记录会给出，不能重复修复。',
                 '只输出JSON {"reviews":[{"clipId":"s1","status":"passed|needs_review|rejected","checks":{"content":true,"subtitles":true,"policy":true},"issues":[],"boundaryAction":null}] }；passed须所有checks为true且无阻塞。',
-                JSON.stringify({ sourceSha256: input.sourceSha256, contextSeconds: {before, after}, toolHistory: history, packets })].join('\n');
+                JSON.stringify({ sourceSha256: input.sourceSha256, campaignContext: input.campaignContext || null, contextSeconds: {before, after}, toolHistory: history, packets })].join('\n');
             if (prompt.length > (input.maxBatchChars || 36000)) {
                 if (batch.length === 1) throw new Error('完整切前证据超过输入预算，未截断原话');
                 const middle = Math.ceil(batch.length / 2);

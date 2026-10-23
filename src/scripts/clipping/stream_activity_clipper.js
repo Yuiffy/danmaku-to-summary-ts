@@ -232,13 +232,14 @@ async function refreshPresentation(row, plan, root, options = {}) {
     }
     const scopedPlan = row.activitySelection ? { ...plan, events: plan.events.filter(event =>
         row.activities.some(selected => selected.id === event.id)) } : plan;
-    const presentation = presentationTools.presentationFor(scopedPlan, row.kind, row.output.parts, titleEvidence);
+    const presentation = presentationTools.presentationFor(scopedPlan, row.kind, row.output.parts, titleEvidence,
+        planTools.getActivityConfig(root)[row.kind].tags);
     if (row.presentation?.version === presentation.version && row.presentation?.signature === presentation.signature) return row;
     if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
     const coverPath = presentationTools.coverPathFor(row.output.metadataPath, presentation);
     await (options.cover || media.activityCover)(presentation.parts[0], coverPath, root, presentation.cover);
-    return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix,
-        ...(row.kind === 'watch' ? { tags: presentation.tags,
+    return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix, tags: presentation.tags,
+        ...(row.kind === 'watch' ? {
             source: require('../workflow-runtime').loadWorkflow('clipping/watchPublicNames').watchPublicText(row.upload.source, row.activities) } : {}) },
         output: { ...row.output, parts: presentation.parts, coverPath }, coverSha256: fileDigest(coverPath),
         presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
@@ -493,7 +494,7 @@ async function generateStreamActivities(options = {}) {
                         old = await refreshPresentation(old, plan, root, options);
                         const route = config[kind].collection || {};
                         Object.assign(old.upload, { collectionSectionId: route.sectionId || null, collectionSeasonId: route.seasonId || null,
-                            tags: config[kind].tags, tid: config[kind].tid });
+                            tid: config[kind].tid });
                         writeJsonAtomic(metadataPath, old);
                     }
                     metadata.push(old); continue;
@@ -515,7 +516,7 @@ async function generateStreamActivities(options = {}) {
                 try { parts.push(await (options.renderPart || media.renderActivityPart)(options.mediaPath, part, outputPath, root, lease.profile)); }
                 finally { lease.release(); }
             }
-            const presentation = presentationTools.presentationFor(plan, kind, parts, titleEvidence);
+            const presentation = presentationTools.presentationFor(plan, kind, parts, titleEvidence, config[kind].tags);
             const coverPath = presentationTools.coverPathFor(path.join(mediaDirectory, `${kind}.json`), presentation);
             const lease = await scheduler.acquire();
             try { await (options.cover || media.activityCover)(parts[0], coverPath, root, presentation.cover); } finally { lease.release(); }

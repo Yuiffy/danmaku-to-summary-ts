@@ -1,5 +1,7 @@
 import * as path from 'path';
 import { EmbeddingConfig } from './EmbeddingClient';
+import { DanmakuAttribution } from './DanmakuEvidence';
+import { RecordingFtsConfig } from './RecordingFtsIndex';
 
 export interface LiveQuestionConfig {
   enabled: boolean;
@@ -14,7 +16,10 @@ export interface LiveQuestionConfig {
   noticeCooldownMs?: number;
   timeoutMs?: number;
   maxQuestionsPerHour?: number;
+  /** Trusted numeric UIDs exempt from query frequency limits, still subject to authorization. */
+  unlimitedUids?: string[];
   semantic?: EmbeddingConfig;
+  lexical?: RecordingFtsConfig;
 }
 
 export interface QuestionRequest {
@@ -24,8 +29,8 @@ export interface QuestionRequest {
   askedAt?: number;
 }
 
-export interface QuestionSource {
-  kind: 'subtitle' | 'danmaku' | 'gift-catalog';
+export interface QuestionSource extends DanmakuAttribution {
+  kind: 'subtitle' | 'danmaku' | 'gift-catalog' | 'highlight' | 'clip-subtitle';
   date: string | null;
   time: string;
   roomId?: string;
@@ -63,7 +68,17 @@ export const NO_EVIDENCE = '没在录像字幕和弹幕中找到可靠依据。'
 export function validateQuestionConfig(config: LiveQuestionConfig): void {
   if (!config || typeof config.enabled !== 'boolean') throw new Error('questions.enabled must be boolean');
   if (!config.enabled) return;
+  if (config.unlimitedUids !== undefined && (!Array.isArray(config.unlimitedUids) || config.unlimitedUids.length > 1000 ||
+      config.unlimitedUids.some(uid => typeof uid !== 'string' || !/^[1-9]\d*$/u.test(uid)))) {
+    throw new Error('questions.unlimitedUids must contain numeric UID strings');
+  }
   const semantic = config.semantic;
+  const lexical = config.lexical;
+  if (lexical !== undefined && (typeof lexical.enabled !== 'boolean' || !path.isAbsolute(lexical.directory || '') ||
+      path.parse(lexical.directory).root === path.resolve(lexical.directory) || lexical.pollIntervalMs !== undefined &&
+      (!Number.isInteger(lexical.pollIntervalMs) || lexical.pollIntervalMs < 30000 || lexical.pollIntervalMs > 3600000))) {
+    throw new Error('Invalid questions.lexical configuration');
+  }
   if (semantic !== undefined && (typeof semantic.enabled !== 'boolean' || !path.isAbsolute(semantic.directory || '') ||
     !['local', 'daiyu'].includes(semantic.backend) || typeof semantic.model !== 'string' || !semantic.model.trim() ||
     !Number.isInteger(semantic.dimensions) || semantic.dimensions < 32 || semantic.dimensions > 4096 ||
@@ -160,8 +175,12 @@ export function formatQuestionRecord(record: QuestionRecord): string {
   for (const [index, clue] of clues.slice(0, 3).entries()) {
     const text = publicQuestionText(clue.excerpt, 300);
     const room = clue.roomId ? `${publicQuestionText(clue.roomName || clue.roomId, 60)}（${clue.roomId}） ` : '';
-    const kind = clue.kind === 'gift-catalog' ? `舰礼档案（所属月${clue.catalogMonth || '不详'}）` : clue.kind === 'subtitle' ? '录像字幕' : '观众弹幕';
-    lines.push(`${index + 1}. ${room}${clue.date || '日期不详'} ${clue.time} ${kind}${text ? `：${text}` : ''}`);
+    const kind = clue.kind === 'gift-catalog' ? `舰礼档案（所属月${clue.catalogMonth || '不详'}）` : clue.kind === 'subtitle' ? '录像字幕' : clue.kind === 'highlight' ? '精选摘要（粗略线索）' : clue.kind === 'clip-subtitle' ? '切片字幕（切片内时间）' : clue.messageType === 'superchat' ? '观众SC' : '观众弹幕';
+    const sender = publicQuestionText(clue.senderName || '', 80);
+    const uid = clue.senderUid && /^[1-9]\d*$/u.test(clue.senderUid) ? clue.senderUid : '';
+    const sentAt = clue.sentAt && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$/u.test(clue.sentAt) ? clue.sentAt.slice(0, 19).replace('T', ' ') : '';
+    const details = [sender && `发送者${sender}`, uid && `UID ${uid}`, sentAt && `${clue.sentAtBasis === 'recording_start' ? '按录制起点推算' : '发送时间'}${sentAt}（北京时间）`].filter(Boolean).join('；');
+    lines.push(`${index + 1}. ${room}${clue.date || '日期不详'} ${clue.time} ${kind}${details ? `（${details}）` : ''}${text ? `：${text}` : ''}`);
   }
   if (!clues.length && record.result.basis !== 'general') lines.push('在已检索的直播记录中没有找到可靠依据。');
   return lines.join('\n');

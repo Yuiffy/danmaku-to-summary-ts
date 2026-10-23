@@ -121,6 +121,11 @@ def check_artifacts(metadata):
 
 def validate_activity_review(metadata):
     review = metadata.get("activityReview") or {}
+    if __package__:
+        from .activity_feedback_acceptance import validate_feedback
+    else:
+        from activity_feedback_acceptance import validate_feedback
+    validate_feedback(metadata)
     if review.get('authority') == 'automatic' or (metadata.get('activityAutomaticPublicationRequired') and review.get('authority') != 'human'):
         if metadata.get('uploadReady') is not True or review.get('version') != 1 or review.get('status') != 'approved':
             raise ValueError('automatic activity approval is required')
@@ -138,23 +143,37 @@ def validate_activity_review(metadata):
     if review.get("contentSha256") != content_digest(metadata):
         raise ValueError("activity submission changed after review")
     check_artifacts(metadata)
+    if review.get('acceptanceMode') == 'feedback':
+        check_source(metadata)
 
 
-def approve(path, note):
+def check_source(metadata):
+    source = metadata['sourceSnapshot']
+    stat = Path(source['mediaPath']).stat()
+    if str(stat.st_size) != source['mediaBytes'] or str(stat.st_mtime_ns) != source['mediaMtimeNs']:
+        raise ValueError('activity recording changed before review')
+    for key in ('srt', 'xml'):
+        if source.get(key + 'Path') and file_digest(source[key + 'Path']) != source[key + 'Sha256']:
+            raise ValueError('activity source evidence changed before review')
+
+
+def approve(path, note, *, feedback_authorized=False):
     path = Path(path).resolve()
     if not note.strip():
         raise ValueError("activity review needs a substantive note")
     metadata = json.loads(path.read_text(encoding="utf-8-sig"))
+    if feedback_authorized:
+        if __package__:
+            from .activity_feedback_acceptance import accept_activities
+        else:
+            from activity_feedback_acceptance import accept_activities
+        accept_activities(metadata, note)
     check_artifacts(metadata)
-    source = metadata["sourceSnapshot"]
-    stat = Path(source["mediaPath"]).stat()
-    if str(stat.st_size) != source["mediaBytes"] or str(stat.st_mtime_ns) != source["mediaMtimeNs"]:
-        raise ValueError("activity recording changed before review")
-    for key in ("srt", "xml"):
-        if source.get(key + "Path") and file_digest(source[key + "Path"]) != source[key + "Sha256"]:
-            raise ValueError("activity source evidence changed before review")
+    check_source(metadata)
     metadata["activityReview"] = {"version": 1, "status": "approved", "authority": "human", "note": note,
         "contentSha256": content_digest(metadata)}
+    if feedback_authorized:
+        metadata['activityReview'].update(acceptanceMode='feedback', audioVisualReviewed=False)
     metadata["uploadReady"] = True
     validate_activity_review(metadata)
     temporary = path.with_suffix(path.suffix + ".review.tmp")
@@ -167,9 +186,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--note")
+    parser.add_argument('--feedback-authorized', action='store_true')
     parser.add_argument('--check-automatic', action='store_true')
     parser.add_argument('--automatic-proof')
     args = parser.parse_args()
+    if args.feedback_authorized and (args.check_automatic or args.automatic_proof):
+        parser.error('feedback acceptance cannot create automatic approval')
     try:
         if args.check_automatic or args.automatic_proof:
             from activity_auto_publication import ready, approve as approve_automatic
@@ -183,7 +205,7 @@ def main():
             return
         if not args.note:
             raise ValueError('activity human review needs a substantive note')
-        approved = approve(args.metadata, args.note)
+        approved = approve(args.metadata, args.note, feedback_authorized=args.feedback_authorized)
         print(f"[OK] reviewed multipart submission: {approved}")
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(2, f"[ERROR] {error}\n")

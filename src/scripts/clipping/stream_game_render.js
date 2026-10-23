@@ -41,7 +41,7 @@ function singleParts(events, config, capabilities) {
             const chapters = event.chapters.filter(c => c.start >= start && c.start < end);
             const leading = [...event.chapters].reverse().find(c => c.start <= start) || { title: '游戏开始', description: '进入本场游戏。' };
             result.push({ activityId: event.id, gameId: event.gameId, start, end, duration: end - start,
-                title: `${leading.title}${count > 1 ? `（${i + 1}/${count}）` : ''}`,
+                title: `${(chapters.find(c => ['boss', 'location'].includes(c.kind) && c.nameEvidence) || leading).title}${count > 1 ? `（${i + 1}/${count}）` : ''}`,
                 description: chapters.map(c => c.description).join(' '), chapters: [{ ...leading, start }, ...chapters.filter(c => c.start > start + .01)] });
             start = end;
         }
@@ -85,8 +85,8 @@ function publicCopy(plan, game, parts, episode, submission, submissions) {
     const phaseLabels = (labels.length ? labels : unique).filter(label => ![...nameKeys].some(key => normalize(label).includes(key)));
     const focusLabels = [...new Set([...named, ...phaseLabels])], selected = [];
     for (const label of focusLabels) {
-        if (selected.length === 2) break;
-        if ([...selected, label].join('、').length <= 24) selected.push(label);
+        if (selected.length === 3) break;
+        if ([...selected, label].join('、').length <= 40) selected.push(label);
     }
     const focus = selected.join('、') || '探索与推进';
     const title = `${game.name} 第${String(episode).padStart(2, '0')}集${submissions > 1 ? `（${submission}/${submissions}）` : ''}｜${focus} ${plan.recordedAt.slice(0, 10)}`;

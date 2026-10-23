@@ -75,10 +75,13 @@ async function generateOwnStreamClipsForMedia(
     xmlPath,
     roomId = null,
     context = {},
-    fullLiveContextPath = null
+    fullLiveContextPath = null,
+    liveContentSummaryPath = null,
+    options = {}
 ) {
     const config = configLoader.getConfig();
-    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    const info = ownStreamClipper.parseRecordingInfo(mediaPath, { ...context, roomId });
+    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config, roomId, info.recordedAt);
     if (!clipConfig.enabled) {
         return [];
     }
@@ -96,6 +99,15 @@ async function generateOwnStreamClipsForMedia(
         return [];
     }
 
+    const source = { mediaPath, srtPath, xmlPath, roomId, context, fullLiveContextPath, liveContentSummaryPath };
+    const decision = await require('./workflow-runtime').loadWorkflow('clipping/ownCampaign').ensureCampaignContent(clipConfig, source, {
+        prepare: async () => Object.assign(source, await require('./live_content_preparation').prepareCampaignContentSummary({ ...source, config, clipConfig }))
+    });
+    if (!decision.allowed) { console.log(`跳过活动有趣切片（${clipConfig.campaignContentGate?.id}）：${decision.reason}；保留原关键词流程。`); return []; }
+    if (!context.earlyCampaign && config.ownStreamClips?.campaigns?.some(campaign => campaign.id === clipConfig.campaignContentGate?.id && campaign.earlyTrigger?.enabled)) {
+        require('../core/media/RecordingCoverage.ts').reserveFinalCampaign(mediaPath, clipConfig.campaignContentGate.id);
+    }
+    require('../core/media/RecordingCoverage.ts').filterCampaignCoverage([], mediaPath);
     console.log('\n🎬  开始岁己直播有趣切片...');
     try {
         const results = await ownStreamClipper.generateOwnStreamClips({
@@ -109,13 +121,15 @@ async function generateOwnStreamClipsForMedia(
                 roomId: roomKey
             },
             streamerName: context.streamerName || context.streamer_name || null,
-            fullLiveContextPath
+            fullLiveContextPath: source.fullLiveContextPath,
+            liveContentSummaryPath: source.liveContentSummaryPath
         });
         console.log(results.length > 0
             ? `✅ 岁己直播有趣切片完成: ${results.length} 段`
             : 'ℹ️  岁己直播有趣切片未生成候选');
         return results;
     } catch (error) {
+        if (context.earlyCampaign || options.throwOnFailure) throw error;
         console.warn(`⚠️  岁己直播有趣切片阶段失败，继续后续流程: ${error.message}`);
         return [];
     }
@@ -124,7 +138,7 @@ async function generateOwnStreamClipsForMedia(
 function shouldRunAnyClipper(roomId = null, xmlPath = null) {
     const config = configLoader.getConfig();
     const topicConfig = topicClipper.getClipTopicsConfig(config);
-    const ownConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    const ownConfig = ownStreamClipper.getOwnStreamClipsConfig(config, roomId);
     const roomKey = roomId ? String(roomId) : null;
     const ownRoomIds = Array.isArray(ownConfig.roomIds)
         ? ownConfig.roomIds.map(value => String(value)).filter(Boolean)
@@ -202,13 +216,14 @@ function writeBackgroundClipPayload(payload) {
             srtPath: payload.srtPath,
             roomId: payload.roomId,
             activityOptions: payload.activityOptions,
-            createdAt: payload.activityOptions ? null : Date.now()
+            earlyCampaign: payload.earlyCampaign,
+            createdAt: payload.activityOptions || payload.earlyCampaign ? null : Date.now()
         }))
         .digest('hex')
         .slice(0, 10);
     const payloadPath = path.join(baseDir, `${baseName}_background_clips_${hash}.json`);
     const logPath = path.join(baseDir, `${baseName}_background_clips_${hash}.log`);
-    if (!payload.activityOptions || !fs.existsSync(payloadPath)) {
+    if (!(payload.activityOptions || payload.earlyCampaign) || !fs.existsSync(payloadPath)) {
         require('./clipping/candidate_subtitles').writeJsonAtomic(payloadPath, { ...payload, logPath });
     }
     return { payloadPath, logPath };
@@ -272,7 +287,7 @@ function spawnBackgroundClipProcess(payload) {
     }
 
     const queuedJob = backgroundClipQueue.enqueueJob({
-        jobId: payload.activityOptions ? path.basename(payloadPath, '.json') : undefined,
+        jobId: payload.activityOptions || payload.earlyCampaign ? path.basename(payloadPath, '.json') : undefined,
         payloadPath,
         logPath,
         roomId: payload.roomId
@@ -328,8 +343,10 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     }
 
     const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+    // Snapshot operator settings for each new recording job; all its stages share this config.
+    configLoader.clearCache();
     const runtimeConfig = configLoader.getConfig();
-    const automatic = runtimeConfig.ownStreamClips?.automaticPublication;
+    const automatic = ownStreamClipper.getOwnStreamClipsConfig(runtimeConfig, payload.roomId).automaticPublication;
     const topicAutomatic = runtimeConfig.clipTopics?.automaticPublication?.mode === 'auto'
         && require('./workflow-runtime').loadWorkflow('clipping/publicationReview').publicationEnabled(
             require('./workflow-runtime').loadWorkflow('clipping/publicationReview').resolveTopicPublicationConfig(runtimeConfig), payload.roomId);
@@ -346,6 +363,10 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     const restoreLogger = installBackgroundClipLogger(payload.logPath);
     try {
         if (state.status === 'completed') return;
+        if (payload.earlyCampaign) {
+            await stage('earlyCampaign', () => require('./campaign_early.ts').runEarlyCampaign(payload));
+            state.status = 'completed'; save(state); return;
+        }
         const recordingJobs = require('./recording_clip_job.ts');
         const projectRoot = path.resolve(__dirname, '../..');
         const recordingJob = recordingJobs.resolveRecordingClipJob(projectRoot, payload);
@@ -378,17 +399,26 @@ async function runBackgroundClipsFromPayload(payloadPath) {
             context,
             payload.xmlPath
         ));
-        await stage('own', () => generateOwnStreamClipsForMedia(
-            payload.originalMediaPath,
-            payload.srtPath,
-            payload.xmlPath,
-            payload.roomId,
-            context,
-            payload.fullLiveContextPath || null
-        ));
+        const failures = new Map();
+        try {
+            await stage('own', () => generateOwnStreamClipsForMedia(
+                payload.originalMediaPath,
+                payload.srtPath,
+                payload.xmlPath,
+                payload.roomId,
+                context,
+                payload.fullLiveContextPath || null,
+                payload.liveContentSummaryPath || null,
+                { throwOnFailure: true }
+            ));
+        } catch (error) {
+            // Keep this stage incomplete for the bounded queue retry, while archives continue.
+            failures.set('own', error.message);
+            payload.videoPathToDelete = null;
+            console.warn(`岁己直播有趣切片失败，保留原始视频并继续后续流程: ${error.message}`);
+        }
         // Complete ordinary highlights before the longer archive workflows.
         const archiveLabel = kind => ({ songs: '歌切', games: '游戏完整切片', watch: '同步视听' }[kind]);
-        const failures = new Map();
         await require('./workflow-runtime').loadWorkflow('clipping/activityStages').runArchiveStages(async (kind, reuseSummaryOnly) => {
                 const options = {
                     mediaPath: payload.originalMediaPath || payload.processedMediaPath,
@@ -413,7 +443,7 @@ async function runBackgroundClipsFromPayload(payloadPath) {
                 payload.videoPathToDelete = null;
                 console.warn(`${archiveLabel(kind)}处理失败，保留原始视频供恢复: ${error.message}`);
             });
-        if (failures.size) throw new Error(`Archive stages incomplete: ${JSON.stringify([...failures])}`);
+        if (failures.size) throw new Error(`${failures.has('own') ? 'Clip' : 'Archive'} stages incomplete: ${JSON.stringify([...failures])}`);
         state.status = 'completed'; save(state);
         await deleteOriginalVideoAfterBackgroundClips(payload.videoPathToDelete);
         console.log('✅ 后台自动切片子进程完成');
@@ -436,6 +466,7 @@ async function runBackgroundClipQueueWorker() {
 }
 
 module.exports = {
+    generateOwnStreamClipsForMedia,
     generateTopicClipsForMedia,
     shouldRunAnyClipper,
     spawnBackgroundClipProcess,

@@ -44,7 +44,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const topic = dependencies.topic || require('../topic_clipper');
         const own = require('../own_stream_clipper');
         const rootConfig = dependencies.rootConfig || require('../config-loader').getConfig();
-        const config = own.getOwnStreamClipsConfig(rootConfig);
+        const config = own.getOwnStreamClipsConfig(rootConfig, original.roomId, original.recordedAt, Date.now(), true);
         if (options.style) {
             if (!['accent', 'compact'].includes(options.style)) throw new Error('Unknown precision style');
             const previousStyle = config.enhancements.creative?.style || 'accent';
@@ -101,7 +101,14 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const parsed = topic.parseTopicSrt(original.source.srtPath);
         const evidence = buildSubtitleEvidence(parsed.segments);
         const plan = JSON.parse(fs.readFileSync(record.reviewPlanPath, 'utf8'));
-        const clip = plan.clips?.find(row => row.start === original.window.start && row.end === original.window.end);
+        let clip = plan.clips?.find(row => row.start === original.window.start && row.end === original.window.end);
+        if (original.renderedSubtitles) {
+            if (JSON.stringify(original.renderedSubtitles.sourceSnapshot) !== JSON.stringify(snapshot)) {
+                throw new Error('Rebuilt baseline source changed');
+            }
+            clip = loadWorkflow('clipping/experiment').rebuiltPrecisionCandidate(original, evidence.sourceSha256,
+                await loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original));
+        }
         if (!clip || (clip.attributionRequired && evidence.sourceSha256 !== original.attributionReview?.sourceSha256)
             || loadWorkflow('clipping/experiment').experimentEligibility(clip, evidence.sourceSha256)) {
             throw new Error('Source evidence or original attribution review is stale');

@@ -348,6 +348,24 @@ class ComicIdentitySafetyTests(unittest.TestCase):
         self.assertEqual(self.resolve(), [])
         self.assertFalse(comic.get_multi_reference_config(self.config, '42', str(self.highlight))['enabled'])
 
+    def test_itinerary_background_does_not_create_appeared_image_character(self):
+        self.configure_automatic_cast()
+        discovery = self.automatic_discovery(['mofu'])
+        for person in discovery.get('participants', []):
+            if person.get('streamerId') == 'mofu':
+                person.update(status='candidate', presence='historical_plan_only', planned=False)
+        discovery['confirmedParticipantIds'] = []
+        discovery['plannedParticipantIds'] = []
+        context = {'participantDiscovery': discovery, 'itineraryMemory': {
+            'plans': [{'participants': ['host', 'mofu'], 'status': 'planned'}],
+            'prompt': '犬绒计划来见房主',
+        }}
+        self.write_sidecar(extraAppearedStreamerIds=[], speakers=[], participantDiscovery=discovery)
+        self.assertEqual(self.resolve(), [])
+        prompt = comic.format_live_generation_context(context)
+        self.assertIn('不能因同住或计划会面就把对方加入图片', prompt)
+        self.assertIn('犬绒计划来见房主', prompt)
+
 
 if __name__ == '__main__':
     unittest.main()

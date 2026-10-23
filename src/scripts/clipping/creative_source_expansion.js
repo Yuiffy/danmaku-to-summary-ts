@@ -13,15 +13,7 @@ const sameWindow = (a, b) => a?.start === b?.start && a?.end === b?.end;
 const expansionDigest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 function normalizeCreativeQa(value) {
-    if (!Array.isArray(value?.issues)) return value;
-    return { ...value, issues: value.issues.map(issue => {
-        if (typeof issue === 'string' && issue.trim()) return issue;
-        if (issue && typeof issue === 'object' && !Array.isArray(issue)
-            && ['issue', 'message', 'description', 'reason', 'problem', 'detail', '问题'].some(key => typeof issue[key] === 'string' && issue[key].trim())) {
-            return JSON.stringify(issue);
-        }
-        throw new Error(`Invalid creative QA issue: ${JSON.stringify(issue)}`);
-    }) };
+    return loadWorkflow('clipping/creativeQa').normalizeCreativeQa(value);
 }
 
 function sourceCues(segments) {

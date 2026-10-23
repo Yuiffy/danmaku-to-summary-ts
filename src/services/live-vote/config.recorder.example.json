@@ -32,6 +32,11 @@
     "noticeCooldownMs": 15000,
     "timeoutMs": 90000,
     "maxQuestionsPerHour": 20,
+    "lexical": {
+      "enabled": false,
+      "directory": "C:/danmaku-to-summary-ts/data/runtime/recording-fts",
+      "pollIntervalMs": 120000
+    },
     "semantic": {
       "enabled": false,
       "backend": "local",

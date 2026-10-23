@@ -97,6 +97,7 @@ function actorReviewPrompt(packets, context, options = {}) {
         require('../workflow-runtime').loadWorkflow('clipping/publicationReview').SPOKEN_QUOTE_STANDARD,
         require('../workflow-runtime').loadWorkflow('clipping/publicationReview').SUBTITLE_MATERIALITY_STANDARD,
         'claims里的narrator/actor/target只填人物或null；动物、昆虫、物品不是待实名的人物，写在action中，target用null，不问“蚊子是谁”。',
+        'narrator是内部核验角色，不是公开称呼。claims中的实名仍须符合identityBasis及引用要求；身份未能实名可保留null，不要为填claims而猜名，也不要把null翻译成公开文案里的“讲述者”。普通单人自述可自然称“主播”；联动或播放来源不明时按前述规则省略主语或待核。',
         '重点找：我被默认为房主；提问者和回答者颠倒；转述中的她被当成当前嘉宾；不同人的反问被接在同一个主语下；播放内容被当成主播亲历。',
         '已有文案不是事实证据。只写实际支持的主看点；后续吐槽/反问主体无法核实时从文案删除，不把多个动作串给一人。',
         'publicationRepairFeedback.operatorIntent是本次用户编辑意见。requestedCopy.title 是编辑流程已经选定的标题，必须逐字保留并审核这个标题；如证据不支持，返回needs_review和具体矛盾，交编辑agent处理，不能自行换一个标题后宣称通过。简介同步修改，保留明确的题材、作品称呼和事实关系；未确认的身份/听音/画面问题仍不能编造。省略主语的观看/讨论不单独指定房主为播放内容创作者或发言者；未知说话者可以保留null，不能仅因为未实名而删掉完整主线。',
