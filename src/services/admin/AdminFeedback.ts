@@ -35,7 +35,18 @@ export class AdminFeedback {
       if (previous.note !== note || JSON.stringify(previous.edits || {}) !== JSON.stringify(edits)) throw new AdminError('此切片正在处理已有意见，请等处理结束后再补充', 409);
       return structuredClone(previous);
     }
-    return this.jobs.submitOperation('feedback-publish', id, { note, revision, edits, titleChoice: body.titleChoice }, async (output, update) => {
+    return this.jobs.submitOperation('feedback-publish', id, { note, revision, edits, titleChoice: body.titleChoice },
+      (output, update) => this.execute(id, note, revision, edits, output, update), validate);
+  }
+
+  /** Reuse the same execution within an already serialized candidate-promotion job. */
+  async execute(id: string, note: string, revision: string, edits: Record<string, unknown>,
+    output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void): Promise<number> {
+      const validate = () => {
+        if (this.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再提交', 409);
+        this.assertEditable(id);
+      };
+      validate();
       const initial = this.clips.feedbackDetail(id);
       if (initial.category !== 'clip' && Object.keys(edits).length) throw new AdminError('完整包文案修改需要专用包装流程；意见已保存，未入队');
       const unchangedReview = !Object.keys(edits).length && isUnchangedReview(note);
@@ -73,7 +84,6 @@ export class AdminFeedback {
       await session.revise(plan, unchangedReview);
       await session.enqueue();
       return 0;
-    }, validate);
   }
 
   private assertEditable(id: string): void {

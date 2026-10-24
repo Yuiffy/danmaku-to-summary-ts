@@ -561,6 +561,46 @@ test('watch boundary recovery can render its first bundle while preserving an al
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('first render can omit an unresolved ordinary video, persist selection and resume without new detection', async () => {
+    const f = fixture();
+    const movie = f.raw.activityTimeline.events[1];
+    f.raw.activityTimeline.events.push({ ...movie, start: 6001, end: 6100, name: null,
+        evidenceIds: [f.context.evidence.speech.find(row => row.text.includes('晚安')).id], titleEvidenceIds: [] });
+    const calibrate = jest.fn(async events => ({ events: events.map(event => ({ ...event,
+        verification: { decision: event.name ? 'keep' : 'uncertain' },
+        reviewIssues: event.name ? [] : ['media_verification_unconfirmed', 'end_boundary_unconfirmed'] })),
+        rejected: [], requests: 1, audioSeconds: 240, cacheHits: 0 }));
+    try {
+        const songs = await workflow.generateStreamActivities({ ...f.options, kind: 'songs' });
+        const manifest = JSON.parse(fs.readFileSync(songs.manifestPath, 'utf8'));
+        const songPath = manifest.clips[0].metadataPath, originalSong = fs.readFileSync(songPath, 'utf8');
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate })).rejects.toThrow('unresolved');
+        const before = JSON.parse(fs.readFileSync(songs.planPath, 'utf8'));
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate,
+            retainActivityIds: ['activity-3'], selectionNote: '不能绕过所选活动的边界审核' })).rejects.toThrow('unresolved');
+        expect(f.renderPart).toHaveBeenCalledTimes(1);
+        const result = await workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate,
+            retainActivityIds: ['activity-2'], selectionNote: '只制作电影，普通视频不当作同步视听' });
+        expect(result).toMatchObject({ submissions: 1, parts: 4 });
+        const after = JSON.parse(fs.readFileSync(songs.planPath, 'utf8'));
+        for (const field of ['events', 'rawEvents', 'parts', 'contentSha256', 'efficiency']) expect(after[field]).toEqual(before[field]);
+        expect(fs.readFileSync(songPath, 'utf8')).toBe(originalSong);
+        const watchPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[1].metadataPath;
+        const row = JSON.parse(fs.readFileSync(watchPath, 'utf8'));
+        expect(row.activities.map(event => event.id)).toEqual(['activity-2']);
+        expect(row.activitySelection.previousActivities).toHaveLength(2);
+        expect(row.uploadReady).toBe(false);
+        await workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate });
+        await workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate,
+            retainActivityIds: ['activity-2'], selectionNote: '只制作电影，普通视频不当作同步视听' });
+        expect(f.renderPart).toHaveBeenCalledTimes(5);
+        expect(calibrate).toHaveBeenCalledTimes(1);
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate,
+            retainActivityIds: ['activity-3'], selectionNote: 'changed' })).rejects.toThrow('restyle');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('overlapping provisional watch padding preserves both candidate identities through explicit recovery', async () => {
     const f = fixture();
     const firstWatch = { ...f.raw.activityTimeline.events[1], start: 100, end: 200, name: null,

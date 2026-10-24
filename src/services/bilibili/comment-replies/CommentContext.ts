@@ -23,6 +23,10 @@ export const collaborationQuestion = (text: string) => /联动|鸡马|连麦/u.t
 export const historicalCollaborationQuestion = (text: string) => collaborationQuestion(text) &&
   /之前|以前|以往|过去|历史|历次|上次|回顾|盘点|几次|几场|多次|多场|(?:前|最近)[一二三四五六七八九十\d]+[次场]/u.test(text);
 export const videoOverviewQuestion = (text: string) => /总结|评价|点评|分析|概括|讲解|解读|观后感|讲了啥|说了啥|怎么看|讲的啥|说的啥/u.test(text);
+export const videoOnlyQuestion = (text: string) => !collaborationQuestion(text) && (
+  /(?:根据|结合|依据|针对|按照|看完|看下|看看|看一下)[^。！？!?]{0,12}(?:视频|这段|这期|该片)/u.test(text) ||
+  videoOverviewQuestion(text) && (/视频|这段|这期|这条|这个|该片|内容/u.test(text) ||
+    /^(?:总结|评价|点评|分析|概括|讲解|解读)(?:一下|下)?[\s。？！!?]*$/u.test(text.replace(/@\S+/gu, '').trim())));
 const clean = (text: string, max: number) => Array.from(text.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, ' ')).slice(0, max).join('');
 export function safeEvidenceText(text: string, max = 180): string {
   const value = clean(text, max);
@@ -57,15 +61,18 @@ export function commentSearchTerms(text: string): string[] {
 
 /** Sample whole original cues across the target video, then relevant neighbours, without an LLM pass. */
 export function videoExcerpts(cues: VideoCue[], question: string): VideoCue[] {
+  const support = /夸|安慰|鼓励|打气|撑腰|说两句/u.test(question);
   const terms = commentSearchTerms(question).filter(term => term !== '直播');
   const pairs = new Set(question.match(/[\p{Script=Han}]{2,}/gu)?.flatMap(word =>
     Array.from({ length: word.length - 1 }, (_, i) => word.slice(i, i + 2))) || []);
   const indices = new Set<number>();
   for (let i = 0; i < Math.min(6, cues.length); i++) indices.add(Math.round(i * (cues.length - 1) / Math.max(1, Math.min(6, cues.length) - 1)));
   const ranked = cues.map((cue, index) => ({ index, score: terms.filter(term => cue.text.includes(term)).length * 3 +
-    [...pairs].filter(term => cue.text.includes(term)).length }))
+    [...pairs].filter(term => cue.text.includes(term)).length +
+    (support && /心情|委屈|失望|微妙|难过|担心|开心|害怕|不舒服|不容易/u.test(cue.text) ? 12 : 0) }))
     .filter(cue => cue.score).sort((a, b) => b.score - a.score).slice(0, 4);
   for (const { index } of ranked) for (const i of [index, index - 1, index + 1]) if (i >= 0 && i < cues.length) indices.add(i);
+  if (support) for (let i = Math.max(0, cues.length - 4); i < cues.length; i++) indices.add(i);
   // Keep neighbouring original lines so a sampled lyric or reaction is not presented in isolation.
   for (const i of [...indices]) if (i + 1 < cues.length) indices.add(i + 1);
   let size = 0;

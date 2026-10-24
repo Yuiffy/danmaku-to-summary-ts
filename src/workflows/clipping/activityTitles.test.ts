@@ -45,6 +45,17 @@ test('watch names reuse cited source evidence with equivalent sequel numbers, wi
   expect(watchTitleAppears('雷神3', '今天看雷神三啊')).toBe(true);
 });
 
+test('explicit user titles record feedback against one activity without claiming transcript or listening evidence', () => {
+  const event = { id: 's1', start: 100, end: 300, name: null };
+  const item = { activityId: 's1', name: '歌曲甲', method: 'explicit_user_title', confirmation: '按这个歌名投吧', note: '用户接受原音研究结论' };
+  const evidence = bindTranscriptTitles([item], [event], [], {});
+  expect(evidence.items[0]).toEqual({ ...item, authority: 'user', audioVisualReviewed: false, window: { start: 100, end: 300 } });
+  expect(namedEvents([event], evidence)[0].name).toBe('歌曲甲');
+  for (const invalid of [{ ...item, confirmation: '' }, { ...item, note: '' }, { ...item, activityId: 'other' }]) {
+    expect(() => bindTranscriptTitles([invalid], [event], [], {})).toThrow('explicit feedback');
+  }
+});
+
 test('viewing copy puts actual work names before the date and preserves unresolved names as drafts', () => {
   const events = [{ name: '雷神3' }, { name: '雷神3' }, { name: '奇异博士' }];
   expect(watchCoverSubject(events)).toBe('《雷神3》 / 《奇异博士》');

@@ -1,4 +1,22 @@
-import { runArchiveStages, assertOrderedActivityParts, activityBoundaryFeedback, retryBoundaryEvents, selectActivitySubmission } from './activityStages';
+import { runArchiveStages, assertOrderedActivityParts, activityBoundaryFeedback, retryBoundaryEvents, selectActivitySubmission, selectPlannedActivitySubmission } from './activityStages';
+
+test('first-render selection preserves detection, all boundaries and sibling parts without approving media', () => {
+  const plan = { events: [{ id: 'song', kind: 'song' }, { id: 'movie', kind: 'watch' },
+    { id: 'video', kind: 'watch', reviewIssues: ['end_boundary_unconfirmed'] }], rawEvents: ['original'],
+    parts: { songs: [{ activityId: 'song' }], watch: [
+      { activityId: 'movie', start: 100, end: 200, duration: 100 },
+      { activityId: 'video', start: 300, end: 400, duration: 100 }] } };
+  const selected = selectPlannedActivitySubmission(plan, 'watch', ['movie'], '普通 B 站视频不作为本次同步视听');
+  expect(selected.events.map((event: any) => event.id)).toEqual(['song', 'movie']);
+  expect(selected.parts.watch).toEqual([plan.parts.watch[0]]);
+  expect(selected.parts.songs).toBe(plan.parts.songs);
+  expect(selected.rawEvents).toBe(plan.rawEvents);
+  expect(selected.activitySelection).toMatchObject({ ids: ['movie'], phase: 'before_render', previousActivities: plan.events.slice(1) });
+  expect(plan.events).toHaveLength(3);
+  for (const ids of [[], ['missing'], ['song'], ['movie', 'movie']]) {
+    expect(() => selectPlannedActivitySubmission(plan, 'watch', ids, '指定范围')).toThrow();
+  }
+});
 
 test('explicit pending selection retains complete Ps and evidence while invalidating approval', () => {
   const row = { activities: [{ id: 'short' }, { id: 'full' }], uploadReady: false,

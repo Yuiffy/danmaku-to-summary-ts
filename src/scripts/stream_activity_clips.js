@@ -113,6 +113,8 @@ async function main(argv = process.argv.slice(2)) {
             reviseVerifier: options['revise-verifier'] === true, revisionNote: options['revision-note'],
             reviewPrelude: options['review-prelude'] === true,
             reviewAudio: options['review-audio'] === true,
+            retainActivityIds: options['retain-activity-ids'] ? options['retain-activity-ids'].split(',').map(id => id.trim()) : null,
+            selectionNote: options['selection-note'],
             repairTiming: options['repair-timing'] === true,
             retryPublication: options['retry-publication'] === true,
             transcriptRecordPath: options['transcript-record'] ? path.resolve(options['transcript-record']) : null,
@@ -164,7 +166,7 @@ async function main(argv = process.argv.slice(2)) {
         const result = songStatistics(options.root); console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (command !== 'help') throw new Error(`Unknown command: ${command}`);
-    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--background] [--reuse-summary-only] [--no-notify] [--title-evidence <reviewed-names.json>] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--retry-publication --revision-note <note>] [--scan] [--room-id 25788785] [--no-register]\n'
+    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--background] [--reuse-summary-only] [--no-notify] [--retain-activity-ids <ids> --selection-note <note>] [--title-evidence <reviewed-names.json>] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--retry-publication --revision-note <note>] [--scan] [--room-id 25788785] [--no-register]\n'
         + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--feedback-authorized] [--enqueue]\n'
         + 'activity:clips restyle --manifest <UPLOAD_MANIFEST.json> | --metadata <songs.json|watch.json> [--no-register]\n'
         + 'activity:clips stats --root <recording root>');

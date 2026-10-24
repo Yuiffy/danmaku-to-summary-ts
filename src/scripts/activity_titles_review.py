@@ -22,6 +22,14 @@ def check_title_evidence(metadata, activities, digest):
         if item.get('method') == 'source_frame_reading':
             if digest(item['framePath']) != item.get('frameSha256'):
                 raise ValueError('activity public title evidence changed')
+        elif item.get('method') == 'explicit_user_title':
+            review = metadata.get('activityReview') or {}
+            if (item.get('authority') != 'user' or item.get('audioVisualReviewed') is not False
+                    or not str(item.get('confirmation') or '').strip()
+                    or item.get('window') != {key: event[key] for key in ('start', 'end')}
+                    or review.get('authority') != 'human' or review.get('acceptanceMode') != 'feedback'
+                    or review.get('audioVisualReviewed') is not False):
+                raise ValueError('user-confirmed activity title requires explicit feedback publication acceptance')
         elif item.get('method') in ('source_transcript_reading', 'catalog_lyric_match'):
             transcript = metadata.get('transcript') or {}
             if (item.get('transcriptPath') != transcript.get('path') or item.get('transcriptSha256') != transcript.get('sha256')

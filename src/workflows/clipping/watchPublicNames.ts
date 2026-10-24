@@ -4,6 +4,7 @@ const aliases: Array<[RegExp, string]> = [
   [/银河护卫队/gu, '宇宙蹦迪天团'], [/奇异博士/gu, '卷毛医生在线画圈'],
   [/复仇者联盟|复联/gu, '地球保安大队'], [/雷神/gu, '锤子哥'],
   [/蚁人/gu, '变小打工人'],
+  [/黑衣人/gu, '墨镜搭档抓外星人'],
 ];
 const normalize = (value: string) => value.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
 const unknown = /^(待确认片名|电影同看|剧集同看|本场同看|同步视听)$/u;

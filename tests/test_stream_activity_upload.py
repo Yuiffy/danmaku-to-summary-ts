@@ -247,6 +247,31 @@ class ActivityUploadTests(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(ValueError, 'original transcript rows'): self.approved()
 
+    def test_user_title_requires_feedback_authority_and_remains_bound_to_review(self):
+        self.data['presentation'] = {'titleEvidence': {'items': [{'activityId': 'a1', 'name': '歌曲甲',
+            'method': 'explicit_user_title', 'authority': 'user', 'audioVisualReviewed': False,
+            'confirmation': '按这个名字投吧', 'note': '用户接受原音研究结论', 'window': {'start': 0, 'end': 4500}}]}}
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'explicit feedback publication'):
+            self.approved()
+        approve(self.metadata, '用户确认歌名后说投吧', feedback_authorized=True)
+        data = json.loads(self.metadata.read_text(encoding='utf-8'))
+        validate_metadata_qa(data)
+        from src.scripts.activity_titles_review import check_title_evidence
+        for mutate in (lambda d: d['activityReview'].update(authority='automatic'),
+                       lambda d: d['activityReview'].pop('acceptanceMode'),
+                       lambda d: d['presentation']['titleEvidence']['items'][0].update(audioVisualReviewed=True),
+                       lambda d: d['presentation']['titleEvidence']['items'][0].update(confirmation=''),
+                       lambda d: d['presentation']['titleEvidence']['items'][0]['window'].update(start=1)):
+            changed = copy.deepcopy(data)
+            mutate(changed)
+            with self.assertRaisesRegex(ValueError, 'explicit feedback publication'):
+                check_title_evidence(changed, {'a1': changed['activities'][0]}, lambda _: None)
+        changed = copy.deepcopy(data)
+        changed['presentation']['titleEvidence']['items'][0]['name'] = '另一首'
+        with self.assertRaisesRegex(ValueError, 'changed after review'):
+            validate_activity_review(changed)
+
     @patch('bilibili_upload_capabilities.fetch_capabilities', return_value={
         'maxParts': 100, 'collectionAllowed': True, 'multipartCollectionAllowed': True, 'externalSubtitlesAllowed': False,
         'maxFileBytes': 16*1024**3, 'maxVideoSeconds': 10800})

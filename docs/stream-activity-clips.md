@@ -75,6 +75,14 @@ Node 复核、Python 投稿检查和最终成片审核均使用绑定证据。
 保留整个选歌讲话块及之后全部内容，禁止截短尾部。Node 和投稿检查重放相同引用、
 连续画面和原音证明；仅重复副歌、未完整重唱或仍有独有内容会继续待核。
 
+### 用户明确确认作品名
+
+原音研究已给出名称、用户随后明确接受该名称时，仍用 `restyle --metadata ... --title-evidence ...`
+修订原待审核 ID。证据文件可用 `{"items":[{"activityId":"activity-1","method":"explicit_user_title","name":"作品名","confirmation":"用户原始确认","note":"所接受的名称及研究依据"}]}`。
+该入口记录 `authority: user`、`audioVisualReviewed: false` 和活动原范围，不冒充字幕、画面或自动歌词匹配证据。
+它仅修订标题、封面与 P 文案；投稿必须另用已有 `approve --feedback-authorized --enqueue`，
+入队和实际上传都要求人的反馈接受记录，不能继承自动发布权限。来源、成片及重复投稿检查继续生效。
+
 ## 最终审核后自动入队
 
 用户明确接受当前包并要求投稿时，可沿原数字 ID 使用
@@ -384,6 +392,13 @@ npm run activity:clips -- restyle --metadata 'D:\...\songs.json' --retain-activi
 `--retain-activity-ids` 只能缩减一个待核包内已有活动，不能改 P 起止、加入其他来源或
 修改检测计划。被移除的活动、旧元数据和原视频均保留；当前包保存 `activitySelection`
 记录。选择后须对同 ID 重新执行完整 `review`，再单独入队，不继承原批准。
+
+尚未生成该类投稿包、但已完成校准的计划，可在首次制作时使用
+`run --kind watch --retain-activity-ids activity-N --selection-note '用户明确指定的保留范围与排除原因'`。
+仅制作这些活动，其他普通视频的待核边界不会阻塞所选作品。原 PLAN、粗候选和校准结果
+完整保留；选材意见及排除前活动记入新包 `activitySelection`，正常续做复用这一范围。
+已生成投稿包须使用 `restyle` 调整选择；首次制作的相同参数重试保持幂等。
+该选项不支持 `plan` 或与边界、时间轴、发布重审修订合用，不赋予审核或投稿批准。
 
 命令拒绝修改已批准、排队、上传中或已发布的稿件；封面制作全部成功后才写入新元数据。更新包装仍是待审核，投稿授权继续使用下文的 `approve --enqueue`。
 

@@ -15,6 +15,37 @@ afterEach(() => { global.fetch = fetchOriginal; delete process.env.ADMIN_TOKEN_F
 function request(endpoint: string, options: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000/api/admin${endpoint}`, { ...options, headers: { Host: '127.0.0.1:3000', ...options.headers } });
 }
+it('proxies global upload status as read-only without enabling arbitrary queue endpoints', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ queuedJobs: 3 }));
+  expect((await forwardAdmin(request('/queues/status'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/queues/status');
+  expect((await forwardAdmin(request('/queues/status', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/queues/resume'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it('proxies campaign previews and only permits writes through the selected-candidate action', async () => {
+  const id = 'a'.repeat(64);
+  for (const endpoint of ['/campaign-candidates?room=100', `/campaign-candidates/${id}`, `/campaign-candidates/${id}/source-playback`]) {
+    fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+    expect((await forwardAdmin(request(endpoint))).status).toBe(200);
+  }
+  fetchMock.mockResolvedValueOnce(new Response('part', { status: 206, headers: { 'Content-Range': 'bytes 0-3/10' } }));
+  const media = await forwardAdmin(request(`/campaign-candidates/${id}/assets/source-preview`, { headers: { Range: 'bytes=0-3' } }));
+  expect(media.status).toBe(206); expect(media.headers.get('content-range')).toBe('bytes 0-3/10');
+  expect(fetchMock.mock.calls.at(-1)[1].headers.Range).toBe('bytes=0-3');
+  expect((await forwardAdmin(request('/campaign-candidates', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/campaign-candidates/R1'))).status).toBe(404);
+  expect((await forwardAdmin(request(`/campaign-candidates/${id}/actions`))).status).toBe(405);
+  expect((await forwardAdmin(request(`/campaign-candidates/${id}/feedback`, { method: 'POST', body: '{}' }))).status).toBe(405);
+  const body = JSON.stringify({ title: '手填标题', note: '保留铺垫', publishApproved: true, revision: 'rev' });
+  fetchMock.mockResolvedValueOnce(Response.json({ status: 'queued' }, { status: 202 }));
+  expect((await forwardAdmin(request(`/campaign-candidates/${id}/actions`, { method: 'POST', body }))).status).toBe(202);
+  expect(fetchMock.mock.calls.at(-1)[1].body).toBe(body);
+  fetchMock.mockResolvedValueOnce(Response.json({ job: null }));
+  expect((await forwardAdmin(request(`/campaign-candidates/${id}/feedback`))).status).toBe(200);
+  expect((await forwardAdmin(request(`/campaign-candidates/${id}/actions`, { method: 'POST', headers: { Origin: 'https://evil.test' }, body }))).status).toBe(403);
+  expect(fetchMock).toHaveBeenCalledTimes(6);
+});
 it('exposes comment history as read-only and rejects writes and arbitrary subpaths', async () => {
   fetchMock.mockResolvedValue(Response.json({ rows: [] }));
   expect((await forwardAdmin(request('/comment-replies?status=active'))).status).toBe(200);

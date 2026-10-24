@@ -60,3 +60,12 @@ test('new works require a separate descriptive alias and never fall back to the 
     plan.events[0].publicName = '新作品搞笑版';
     expect(presentationFor(plan, 'watch', parts).copy.title).toContain('待确认化名');
 });
+
+test('the alien-agent viewing alias binds the evidenced work across cover, public title and P titles', () => {
+    const result = presentationFor({ recordedAt: '2026-10-23', streamerName: '岁己', streamTitle: '陪你看黑衣人',
+        events: [{ id: 'movie', kind: 'watch', name: '黑衣人' }] }, 'watch', [{ activityId: 'movie', sha256: 'one' }]);
+    expect(result.publicNames).toEqual([{ activityId: 'movie', name: '黑衣人', publicName: '墨镜搭档抓外星人' }]);
+    expect(result.copy.title).toBe('《墨镜搭档抓外星人》｜2026.10.23');
+    expect(result.parts[0].title).toBe('《墨镜搭档抓外星人》 01/01');
+    expect(result.copy.description).not.toContain('黑衣人');
+});

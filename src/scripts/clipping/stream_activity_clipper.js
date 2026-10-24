@@ -325,6 +325,10 @@ async function generateStreamActivities(options = {}) {
     if (!planTools.activityEnabled(root, info.roomId)) return { status: 'disabled' };
     options = { ...options, config: root };
     const config = planTools.getActivityConfig(root), files = pathsFor(options.mediaPath, root, config);
+    if (options.retainActivityIds && (selected.length !== 1 || options.planOnly || options.retryBoundaries
+        || options.retryPublication || options.repairTiming || !String(options.selectionNote || '').trim())) {
+        throw new Error('First-render selection requires run --kind songs|watch and a substantive --selection-note');
+    }
     if (options.watchBlackRegion) config.watch.blackAlignment = require('../workflow-runtime').loadWorkflow('clipping/watchBlackPolicy')
         .blackSettings({ ...config.watch.blackAlignment, enabled: true, region: options.watchBlackRegion });
     if (config.watch.blackAlignment?.enabled) config.watch.blackAlignment.cadence = require('../workflow-runtime')
@@ -475,17 +479,22 @@ async function generateStreamActivities(options = {}) {
                 }
                 continue;
             }
-            const events = plan.events.filter(e => e.kind === (kind === 'songs' ? 'song' : 'watch'));
-            stages.assertOrderedActivityParts(plan.parts[kind]);
-            require('../workflow-runtime').loadWorkflow('clipping/activityWatchContext').assertWatchBoundaries(events);
             const previousMetadata = fs.existsSync(metadataPath) ? JSON.parse(fs.readFileSync(metadataPath, 'utf8')) : null;
+            if (options.retainActivityIds && previousMetadata && (JSON.stringify(previousMetadata.activitySelection?.ids) !== JSON.stringify(options.retainActivityIds)
+                || previousMetadata.activitySelection?.note !== options.selectionNote)) throw new Error('Select an existing submission with restyle --retain-activity-ids');
+            const selection = options.retainActivityIds ? { ids: options.retainActivityIds, note: options.selectionNote } : previousMetadata?.activitySelection;
+            const scopedPlan = selection ? stages.selectPlannedActivitySubmission(plan, kind, selection.ids, selection.note) : plan;
+            const events = scopedPlan.events.filter(e => e.kind === (kind === 'songs' ? 'song' : 'watch'));
+            const plannedParts = scopedPlan.parts[kind];
+            stages.assertOrderedActivityParts(plannedParts);
+            require('../workflow-runtime').loadWorkflow('clipping/activityWatchContext').assertWatchBoundaries(events);
             const titleEvidence = options.titleEvidence || previousMetadata?.presentation?.titleEvidence || null;
             if (kind === 'watch' && publicationActive && require('../workflow-runtime').loadWorkflow('clipping/activityTitles')
                 .namedEvents(events, titleEvidence).some(event => !event.name)) throw new Error('Viewing work names remain unresolved before rendering; provide --title-evidence');
             // An unchanged finished bundle is retained, including its review and publication state.
             if (fs.existsSync(metadataPath)) {
                 let old = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-                if (old.planSignature === plan.signature && stages.samePlannedParts(plan.parts[kind], old.output.parts)
+                if (old.planSignature === plan.signature && stages.samePlannedParts(plannedParts, old.output.parts)
                     && JSON.stringify(old.activities) === JSON.stringify(events) && old.output.parts.every(p => fs.existsSync(p.mediaPath)
                     && fs.statSync(p.mediaPath).size === p.bytes && fileDigest(p.mediaPath) === p.sha256)
                     && fs.existsSync(old.output.coverPath) && fileDigest(old.output.coverPath) === old.coverSha256) {
@@ -507,7 +516,7 @@ async function generateStreamActivities(options = {}) {
                 ? path.join(runDirectory, 'boundary-revisions', plan.boundaryRetry.id) : runDirectory;
             fs.mkdirSync(mediaDirectory, { recursive: true });
             const parts = [];
-            for (const [index, part] of plan.parts[kind].entries()) {
+            for (const [index, part] of plannedParts.entries()) {
                 const outputPath = path.join(mediaDirectory, `${kind}_P${String(index + 1).padStart(3, '0')}.mp4`);
                 const reused = require('../workflow-runtime').loadWorkflow('clipping/activityRecovery').reusableActivityPart(part, previousMetadata, source,
                     { size: file => fs.statSync(file).size, digest: fileDigest });
@@ -516,7 +525,7 @@ async function generateStreamActivities(options = {}) {
                 try { parts.push(await (options.renderPart || media.renderActivityPart)(options.mediaPath, part, outputPath, root, lease.profile)); }
                 finally { lease.release(); }
             }
-            const presentation = presentationTools.presentationFor(plan, kind, parts, titleEvidence, config[kind].tags);
+            const presentation = presentationTools.presentationFor(scopedPlan, kind, parts, titleEvidence, config[kind].tags);
             const coverPath = presentationTools.coverPathFor(path.join(mediaDirectory, `${kind}.json`), presentation);
             const lease = await scheduler.acquire();
             try { await (options.cover || media.activityCover)(parts[0], coverPath, root, presentation.cover); } finally { lease.release(); }
@@ -527,6 +536,7 @@ async function generateStreamActivities(options = {}) {
                 sourceSnapshot: source, transcript: plan.transcript, planSignature: plan.signature, planPath: files.plan, coverage: plan.coverage,
                 window: { start: parts[0].start, end: parts.at(-1).end, duration: parts.reduce((n, p) => n + p.duration, 0) },
                 activities: events, copy: presentation.copy,
+                ...(selection ? { activitySelection: previousMetadata?.activitySelection || scopedPlan.activitySelection } : {}),
                 presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
                     titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_alias_recording_date', recordingDate: presentation.recordingDate,
                     ...(presentation.publicNames ? { publicNames: presentation.publicNames } : {}),

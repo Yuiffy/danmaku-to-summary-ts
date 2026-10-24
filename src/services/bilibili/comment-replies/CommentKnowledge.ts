@@ -3,7 +3,7 @@ import { QuestionCorpus } from '../../live-vote/questions/QuestionCorpus';
 import { configuredQuestionRooms } from '../../live-vote/questions/QuestionScope';
 import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig } from './CommentPolicy';
 import { collaborationQuestion, historicalCollaborationQuestion, CommentClue, CommentContext, commentDates, commentSearchTerms,
-  CommentVideo, needsCommentEvidence, safeEvidenceText, videoOverviewQuestion, videoExcerpts } from './CommentContext';
+  CommentVideo, needsCommentEvidence, safeEvidenceText, videoOnlyQuestion, videoExcerpts } from './CommentContext';
 import { evidenceScorer } from '../../live-vote/questions/EvidenceRanking';
 
 type Options = NonNullable<CommentReplyConfig['knowledge']>;
@@ -85,7 +85,7 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
     const controller = new AbortController(), abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) controller.abort();
-    const timer = setTimeout(abort, 8000);
+    const timer = setTimeout(abort, 12000);
     let video: CommentVideo | undefined;
     const collected: SearchResult['clues'] = [];
     let partial = false;
@@ -94,7 +94,11 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
       if (event.type === 1) {
         video = get(videos, event.oid);
         if (!video) {
-          try { video = await io.video(event.oid, controller.signal); put(videos, event.oid, video); }
+          try {
+            video = await io.video(event.oid, controller.signal);
+            // Missing URLs/failed captions are transient; do not cache a title-only result.
+            if (video.transcript?.cues.length) put(videos, event.oid, video);
+          }
           catch (error) { if (error instanceof CommentPlatformBlocked) throw error; partial = true; }
         }
       }
@@ -107,9 +111,8 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
       primaryRooms = named.length ? named : [options.roomId];
       const terms = commentSearchTerms(topic);
       const question = Array.from(event.text.replace(/@\S+/gu, '').trim()).slice(0, 120).join('') || '直播资料';
-      // Video summaries use only this video's content. Other questions recall recordings/danmaku and clips.
-      const videoOnly = event.type === 1 && videoOverviewQuestion(event.text) && !collaborationQuestion(event.text) &&
-        (/视频|这段|这期|这条|这个|该片|内容/u.test(question) || /^(?:总结|评价|点评|分析|概括|讲解|解读)(?:一下|下)?[\s。？！!?]*$/u.test(question));
+      // Video-based praise/support also needs the target, never a different recording.
+      const videoOnly = event.type === 1 && videoOnlyQuestion(event.text);
       const datesToSearch: Array<string | null> = videoOnly ? [] : historical ? [dates.anchorDay.slice(0, 7),
         new Date(Date.UTC(Number(dates.anchorDay.slice(0, 4)), Number(dates.anchorDay.slice(5, 7)) - 2, 1)).toISOString().slice(0, 7), null] : collaborationQuestion(topic) ?
         Array.from({ length: 3 }, (_, offset) => new Date(Date.parse(dates.anchorDay) - offset * 86400000).toISOString().slice(0, 10)) :

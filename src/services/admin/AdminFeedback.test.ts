@@ -116,6 +116,64 @@ it('uses explicit feedback acceptance for an existing video without rerendering 
   expect(f.planner).not.toHaveBeenCalled();
 });
 
+it('keeps queued feedback valid when another clip refreshes the batch registration timestamp', async () => {
+  const f = fixture({}, undefined, true);
+  let release!: () => void;
+  f.jobs.submitOperation('preview', 'other', {}, async () => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return 0;
+  });
+  await Promise.resolve();
+  const input = f.input('投');
+  f.feedback.submit('3354', input);
+  const registry = readJson(f.registryPath);
+  registry.clips['3354'].updatedAt = '2026-10-24T03:09:11Z';
+  atomicJson(f.registryPath, registry);
+  expect(f.clips.detail('3354').revision).toBe(input.revision);
+  expect(f.clips.detail('3354').clip.updatedAt).toBe('2026-10-24T03:09:11Z');
+  release(); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
+it.each(['title', 'reviewIssues', 'status'])('still rejects queued feedback after the registered %s changes', async field => {
+  const f = fixture({}, undefined, true);
+  let release!: () => void;
+  f.jobs.submitOperation('preview', 'other', {}, async () => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return 0;
+  });
+  await Promise.resolve();
+  f.feedback.submit('3354', f.input('投'));
+  const registry = readJson(f.registryPath);
+  registry.clips['3354'][field] = { title: '外部修改标题', reviewIssues: ['source_changed'], status: 'uploaded' }[field];
+  atomicJson(f.registryPath, registry);
+  release(); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('已变化') });
+  expect(f.run).not.toHaveBeenCalled();
+});
+
+it.each(['subtitles', 'media', 'review'])('still rejects queued feedback after the actual %s changes', async field => {
+  const f = fixture({}, undefined, true);
+  let release!: () => void;
+  f.jobs.submitOperation('preview', 'other', {}, async () => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return 0;
+  });
+  await Promise.resolve();
+  f.feedback.submit('3354', f.input('投'));
+  if (field === 'subtitles') fs.writeFileSync(f.srt, '1\n00:00:00,000 --> 00:00:02,000\n新字幕\n');
+  if (field === 'media') fs.appendFileSync(f.clips.asset('3354', 'media')!, 'changed media');
+  if (field === 'review') {
+    const metadata = readJson(f.metadataPath);
+    metadata.publicationReview = { status: 'needs_review', issues: ['source_changed'] };
+    atomicJson(f.metadataPath, metadata);
+  }
+  release(); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('已变化') });
+  expect(f.run).not.toHaveBeenCalled();
+});
+
 it.each(['planner', 'agent'])('prepares missing public copy before a bare publish request using the %s', async mode => {
   const plan = { description: '讨论美甲建构', coverText: '美甲建构' };
   const complete = jest.fn<ReturnType<FeedbackCompletion>, Parameters<FeedbackCompletion>>()

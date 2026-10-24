@@ -168,12 +168,13 @@ def approve(path, note, *, feedback_authorized=False):
         else:
             from activity_feedback_acceptance import accept_activities
         accept_activities(metadata, note)
-    check_artifacts(metadata)
-    check_source(metadata)
     metadata["activityReview"] = {"version": 1, "status": "approved", "authority": "human", "note": note,
-        "contentSha256": content_digest(metadata)}
+        "contentSha256": ""}
     if feedback_authorized:
         metadata['activityReview'].update(acceptanceMode='feedback', audioVisualReviewed=False)
+    check_artifacts(metadata)
+    check_source(metadata)
+    metadata['activityReview']['contentSha256'] = content_digest(metadata)
     metadata["uploadReady"] = True
     validate_activity_review(metadata)
     temporary = path.with_suffix(path.suffix + ".review.tmp")

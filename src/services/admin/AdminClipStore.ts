@@ -4,6 +4,7 @@ import { ClipDetail, ClipSummary } from '../../core/admin/contracts';
 import { AdminError, atomicJson, digest, readJson, readText, redact } from './AdminFiles';
 import { sourceWindowSubtitles, subtitleRows, timeSeconds, formatSubtitleTime } from '../../core/admin/subtitles';
 import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons, ClipIntent } from '../../core/clipping/ClipIntent';
+import { uploadQueueStatus } from './AdminUploadStatus';
 
 export type AssetKind = 'media' | 'preview' | 'cover' | 'subtitles' | 'preview-subtitles' | 'media-subtitles' | 'source';
 export class AdminClipStore {
@@ -125,8 +126,11 @@ export class AdminClipStore {
       .map(file => { const checked = this.checkedPath(file); return { file, digest: checked ? digest(readText(checked, 2 * 1024 * 1024)) : undefined }; });
     const fingerprints = [clip.mediaPath, metadata.output?.mediaPath, clip.coverPath, metadata.source?.mediaPath || clip.sourceMediaPath, ...parts.map((part: any) => part.mediaPath)]
       .filter(Boolean).map(file => { const checked = this.checkedPath(file); const stat = checked ? fs.statSync(checked) : undefined; return { file, size: stat?.size, mtime: stat?.mtimeMs }; });
+    // Batch registration refreshes every sibling's timestamp, even when its evidence is unchanged.
+    const revisionClip = { ...clip };
+    delete revisionClip.updatedAt;
     return {
-      clip: this.presentation(clip, metadata), revision: digest(JSON.stringify({ clip, metadata, subtitles, source, fingerprints, subtitleFingerprints })),
+      clip: this.presentation(clip, metadata), revision: digest(JSON.stringify({ clip: revisionClip, metadata, subtitles, source, fingerprints, subtitleFingerprints })),
       mediaRevision: digest(JSON.stringify({ media: fingerprints.filter(entry => [clip.mediaPath, metadata.output?.mediaPath,
         ...parts.map((part: any) => part.mediaPath)].includes(entry.file)), subtitleFingerprints })),
       sourceRevision: digest(JSON.stringify({ source, media: fingerprints.filter(entry => entry.file === (metadata.source?.mediaPath || clip.sourceMediaPath)) })),
@@ -185,6 +189,9 @@ export class AdminClipStore {
     const queue = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });
     return queue.jobs.some((job: any) => ['pending', 'queued', 'running', 'uploading', 'processing'].includes(job.status)
       && job.clipIds?.includes(Number(id)));
+  }
+  uploadStatus() {
+    return uploadQueueStatus(readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] }), this.records());
   }
   queues(): any {
     const uploads = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });

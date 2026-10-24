@@ -21,6 +21,15 @@ export function selectActivitySubmission(row: any, ids: string[], note: string):
     uploadReady: false, activityReview: { version: 1, status: 'pending' } };
 }
 
+/** Scope a first render without changing the detected plan, calibrated boundaries or sibling kind. */
+export function selectPlannedActivitySubmission(plan: any, kind: ActivityKind, ids: string[], note: string): any {
+  const activities = selectEvents(plan.events, [kind]);
+  const selected = selectActivitySubmission({ activities, output: { parts: plan.parts[kind] } }, ids, note);
+  return { ...plan, events: plan.events.filter((event: any) => !activities.includes(event) || ids.includes(event.id)),
+    parts: { ...plan.parts, [kind]: selected.output.parts },
+    activitySelection: { ...selected.activitySelection, phase: 'before_render' } };
+}
+
 /** Resume an early stage only after its shared prerequisite recovered. No generation retry loop. */
 export async function runArchiveStages(run: (kind: string, reuseSummaryOnly?: boolean) => Promise<any>,
   completed: (kind: string, result: any) => void, failed: (kind: string, error: any) => void): Promise<void> {

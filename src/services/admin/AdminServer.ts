@@ -18,6 +18,8 @@ import { coverSelection } from '../../core/admin/cover';
 import { AdminTitles } from './AdminTitles';
 import { AdminBilibiliLogin } from './AdminBilibiliLogin';
 import { AdminCommentReplies } from './AdminCommentReplies';
+import { AdminCampaignCandidates } from './AdminCampaignCandidates';
+import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -30,6 +32,8 @@ export interface AdminAdapters {
   titles?: AdminTitles;
   bilibiliLogin?: AdminBilibiliLogin;
   commentReplies?: AdminCommentReplies;
+  campaignCandidates?: AdminCampaignCandidates;
+  campaignFeedback?: AdminCampaignFeedback;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -44,6 +48,26 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.use(express.json({ limit: '1mb' }));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  const candidates = () => { if (!adapters.campaignCandidates) throw new AdminError('活动候选未配置', 503); return adapters.campaignCandidates; };
+  app.get('/campaign-candidates', (req, res) => res.json(candidates().list({
+    room: String(req.query.room || ''), session: String(req.query.session || ''), search: String(req.query.search || ''), page: String(req.query.page || '1'), sort: String(req.query.sort || '')
+  })));
+  app.get('/campaign-candidates/:id', (req, res) => res.json(candidates().detail(req.params.id)));
+  const campaignFeedback = () => { if (!adapters.campaignFeedback) throw new AdminError('活动候选投稿未配置', 503); return adapters.campaignFeedback; };
+  app.get('/campaign-candidates/:id/feedback', (req, res) => res.json(campaignFeedback().view(req.params.id)));
+  app.post('/campaign-candidates/:id/actions', (req, res) => res.status(202).json(campaignFeedback().submit(req.params.id, req.body)));
+  const candidatePlayback = async (id: string) => {
+    const source = candidates().source(id);
+    if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
+    return adapters.sourceMedia.prepare(source.file, source.window);
+  };
+  app.get('/campaign-candidates/:id/source-playback', async (req, res) => {
+    const playback = await candidatePlayback(req.params.id);
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end });
+  });
+  app.get('/campaign-candidates/:id/assets/source-preview', async (req, res) => {
+    res.sendFile((await candidatePlayback(req.params.id)).file);
+  });
   app.get('/comment-replies', (req, res) => {
     if (!adapters.commentReplies) throw new AdminError('评论记录未配置', 503);
     res.json(adapters.commentReplies.view(req.query));
@@ -184,6 +208,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
     res.status(202).json(adapters.jobs.submit(command, validate));
   });
   app.get('/queues', (_req, res) => res.json(adapters.clips.queues()));
+  app.get('/queues/status', (_req, res) => res.json(adapters.clips.uploadStatus()));
   app.post('/queues/actions', (req, res) => {
     const queues = adapters.clips.queues(), list = req.body.action === 'cancel-upload' ? queues.uploads : queues.manual;
     if (!list.some((job: any) => job.id === req.body.id)) throw new AdminError('队列任务不存在', 404);

@@ -35,7 +35,8 @@ beforeEach(() => {
 });
 
 test('original question receives source-anchored dates and cross-room roster evidence in one model call', async () => {
-  const io = { video: jest.fn(async () => video), now: () => event.createdAt };
+  const io = { video: jest.fn(async () => ({ ...video,
+    transcript: { language: 'ai-zh', partial: false, cues: [{ at: 1, text: '明天八点联动' }] } })), now: () => event.createdAt };
   const knowledge = createCommentKnowledge(runtime, options, io);
   const transport = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '是弥月、小岁、栞栞、犬绒的四人联动，给小岁加油～' } }] }) }));
   const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch, knowledge);
@@ -182,6 +183,75 @@ test('summary without captions explicitly reports missing video content, with no
   const result = await knowledge({ ...event, text: '总结一下这个视频' }, signal());
   expect(result).toMatchObject({ video: { content: 'unavailable' }, coverage: 'unavailable', clues: [] });
   expect(search).not.toHaveBeenCalled();
+});
+
+test('video-based comfort reads the target transcript without unrelated historical recall, and does not cache a missing transcript', async () => {
+  const request = { ...event, text: '@鹿饼Shikamochi 根据视频，帮小岁说两句，夸夸小岁，安慰下小岁' };
+  const io = { video: jest.fn().mockResolvedValueOnce(video).mockResolvedValue({ ...video, transcript: {
+    language: 'ai-zh', partial: false, cues: [{ at: 452, text: '但是我感觉我发现这个的时候心情还挺微妙的' }]
+  } }), now: () => event.createdAt };
+  const knowledge = createCommentKnowledge(runtime, options, io);
+  const replies = ['想给小岁一点支持，愿你今天也能有些开心的小事。', '小岁观察得很细，发现这些心情微妙也正常呀。'];
+  const transport = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [
+    { finish_reason: 'stop', message: { content: replies.shift() } }
+  ] }) }));
+  const hotComments = jest.fn(async () => []);
+  const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch,
+    knowledge, { config: { botUid: '99' } as any, hotComments });
+  await expect(answer(request.text, signal(), request)).resolves.toBe(
+    '没获取到这个视频的字幕，我看不到视频内容。想给小岁一点支持，愿你今天也能有些开心的小事。');
+  expect(transport).toHaveBeenCalledTimes(1); expect(hotComments).toHaveBeenCalledTimes(1);
+  await expect(answer(request.text, signal(), request)).resolves.toBe('小岁观察得很细，发现这些心情微妙也正常呀。');
+  expect(transport).toHaveBeenCalledTimes(2);
+  expect(io.video).toHaveBeenCalledTimes(2); expect(search).not.toHaveBeenCalled();
+  const messages = JSON.parse((transport.mock.calls[1] as unknown as [string, any])[1].body).messages;
+  expect(messages[1].content).toContain('心情还挺微妙');
+  await knowledge(request, signal()); expect(io.video).toHaveBeenCalledTimes(2);
+});
+
+test('a video request without usable captions still calls the model and guarantees disclosure, including disabled retrieval and trimmed evidence', async () => {
+  const transport = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [
+    { finish_reason: 'stop', message: { content: '可以聊聊你最在意的部分。' } }
+  ] }) }));
+  const request = { ...event, text: '评价这个视频' };
+  for (const context of [undefined, async () => ({ anchorDay: '2026-10-24', coverage: 'available' as const,
+    clues: [{ room: '岁己', date: '2026-01-03', time: '00:29', quote: '无关历史夸夸' }],
+    video: { title: '标题', description: '', content: 'unavailable' as const } })]) {
+    const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch, context);
+    await expect(answer(request.text, signal(), request)).resolves.toBe(
+      '没获取到这个视频的字幕，我看不到视频内容。可以聊聊你最在意的部分。');
+  }
+  const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch,
+    async () => ({ anchorDay: '2026-10-24', coverage: 'available', clues: [], video: { title: '标题', description: '',
+      content: 'subtitles', excerpts: [{ at: 0, text: '字'.repeat(1000) }] } }));
+  await expect(answer(request.text, signal(), request)).resolves.toBe(
+    '没获取到这个视频的字幕，我看不到视频内容。可以聊聊你最在意的部分。');
+  expect(transport).toHaveBeenCalledTimes(3);
+  for (const call of transport.mock.calls) {
+    const messages = JSON.parse((call as unknown as [string, any])[1].body).messages;
+    expect(messages[0].content).toContain('无字幕仅据评论等已知文字简短回应');
+    expect(messages[1].content).not.toContain('"content":"subtitles"');
+    expect(messages[1].content).not.toContain('字'.repeat(1000));
+    expect(Buffer.byteLength(JSON.stringify(messages), 'utf8') + LIMITS.outputTokens + 256).toBeLessThanOrEqual(LIMITS.tokenReservation);
+  }
+});
+
+test('a local factual answer in a video thread explicitly discloses that it did not read video content', async () => {
+  const request = { ...event, text: '岁己之前几次联动是什么时候' };
+  const transport = jest.fn(async () => ({ ok: true, json: async () => ({ choices: [
+    { finish_reason: 'stop', message: { content: '本地资料只查到一场预告。' } }
+  ] }) }));
+  const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch,
+    async () => ({ anchorDay: '2026-10-24', coverage: 'partial', clues: [], video: { title: '标题', description: '', content: 'unavailable' } }));
+  await expect(answer(request.text, signal(), request)).resolves.toBe('没获取到这个视频的字幕，我看不到视频内容。本地资料只查到一场预告。');
+});
+
+test('support excerpts keep the expressed feeling and its surrounding explanation', () => {
+  const cues = Array.from({ length: 100 }, (_, i) => ({ at: i, text: `普通原话第${i}句` }));
+  cues[91].text = '但是发现这个的时候心情还挺微妙的';
+  cues[92].text = '会不会以前的节目也有艺术加工呢';
+  const selected = videoExcerpts(cues, '根据视频夸夸小岁，安慰一下');
+  expect(selected).toEqual(expect.arrayContaining([cues[91], cues[92]]));
 });
 
 test('substantive non-video questions search dated or historical local subtitles, audience danmaku and clip fallback', async () => {

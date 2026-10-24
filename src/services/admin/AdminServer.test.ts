@@ -69,6 +69,18 @@ function fixture() {
 }
 afterEach(() => { roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })); });
 
+it('authenticates and projects the full upload queue without writing state or starting commands', async () => {
+  const f = fixture(), queuePath = path.join(f.root, 'data/runtime/clip_upload_queue.json');
+  atomicJson(queuePath, { jobs: [{ id: 'waiting', status: 'pending', clipIds: [1] },
+    ...Array.from({ length: 205 }, (_, i) => ({ id: String(i), status: 'done', clipIds: [] }))] });
+  const before = fs.readFileSync(queuePath, 'utf8');
+  await request(f.app).get('/queues/status').expect(403);
+  const response = await request(f.app).get('/queues/status').set(headers).expect(200);
+  expect(response.body).toMatchObject({ state: 'ready', queuedJobs: 1, queuedClips: 1 });
+  expect(response.body.queue[0].clips[0]).toMatchObject({ id: 1, title: '测试片' });
+  expect(fs.readFileSync(queuePath, 'utf8')).toBe(before); expect(f.run).not.toHaveBeenCalled();
+});
+
 it('shows an evidenced no-clip reason before technical errors on legacy candidates without changing their files', async () => {
   const f = fixture(), registryPath = path.join(f.root, 'data/runtime/clip_upload_registry.json');
   const registry = readJson(registryPath), record = registry.clips['1'];

@@ -70,6 +70,14 @@
 平台 API；不照搬参考库向字幕 URL 转发 Cookie 或直接下载执行的行为。资源绑定、时长、
 浏览器 UA、限额及无字幕降级契约见 [评论回复指南](bilibili-comment-replies.md#视频上下文与事实检索)。
 
+2026-10-24 重新核对 [renmu video 实现](https://github.com/renmu123/biliAPI/blob/master/src/video/index.ts)
+和 [yt-dlp Bilibili extractor](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/bilibili.py)：
+renmu 使用 WBI 签名 player 信息并兼容 `subtitle_url_v2`；yt-dlp 字幕发现直接请求固定
+`/x/player/wbi/v2`，不依赖播放流下载。账号只读对照已验证 v2 与 wbi/v2 的 aid/cid 请求
+都可返回有效字幕地址。本项目在地址缺失或普通读取失败时有界切换这两个固定 GET，
+并兼容备用地址字段；不新增签名服务、视频下载、ASR 或 Cookie 写盘。
+列出语言但下载地址为空不证明没有字幕，只表示该次目录不足以读取正文。
+
 ```powershell
 # 默认匿名，不读取账号配置。只接受已有楼中楼的正整数 oid/root/reply ID。
 npm run bilibili:comment-inspect -- --oid <主体ID> --type 1 --root <根评论ID> --reply <回复ID>

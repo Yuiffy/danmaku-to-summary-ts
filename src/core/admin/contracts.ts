@@ -26,6 +26,28 @@ export interface ClipSummary {
   pendingCut: boolean;
   updatedAt: string;
 }
+export const campaignCandidateSorts = ['session', 'score-desc', 'score-asc', 'number-asc', 'number-desc'] as const;
+export type CampaignCandidateSort = typeof campaignCandidateSorts[number];
+export interface CampaignCandidate {
+  id: string;
+  session: string;
+  label: string;
+  streamerName: string;
+  roomId: string;
+  recordedAt: string;
+  streamTitle: string;
+  title: string;
+  reason: string;
+  score?: number;
+  start?: number;
+  end?: number;
+  previewAvailable: boolean;
+}
+export interface CampaignCandidateDetail {
+  candidate: CampaignCandidate;
+  subtitles: string;
+  revision: string;
+}
 export interface ClipDetail {
   clip: ClipSummary;
   revision: string;

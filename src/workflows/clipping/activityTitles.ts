@@ -16,6 +16,13 @@ export function bindTranscriptTitles(items: Data[], events: Data[], rows: Data[]
   if (!Array.isArray(items) || !items.length || new Set(items.map(i => i.activityId)).size !== items.length) throw new Error('Title evidence must bind distinct source activities');
   return { version: 1, items: items.map(item => {
     const event = events.find(e => e.id === item.activityId);
+    if (item.method === 'explicit_user_title') {
+      if (!event || !String(item.name || '').trim() || !String(item.note || '').trim()
+        || !String(item.confirmation || '').trim()) throw new Error('User title needs a specific activity, name and explicit feedback');
+      return { activityId: event.id, name: String(item.name).trim(), method: 'explicit_user_title',
+        authority: 'user', audioVisualReviewed: false, confirmation: String(item.confirmation).trim(), note: item.note,
+        window: { start: event.start, end: event.end } };
+    }
     if (item.method === 'catalog_lyric_match') {
       if (!event || !Array.isArray(item.segments) || !item.segments.length) throw new Error('Invalid catalog title evidence');
       // A boundary edit may discard old citations. Check their original content before

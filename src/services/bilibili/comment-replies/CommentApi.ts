@@ -102,7 +102,8 @@ export class CommentApi {
     if (!positiveId(aid) || signal.aborted) throw new Error('Invalid video context target');
     const response = await this.transport(`https://api.bilibili.com/x/web-interface/view?aid=${aid}`, {
       // View responses can include the video's entire season. Retain only bounded metadata below.
-      headers: this.credentials().headers, signal: signal as any, redirect: 'error', timeout: 3000, size: 4 * 1024 * 1024
+      headers: { ...this.credentials().headers, 'User-Agent': BILIBILI_WEB_UA, Referer: `https://www.bilibili.com/video/av${aid}/` },
+      signal: signal as any, redirect: 'error', timeout: 3000, size: 4 * 1024 * 1024
     });
     if ([403, 412, 429].includes(response.status)) throw new CommentPlatformBlocked('Video context blocked by platform');
     const body = parseBilibiliJson(await response.text()), data = body?.data;
