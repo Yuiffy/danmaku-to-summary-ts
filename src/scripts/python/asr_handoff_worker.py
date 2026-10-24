@@ -96,6 +96,7 @@ def serve():
                     from live_asr_cache import commit_boundary, model_spec, aggregate_chunks
                     from sensevoice_paraformer import configure_paraformer_devices
                     from sensevoice_text import resolve_cached_model_name
+                    from asr_window_result import transcription_result, vad_intervals
                     if model is None:
                         load_started = time.perf_counter()
                         spec = model_spec(payload)
@@ -113,24 +114,32 @@ def serve():
                         vad = (model.inference(audio, model=model.vad_model,
                             kwargs={**model.vad_kwargs, 'max_single_segment_time': 240000}, disable_pbar=True)
                             if getattr(model, 'vad_model', None) is not None else [])
-                        end = commit_boundary(vad[0].get('value', []) if vad else [], len(audio) / 16000,
+                        intervals = vad_intervals(vad, len(audio) / 16000) if getattr(model, 'vad_model', None) is not None else None
+                        end = commit_boundary(intervals or [], len(audio) / 16000,
                                               final=request['final'])
                         if end is None:
                             response = {'chunk': None}
                         else:
                             frames = min(len(audio), round(end * 16000))
-                            result = model.generate(input=audio[:frames], cache={}, batch_size_s=30,
-                                batch_size_threshold_s=30, sentence_timestamp=True, disable_pbar=True,
+                            from asr_handoff_policy import batch_settings
+                            batch, threshold = batch_settings({**payload,
+                                **{key: request[key] for key in ('batch_size_s', 'batch_size_threshold_s') if key in request}}, payload['device'])
+                            result = model.generate(input=audio[:frames], cache={}, batch_size_s=batch,
+                                batch_size_threshold_s=threshold, sentence_timestamp=True, disable_pbar=True,
                                 language=payload.get('language', 'auto'), use_itn=payload.get('use_itn', True))
-                            if not result or not isinstance(result[0], dict):
-                                raise RuntimeError('No valid FunASR output')
                             response = {'chunk': {'start': request['start'],
-                                'end': round(request['start'] + frames / 16000, 5), 'result': result[0]}}
+                                'end': round(request['start'] + frames / 16000, 5),
+                                'result': transcription_result(result, intervals)}}
                             aggregate_chunks([response['chunk']])
                     response.update(model_load_s=load_s, window_s=time.perf_counter()-began,
                         gpu_reserved_mb=torch.cuda.memory_reserved() / 1024 ** 2
                             if payload['device'].startswith('cuda') else 0)
                 elif operation == 'finish':
+                    speaker_policy = request.get('speaker_processing_policy') or payload.get('speaker_processing_policy')
+                    if speaker_policy:
+                        payload['speaker_processing_policy'] = speaker_policy
+                        if speaker_policy.get('enabled') is False:
+                            payload['enable_speaker'] = False
                     # Avoid retaining the ASR weights alongside speaker/emotion models.
                     model = None
                     gc.collect()

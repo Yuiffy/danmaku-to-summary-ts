@@ -12,6 +12,7 @@ import { CommentWorker } from '../../services/bilibili/comment-replies/CommentWo
 import { readQuestionRuntime } from '../../services/live-vote/questions/EvidenceQuery';
 import { createCommentKnowledge } from '../../services/bilibili/comment-replies/CommentKnowledge';
 import { CommentFeedError, CommentPoller } from '../../services/bilibili/comment-replies/CommentPolling';
+import { createProjectReader } from '../../services/bilibili/comment-replies/CommentProjects';
 
 export interface CommentCliOptions { config: string; mode: 'check' | 'dry-run' | 'live' | 'status' | 'resume' }
 export function parseCommentArgs(args: string[]): CommentCliOptions {
@@ -65,7 +66,8 @@ export async function runCommentReplies(args: string[]): Promise<void> {
   const settings = questionProviderSettings(loadConfigLayers({ configPath: config.providerConfigPath }));
   const knowledge = config.knowledge && options.mode !== 'dry-run' ? createCommentKnowledge(
     await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)), config.knowledge,
-    { video: (aid, signal) => api.video(aid, signal), now: Date.now }) : undefined;
+    { video: (aid, signal) => api.video(aid, signal), now: Date.now,
+      ...(config.projectSources ? { projects: createProjectReader(root, config.projectSources) } : {}) }) : undefined;
   if (options.mode === 'check') {
     console.info('Comment reply configuration valid. No polling, model requests or publication performed.'); return;
   }

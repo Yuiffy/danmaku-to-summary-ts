@@ -374,7 +374,8 @@ function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
 function applyMossRollout(asrConfig, context = {}, resolved) {
     const rollout = asrConfig.moss_rollout || {};
     const eligibleBackends = ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm'];
-    if (!rollout.enabled || !eligibleBackends.includes(resolved.backend)) return resolved;
+    if (!rollout.enabled || !eligibleBackends.includes(resolved.backend)
+        || !require('./speaker_load_policy.ts').currentSpeakerProcessing({ asr: asrConfig }, context).enabled) return resolved;
     const roomId = String(context.room_id || context.roomId || '').trim();
     const rooms = Array.isArray(rollout.room_ids) ? rollout.room_ids.map(String) : [];
     if (!roomId || (rooms.length && !rooms.includes(roomId))) return resolved;
@@ -1068,70 +1069,9 @@ function resolveParaformerModelOption(options = {}) {
     }
     return options.model || options.finetuned_model || options.base_model || 'paraformer-zh';
 }
-
 function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
-    const speakerRequest = getSpeakerRequest(context);
-    const registry = resolveStreamerRegistry(config);
-    const roomId = context.room_id || context.roomId || context.hostRoomId || null;
-    const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
-    const requestedParticipants = Array.isArray(speakerRequest?.participants)
-        ? speakerRequest.participants
-        : [];
-    const hostParticipant = requestedParticipants.find(
-        participant => String(participant?.streamerId || participant?.id || '') === String(hostStreamerId || '')
-    );
-    const hostStreamer = hostStreamerId
-        ? (registry[hostStreamerId] || hostParticipant || null)
-        : null;
-    const hostLabels = speakerReferenceCatalog.collectSpeakerLabels(hostStreamer || {});
-    const constrainedReferences = Array.isArray(speakerRequest?.constrainedSpeakerReferences)
-        ? speakerRequest.constrainedSpeakerReferences
-        : [];
-    const constrainedHostReference = constrainedReferences.find(
-        reference => hostLabels.some(
-            label => speakerReferenceCatalog.normalizeLabel(label)
-                === speakerReferenceCatalog.normalizeLabel(reference?.speaker)
-        )
-    );
-    const catalogHostReference = hostStreamer
-        ? speakerReferenceCatalog.getStreamerReferenceStatus(hostStreamer, config).reference
-        : null;
-    const hostReference = constrainedHostReference || catalogHostReference;
-    const hostOverride = hostReference?.speaker
-        ? { speaker_host_label: String(hostReference.speaker) }
-        : {};
-    const identity = config.asr?.speaker_identity || {};
-    if (identity.policy === 'row_verified' && Array.isArray(identity.room_ids) && identity.room_ids.map(String).includes(String(roomId))) {
-        hostOverride.speaker_identity_policy = 'row_verified';
-        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
-    }
-    const discovery = speakerRequest?.participantDiscovery;
-    if (discovery?.mode === 'multi' && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus)) {
-        // A likely collaboration warrants complete acoustic analysis, never forced names.
-        hostOverride.enable_speaker = true;
-        hostOverride.speaker_detection_mode = 'always';
-        hostOverride.speaker_identity_policy = 'row_verified';
-        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
-    }
-    const plannedParticipantIds = Array.isArray(speakerRequest?.plannedParticipantIds)
-        ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
-        : [];
-    const rosterStreamerIds = Array.isArray(speakerRequest?.rosterStreamerIds)
-        ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
-        : [];
-    if (!speakerRequest) {
-        return hostOverride;
-    }
-
-    // Roster data is evaluation context, not a speaker-recognition whitelist.
-    // Keep every reference configured on the selected ASR backend in competition.
-    return {
-        ...hostOverride,
-        speaker_constrain_to_references: false,
-        speaker_request_mode: speakerRequest.mode || 'planned_roster',
-        planned_participant_ids: plannedParticipantIds,
-        roster_streamer_ids: rosterStreamerIds
-    };
+    return require('./speaker_runtime').buildRuntimeSpeakerOverrides(config, context,
+        { getSpeakerRequest, resolveStreamerRegistry, findHostStreamerId });
 }
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
@@ -1150,7 +1090,7 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     const options = {
         ...backendConfig,
         ...((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]) || {}),
-        ...buildRuntimeSpeakerOverrides(config, context),
+        ...buildRuntimeSpeakerOverrides(config, { ...context, input: context.input || mediaPath }),
         backend,
         audio_path: mediaPath,
         hotwords: nanoLike
@@ -1168,12 +1108,12 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     };
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
-        // Only the standard model route opts into the per-job supervisor. Release
-        // an idle resident model first; the central queue/ASR lock still owns us.
+        const profile = String(options.model_profile || '').trim().toLowerCase();
+        // Release idle resident GPU weights before starting the standard-model handoff supervisor.
         options.device_handoff = { ...config.asr?.device_handoff,
-            min_available_memory_gb: config.asr?.cpu_fallback?.min_available_memory_gb ?? 10,
+            cpu_fallback_enabled: config.asr?.cpu_fallback?.enabled !== false, min_available_memory_gb: config.asr?.cpu_fallback?.min_available_memory_gb ?? 10,
             enabled: config.asr?.device_handoff?.enabled === true && options.model === 'paraformer-zh'
-                && !options.finetuned_model && options.model_profile !== 'finetuned'
+                && (!options.finetuned_model || profile === 'default') && profile !== 'finetuned'
                 && ['cuda', 'cuda:0'].includes(options.device || 'cuda') };
         if (options.device_handoff.enabled) {
             const release = runPersistentAsrWorker({ process_timeout_s: 30 }, 'ASR device handoff', 'shutdown');

@@ -34,6 +34,28 @@ function fixture() {
         scheduler: () => ({ acquire: async () => ({ release() {}, profile: {} }) }) };
     return { directory, raw, context, options, generateText, calibrate, renderPart };
 }
+test.each(['songs', 'watch', undefined])('absent %s completes without calibration, media work or repeated summary generation', async kind => {
+    const f = fixture();
+    f.raw.activityTimeline.events = kind === 'songs' ? [f.raw.activityTimeline.events[1]]
+        : kind === 'watch' ? [f.raw.activityTimeline.events[0]] : [];
+    try {
+        const options = { ...f.options, kind };
+        const first = await workflow.generateStreamActivities(options);
+        expect(first).toMatchObject({ status: 'no_activities', submissions: 0, parts: 0, pendingReview: false });
+        const plan = JSON.parse(fs.readFileSync(first.planPath, 'utf8'));
+        expect(plan.coverage.status).toBe('complete');
+        expect(plan.calibratedKinds).toEqual(kind ? [kind] : ['songs', 'watch']);
+        expect(f.calibrate).not.toHaveBeenCalled(); expect(f.renderPart).not.toHaveBeenCalled();
+        expect(await workflow.generateStreamActivities(options)).toMatchObject({ status: 'no_activities' });
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+        if (kind) {
+            const sibling = await workflow.generateStreamActivities({ ...f.options, kind: kind === 'songs' ? 'watch' : 'songs' });
+            expect(sibling.status).toBe('rendered'); expect(sibling.submissions).toBe(1);
+            expect(f.calibrate).toHaveBeenCalledTimes(1);
+        }
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('the existing summary request also supplies timestamps, while clips reuse it without rescanning or re-ASR', async () => {
     const f = fixture();
     try {
@@ -448,6 +470,38 @@ test('a retry excluding every candidate invalidates the pending package and reta
         expect(fs.existsSync(old.output.mediaPath)).toBe(true);
         expect(fs.readFileSync(result.manifestPath, 'utf8')).toBe(manifestBefore);
         expect(JSON.parse(fs.readFileSync(result.planPath, 'utf8')).rejectedActivities).toHaveLength(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('a source-bound verifier revision can recover never-rendered watch while preserving a completed song package', async () => {
+    const f = fixture();
+    try {
+        const songs = await workflow.generateStreamActivities({ ...f.options, kind: 'songs' });
+        const songPath = JSON.parse(fs.readFileSync(songs.manifestPath, 'utf8')).clips[0].metadataPath;
+        const songBefore = fs.readFileSync(songPath, 'utf8');
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
+            events: events.map(event => ({ ...event, verification: { decision: 'uncertain', reason: 'ending outside packet' } })),
+            rejected: [], requests: 1, audioSeconds: 120, cacheHits: 0
+        }) })).rejects.toThrow('Viewing boundaries remain unresolved');
+        const before = JSON.parse(fs.readFileSync(songs.planPath, 'utf8'));
+        f.options.config.streamActivityClips['verification'] = { boundaryContextSeconds: 480, batchMaxAudioSeconds: 1200 };
+        f.options.config.streamActivityClips.roomIds = ['25788785'];
+        f.options.config.streamActivityClips.automaticPublication = { mode: 'auto', policyVersion: 'stream-activity-v1',
+            roomIds: ['25788785'], activatedAt: '2026-01-01T00:00:00Z', authorizationNote: 'configured stream publication' };
+        const check = jest.fn(async () => { throw new Error('Independent final review unavailable'); });
+        const result = await workflow.generateStreamActivities({ ...f.options, kind: 'watch', retryBoundaries: true,
+            reviseVerifier: true, retryPublication: true, readRegistry: () => ({ clips: {} }),
+            publicationAdapters: { check }, revisionNote: 'Explicitly expand bounded closing context, preserve completed songs' });
+        const after = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        expect(after.verifierRevisions[0]).toMatchObject({ kind: 'watch', spentRequests: 2 });
+        expect(after.signature).toBe(before.signature);
+        expect(after.efficiency.boundaryRequests).toBe(3);
+        expect(fs.readFileSync(songPath, 'utf8')).toBe(songBefore);
+        expect(JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips).toHaveLength(2);
+        expect(check).toHaveBeenCalledTimes(1);
+        const watchPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[1].metadataPath;
+        expect(JSON.parse(fs.readFileSync(watchPath, 'utf8'))).toMatchObject({
+            activityAutomaticPublicationRequired: true, uploadReady: false, activityReview: { status: 'pending' } });
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 

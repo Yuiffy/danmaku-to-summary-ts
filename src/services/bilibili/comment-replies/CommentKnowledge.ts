@@ -3,12 +3,13 @@ import { QuestionCorpus } from '../../live-vote/questions/QuestionCorpus';
 import { configuredQuestionRooms } from '../../live-vote/questions/QuestionScope';
 import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig } from './CommentPolicy';
 import { collaborationQuestion, historicalCollaborationQuestion, CommentClue, CommentContext, commentDates, commentSearchTerms,
-  CommentVideo, needsCommentEvidence, safeEvidenceText, videoOnlyQuestion, videoExcerpts } from './CommentContext';
+  CommentVideo, CommentProject, needsCommentEvidence, safeEvidenceText, videoOnlyQuestion, videoExcerpts, projectComparisonQuestion } from './CommentContext';
 import { evidenceScorer } from '../../live-vote/questions/EvidenceRanking';
 
 type Options = NonNullable<CommentReplyConfig['knowledge']>;
 type SearchResult = { clues: Array<CommentClue & { roomId: string; score: number }>; partial: boolean };
-interface KnowledgeIO { video(aid: string, signal: AbortSignal): Promise<CommentVideo>; now(): number }
+interface KnowledgeIO { video(aid: string, signal: AbortSignal): Promise<CommentVideo>; now(): number;
+  projects?(query: string, signal: AbortSignal): Promise<CommentProject[]> }
 
 /** Local FTS only: no answer/planner/embedding calls, no writes or agent-selected paths. */
 export function createCommentKnowledge(runtime: QuestionRuntime, options: Options, io: KnowledgeIO) {
@@ -87,6 +88,7 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
     if (signal.aborted) controller.abort();
     const timer = setTimeout(abort, 12000);
     let video: CommentVideo | undefined;
+    let projects: CommentProject[] | undefined;
     const collected: SearchResult['clues'] = [];
     let partial = false;
     let historical = false, primaryRooms = [options.roomId];
@@ -104,6 +106,7 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
       }
       const dates = commentDates(event.text, event.createdAt, video, event.type === 1);
       const topic = `${event.text} ${video?.title || ''}`;
+      if (projectComparisonQuestion(event.text) && io.projects) projects = await io.projects(topic, controller.signal);
       const named = rooms.filter(room => allowed.includes(room.roomId) && [room.name, ...room.aliases]
         .some(alias => alias.length >= 2 && topic.includes(alias))).map(room => room.roomId);
       const selectedRooms = collaborationQuestion(topic) ? allowed : named.length ? named : [options.roomId];
@@ -154,6 +157,7 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
     const excerpts = videoExcerpts(video?.transcript?.cues || [], `${event.text} ${video?.title || ''}`);
     const sampled = !!video?.transcript && (video.transcript.partial || excerpts.length < video.transcript.cues.length || (video.pages || 1) > 1);
     return { ...commentDates(event.text, event.createdAt, video, event.type === 1),
+      ...(projects?.length ? { projects } : {}),
       ...(video ? { video: { title: safeEvidenceText(video.title, 120),
         description: video.description.split(/\r?\n/u).map(line => safeEvidenceText(line, 180)).filter(Boolean).join(' ').slice(0, 400),
         content: excerpts.length ? 'subtitles' as const : 'unavailable' as const, scope: 'first-page' as const,

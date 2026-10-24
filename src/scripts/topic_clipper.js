@@ -704,14 +704,14 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     const coverSourcePath = !info.manualSelection && info.coverSourcePath && fs.existsSync(info.coverSourcePath)
         ? info.coverSourcePath
         : videoPath;
-    const resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
+    let resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
     const timeoutMs = Math.max(1, Number(info.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
     const coverStage = '话题切片封面生成';
     const asrState = await waitForAsrAvailability(coverStage, resourceConfig);
     if (asrState.asrActive) {
         console.log(`[resource] ${coverStage} 与 ASR 重叠，继续使用低优先级封面任务`);
     }
-    await waitForCpuAvailability(coverStage, resourceConfig);
+    resourceConfig = { ...resourceConfig, ...(await waitForCpuAvailability(coverStage, resourceConfig)).resourceOverrides };
 
     return new Promise((resolve, reject) => {
         const args = ['python', scriptPath, coverSourcePath,
@@ -1386,7 +1386,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         '--tid', '21',
         '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
     ];
-    if (metadata.automaticPublication?.enabled) args.push('--include-pending');
+    args.push('--include-pending'); // Reserving a review ID never grants upload permission.
     let result;
     try {
         result = require('child_process').spawnSync('python', args, {
@@ -1895,7 +1895,7 @@ async function generateTopicClips(options = {}) {
     }
 
     const uploadableResults = results.filter(result => result?.uploadReady && !result?.output?.mediaError);
-    const registrableResults = results.filter(result => uploadableResults.includes(result) || isPendingTopicResult(result));
+    const registrableResults = results.filter(result => (result?.output?.mediaPath && !result.output.mediaError) || isPendingTopicResult(result));
     let uploadRegistry = null;
     if (registrableResults.length > 0) {
         try {

@@ -39,6 +39,13 @@ test('campaign publication uses model scores and keeps low scores and heat-only 
     clips.push({ start: 120, end: 150, score: 100, selectionSource: 'danmaku_heat' });
     expect(selectPublication(clips, policy, 'event').clips.map((clip: any) => clip.score)).toEqual([91]);
 });
+test('reviewed game aliases stay scoped to their campaign rooms', () => {
+    const settings = JSON.parse(JSON.stringify(root));
+    settings.ownStreamClips.campaigns[0].gameAliases = { '普雅之魂': '芙娅之魂' };
+    expect(getOwnStreamClipsConfig(settings, 'event', undefined, now).campaignContentGate.gameAliases)
+        .toEqual({ '普雅之魂': '芙娅之魂' });
+    expect(getOwnStreamClipsConfig(settings, 'regular', undefined, now).campaignContentGate).toBeUndefined();
+});
 
 test('campaign publication requires its separate explicit room policy and never widens daily authorization', () => {
     const config = JSON.parse(JSON.stringify(root));

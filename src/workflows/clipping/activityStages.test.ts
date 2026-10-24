@@ -76,6 +76,17 @@ test.each([true, false])('a recovered shared summary resumes failed songs once, 
   expect(failed).toHaveBeenCalledTimes(succeeds ? 1 : 2);
 });
 
+test('an empty watch result also finishes the recovered shared summary prerequisite for songs', async () => {
+  const run = jest.fn(async (kind, reuseSummaryOnly) => {
+    if (kind === 'songs' && !reuseSummaryOnly) throw Object.assign(new Error('summary not ready'), { code: 'ACTIVITY_SUMMARY_NOT_READY' });
+    return { status: 'no_activities' };
+  });
+  const completed = jest.fn();
+  await runArchiveStages(run, completed, jest.fn());
+  expect(run.mock.calls).toEqual([['songs'], ['games'], ['watch'], ['songs', true]]);
+  expect(completed).toHaveBeenCalledWith('songs', { status: 'no_activities' });
+});
+
 test.each(['boundary error', 'summary still failed', 'disabled'])('does not retry without a recovered prerequisite: %s', async scenario => {
   const run = jest.fn(async kind => {
     if (kind === 'songs') throw Object.assign(new Error(scenario), {

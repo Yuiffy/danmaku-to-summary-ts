@@ -119,6 +119,28 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(handler.activeLiveRooms.has(String(roomId))).toBe(true);
   });
 
+  test('finalizes a closed collection once after a brief start/end with no new file', async () => {
+    jest.useFakeTimers();
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = '1713546334';
+    const { videoPath } = writeSegment(tempDir, roomId);
+    const now = Date.now(), start = new Date(now - 3600000), close = new Date(now - 34000);
+    await handler.collectSegment(roomId, videoPath, { EventData: {
+      RoomId: roomId, Name: '灰泽满', Title: '星露谷', FileOpenTime: start.toISOString(), FileCloseTime: close.toISOString()
+    } });
+    handler.streamTimestamps.set(roomId, { startTime: start, endTime: new Date(now - 54000) });
+    handler.startProcessing = jest.fn().mockResolvedValue(true);
+    await handler.handleStreamStarted({ EventTimestamp: new Date(now).toISOString(), EventData: { RoomId: roomId, Recording: false } });
+    expect(handler.hasCurrentStreamSegment(roomId)).toBe(true);
+    await handler.handleStreamEnded('brief-session', { EventTimestamp: new Date(now + 1000).toISOString(), EventData: { RoomId: roomId, Recording: false } });
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(handler.startProcessing).toHaveBeenCalledTimes(1);
+    expect(handler.startProcessing.mock.calls[0][0]).toBe(videoPath);
+    await handler.processStreamEnded(roomId);
+    expect(handler.startProcessing).toHaveBeenCalledTimes(1);
+  });
+
   test('captures a session-bound room snapshot without blocking or repeating StreamStarted', async () => {
     const capture = require('../../../scripts/asr/participant_visual').captureParticipantRoomSnapshot;
     capture.mockClear();

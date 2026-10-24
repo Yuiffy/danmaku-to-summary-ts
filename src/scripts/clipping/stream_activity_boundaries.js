@@ -53,7 +53,7 @@ function groupBoundaries(events, duration, settings, reviewPrelude = false, rows
             ? localStage().encloseSongContext(event, base, rows, duration) : base;
         if (settings.evidenceMethod === 'independent_local_asr' && settings.watchContextVersion === 1) {
             intervals = require('../workflow-runtime').loadWorkflow('clipping/activityWatchContext')
-                .watchContextIntervals(event, intervals, rows, duration, contextEvents);
+                .watchContextIntervals(event, intervals, rows, duration, contextEvents, settings.batchMaxAudioSeconds);
         }
         const seconds = intervals.reduce((n, span) => n + span.end - span.start, 0);
         let batch = batches.at(-1);

@@ -41,8 +41,12 @@ export interface BoundaryAudioIO { run(input: string, output: string): Promise<v
 
 /** An explicit final recheck can diagnose concrete keyword doubts without changing a subtitle word. */
 export function keywordAudioPlan(artifact: Data, input: Data): Data | null {
+    const attempt = artifact.finalKeywordAudioAttempt;
+    const transientBusy = attempt?.status === 'unavailable' && (attempt.retryCount || 0) < 2
+        && artifact.aiReview?.boundaryAudioChecks?.status === 'unavailable'
+        && /another ASR resource lease is active/u.test(artifact.aiReview.boundaryAudioChecks.reason || '');
     if (artifact.publicationKind !== 'keyword_topic' || artifact.publicationReview?.status !== 'needs_review'
-        || artifact.finalKeywordAudioAttempt || !/关键词|名称|人名|称呼/u.test((artifact.publicationReview?.issues || []).join(' '))) return null;
+        || attempt && !transientBusy || !/关键词|名称|人名|称呼/u.test((artifact.publicationReview?.issues || []).join(' '))) return null;
     const hits = artifact.aiReview?.keyword?.hits || [];
     const ids = [...new Set(hits.filter((hit: Data) => hit.verdict === 'mention'
         && hit.start >= artifact.window.start && hit.end <= artifact.window.end)
@@ -59,6 +63,7 @@ export async function diagnoseKeywordAudio(artifact: Data, input: Data, config: 
     const diagnostics = structuredClone(artifact.finalKeywordAudioDiagnostics || {});
     const audio = await prepareBoundaryAudio(plan, input, config, source, diagnostics, runtime, injected);
     return { ...artifact, finalKeywordAudioAttempt: { at: new Date().toISOString(), status: audio?.status || 'disabled',
+        retryCount: artifact.finalKeywordAudioAttempt ? (artifact.finalKeywordAudioAttempt.retryCount || 0) + 1 : 0,
         method: 'unprompted_two_model_keyword_diagnosis' }, finalKeywordAudioDiagnostics: diagnostics,
         ...(audio ? { aiReview: { ...artifact.aiReview,
             boundaryAudioHistory: [...(artifact.aiReview?.boundaryAudioHistory || []),

@@ -3,6 +3,54 @@ const topicClipper = require('./topic_clipper');
 const backgroundClipRunner = require('./background_clip_runner');
 
 describe('background_clip_runner', () => {
+  test('absent archive kinds complete once and remain completed on a later invocation', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-absent-'));
+    const payloadPath = path.join(dir, 'payload.json');
+    fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: 'source.flv', srtPath: 'source.srt', roomId: '1' }));
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: false }, ownStreamClips: { enabled: false } });
+    const activities = jest.spyOn(require('./clipping/stream_activity_clipper'), 'generateStreamActivities')
+      .mockResolvedValue({ status: 'no_activities', submissions: 0, parts: 0 });
+    const games = jest.spyOn(require('./clipping/stream_game_clipper'), 'generateStreamGames')
+      .mockResolvedValue({ status: 'no_gameplay', submissions: 0, parts: 0 });
+    try {
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      const state = JSON.parse(fs.readFileSync(`${payloadPath}.progress.json`, 'utf8'));
+      expect(state.status).toBe('completed');
+      expect(state.completed.games.status).toBe('no_gameplay');
+      expect(state.completed.songs.status).toBe('no_activities');
+      expect(state.completed.watch.status).toBe('no_activities');
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(activities).toHaveBeenCalledTimes(2); expect(games).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('repairs final campaign coverage before reservation and stops selection when repair fails', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'background-map-preflight-'));
+    const media = path.join(root, 'recording_merged.flv'), xml = path.join(root, 'recording.xml');
+    fs.writeFileSync(xml, '<i/>');
+    const own = require('./own_stream_clipper');
+    const coverage = require('../core/media/RecordingCoverage.ts');
+    const campaign = require('./workflow-runtime').loadWorkflow('clipping/ownCampaign');
+    const repair = jest.spyOn(require('./recording_map_recovery.ts'), 'ensureRecordingMap').mockResolvedValue(undefined);
+    const reserve = jest.spyOn(coverage, 'reserveFinalCampaign').mockImplementation(() => {});
+    jest.spyOn(coverage, 'filterCampaignCoverage').mockImplementation((clips: unknown) => clips);
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ ownStreamClips: { campaigns: [{ id: 'game', earlyTrigger: { enabled: true } }] } });
+    jest.spyOn(own, 'getOwnStreamClipsConfig').mockReturnValue({ enabled: true, roomIds: ['1'], campaignContentGate: { id: 'game' } });
+    jest.spyOn(campaign, 'ensureCampaignContent').mockResolvedValue({ allowed: true });
+    const generate = jest.spyOn(own, 'generateOwnStreamClips').mockResolvedValue([]);
+    try {
+      await backgroundClipRunner.generateOwnStreamClipsForMedia(media, 'source.srt', xml, '1');
+      expect(repair).toHaveBeenCalledWith(media);
+      expect(repair.mock.invocationCallOrder[0]).toBeLessThan(reserve.mock.invocationCallOrder[0]);
+      repair.mockRejectedValueOnce(new Error('source packets do not match'));
+      await expect(backgroundClipRunner.generateOwnStreamClipsForMedia(media, 'source.srt', xml, '1')).rejects.toThrow('source packets');
+      expect(reserve).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('each recording job refreshes saved mode settings before loading its config snapshot', async () => {
     const fs = require('fs'), os = require('os'), path = require('path');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-mode-settings-'));
@@ -288,6 +336,7 @@ describe('background_clip_runner', () => {
       await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
       const completed = JSON.parse(fs.readFileSync(`${payloadPath}.progress.json`, 'utf8'));
       expect(completed.status).toBe('completed');
+      expect(completed).not.toHaveProperty('lastError');
       expect(completed.completed.own).toEqual([]);
       expect(own).toHaveBeenCalledTimes(2);
       expect(topic).toHaveBeenCalledTimes(1);

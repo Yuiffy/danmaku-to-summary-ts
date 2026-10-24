@@ -5,6 +5,7 @@ export function watchContextFrameTimes(event: Data, intervals: Data[]): number[]
   const middle = (event.start + event.end) / 2;
   const outer = [middle, intervals[0].start, intervals[0].end - .01,
     intervals.at(-1)!.start, intervals.at(-1)!.end - .01];
+  if (intervals.some(span => span.start <= event.start && span.end >= event.end)) outer.push(event.start, event.end);
   if (event.boundaryFeedback) return [...new Set([...outer, event.end,
     Math.max(event.start, event.boundaryFeedback.previousEnd - .25), intervals.at(-1)!.end - .25])];
   const later = intervals.filter(span => span.end > event.end + 90);
@@ -15,7 +16,7 @@ export function watchContextFrameTimes(event: Data, intervals: Data[]): number[]
 
 /** Mixed subtitles locate extra evidence, never establish an approved boundary. */
 export function watchContextIntervals(event: Data, intervals: Data[], rows: Data[], duration: number,
-  activities: Data[] = []): Data[] {
+  activities: Data[] = [], maxAudioSeconds = 0): Data[] {
   if (event.kind !== 'watch' || intervals.length !== 2) return intervals;
   const previousEnd = activities.filter(e => e.id !== event.id && e.end <= event.start)
     .reduce((end, e) => Math.max(end, e.end), 0);
@@ -40,6 +41,16 @@ export function watchContextIntervals(event: Data, intervals: Data[], rows: Data
     const previous = merged.at(-1);
     if (previous && span.start <= previous.end) previous.end = Math.max(previous.end, span.end);
     else merged.push(span);
+  }
+  // A short video can finish in the gap between two 15-second inner windows.
+  // Decode its full bounded enclosure rather than leaving that transition unheard.
+  const seconds = merged.reduce((total, span) => total + span.end - span.start, 0);
+  const innerGap = merged.findIndex((span, index) => index > 0 && merged[index - 1].end >= event.start
+    && span.start <= event.end);
+  if (event.end - event.start <= 180 && innerGap > 0
+    && seconds + merged[innerGap].start - merged[innerGap - 1].end <= maxAudioSeconds) {
+    return [...merged.slice(0, innerGap - 1), { start: merged[innerGap - 1].start, end: merged[innerGap].end },
+      ...merged.slice(innerGap + 1)];
   }
   return merged;
 }

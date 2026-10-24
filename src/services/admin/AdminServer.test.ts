@@ -1,5 +1,6 @@
 import request from 'supertest';
 import * as fs from 'fs';
+import { AdminAsrStatus } from './AdminAsrStatus';
 import * as os from 'os';
 import * as path from 'path';
 import { AdminConfigStore } from './AdminConfigStore';
@@ -79,6 +80,25 @@ it('authenticates and projects the full upload queue without writing state or st
   expect(response.body).toMatchObject({ state: 'ready', queuedJobs: 1, queuedClips: 1 });
   expect(response.body.queue[0].clips[0]).toMatchObject({ id: 1, title: '测试片' });
   expect(fs.readFileSync(queuePath, 'utf8')).toBe(before); expect(f.run).not.toHaveBeenCalled();
+});
+
+it('authenticates the read-only subtitle queue, does not run commands, and preserves the queue file', async () => {
+  const f = fixture(), file = path.join(f.root, 'src/scripts/.whisper_queue.json');
+  atomicJson(file, { tasks: [{ id: 'queued', status: 'pending', roomId: '100', mediaPath: 'D:/100_主播/2026_10_24/录制-100-20261024-195854-591-游戏.flv', addedTime: Date.now() }] });
+  const before = fs.readFileSync(file, 'utf8');
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, asr: new AdminAsrStatus(f.root) }, token);
+  await request(app).get('/queues/asr').expect(403);
+  await request(app).get('/queues/asr/history').expect(403);
+  const history = await request(app).get('/queues/asr/history?page=1&pageSize=20').set(headers).expect(200);
+  expect(history.body).toMatchObject({ total: 0, items: [] });
+  await request(app).get('/queues/asr/history?pageSize=51').set(headers).expect(400);
+  await request(app).post('/queues/asr/history').set(headers).send({}).expect(404);
+  const result = await request(app).get('/queues/asr').set(headers).expect(200);
+  expect(result.body).toMatchObject({ queuedJobs: 1, activeJobs: 0 });
+  expect(result.body.queue[0]).toMatchObject({ streamerName: '主播', title: '游戏', position: 1 });
+  await request(app).post('/queues/asr').set(headers).send({}).expect(404);
+  expect(fs.readFileSync(file, 'utf8')).toBe(before); expect(f.run).not.toHaveBeenCalled();
+  fs.writeFileSync(file, '{'); await request(app).get('/queues/asr').set(headers).expect(503);
 });
 
 it('shows an evidenced no-clip reason before technical errors on legacy candidates without changing their files', async () => {

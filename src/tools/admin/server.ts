@@ -16,6 +16,7 @@ import { AdminBilibiliLogin } from '../../services/admin/AdminBilibiliLogin';
 import { AdminCommentReplies } from '../../services/admin/AdminCommentReplies';
 import { AdminCampaignCandidates } from '../../services/admin/AdminCampaignCandidates';
 import { AdminCampaignFeedback } from '../../services/admin/AdminCampaignFeedback';
+import { AdminAsrStatus } from '../../services/admin/AdminAsrStatus';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AITextGenerator } from '../../services/ai/AITextGenerator';
 import { createFeedbackAgent } from '../../services/admin/AdminFeedbackAgent';
@@ -54,11 +55,13 @@ export function startAdminService(): void {
   const campaignCandidates = new AdminCampaignCandidates(clips, roots,
     () => readJson(path.join(root, 'config/production.json'), {}).ownStreamClips?.campaigns || []);
   const campaignFeedback = new AdminCampaignFeedback(campaignCandidates, clips, jobs, runner, feedback);
-  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, campaignCandidates, campaignFeedback }, fs.readFileSync(tokenFile, 'utf8').trim());
+  const asr = new AdminAsrStatus(root, { queueFile: process.env.WHISPER_QUEUE_FILE, logFile: process.env.ADMIN_ASR_LOG_FILE });
+  asr.startHistoryIndex();
+  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, campaignCandidates, campaignFeedback, asr }, fs.readFileSync(tokenFile, 'utf8').trim());
   const port = Number(process.env.ADMIN_PORT || 15127);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ADMIN_PORT 无效');
   const server = app.listen(port, '127.0.0.1', () => console.log(`管理 API: http://127.0.0.1:${port}`));
-  const stop = () => { queries.stop(); server.close(); void jobs.flush().then(() => process.exit()); };
+  const stop = () => { queries.stop(); asr.close(); server.close(); void jobs.flush().then(() => process.exit()); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
 }
 if (require.main === module) startAdminService();

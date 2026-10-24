@@ -404,7 +404,7 @@ async function generateStreamActivities(options = {}) {
                     const registry = options.readRegistry ? options.readRegistry()
                         : JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
                     const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
-                    if (!rows.length && (!options.retryBoundaries || options.reviseVerifier
+                    if (!rows.length && (!options.retryBoundaries
                         || !stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []).length)) {
                         throw new Error('Publication retry has no pending submission for the selected kind');
                     }
@@ -430,7 +430,7 @@ async function generateStreamActivities(options = {}) {
                     const selectedRows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
                     // A sibling song bundle may already be rendered while watch failed
                     // its interval check. Recover its original candidates before first render.
-                    if (!selectedRows.length && (!options.retryBoundaries || !candidates.length || options.reviseVerifier)) {
+                    if (!selectedRows.length && (!options.retryBoundaries || !candidates.length)) {
                         throw new Error('Boundary retry has no pending submission for the selected kind');
                     }
                     for (const row of selectedRows) {
@@ -612,7 +612,10 @@ async function generateStreamActivities(options = {}) {
             }
         }
         const selectedMetadata = metadata.filter(row => selected.includes(row.kind));
-        return { status: 'rendered', submissions: selectedMetadata.length, parts: selectedMetadata.reduce((n, row) => n + row.output.parts.length, 0),
+        const absent = plan.coverage.status === 'complete' && !selectedMetadata.length
+            && !stages.selectEvents(plan.rawEvents || plan.events, selected).length
+            && !stages.selectEvents(plan.events, selected).length;
+        return { status: absent ? 'no_activities' : 'rendered', submissions: selectedMetadata.length, parts: selectedMetadata.reduce((n, row) => n + row.output.parts.length, 0),
             pendingReview: metadata.some(row => row.activityReview?.status !== 'approved'),
             retainSource: metadata.some(row => row.activityReview?.authority === 'automatic'),
             ...(publicationActive ? { publicationResults: metadata.map(row => ({ kind: row.kind,

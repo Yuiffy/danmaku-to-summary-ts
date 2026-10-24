@@ -131,6 +131,9 @@ export class AdminFeedbackSession {
             ? this.clips.sourceWindow(record, metadata) || metadata.reviewPresentation?.window || {} : {};
           const command = clipCommand(this.id, { action: 'rebuild', note: this.note, ...copy, sourceKind,
             start: plan.start ?? rejectedWindow.start, end: plan.end ?? rejectedWindow.end });
+          // Composed subtitles include inserted/reordered footage. Rebuild from
+          // source order before changing the window or applying cue corrections.
+          if (metadata.editorialTimeline) command.args.push('--ordinary');
           if (this.directFeedback) command.args.push('--feedback-authorized');
           if (!record.pendingCut) command.args.push('--allow-long', '--allow-short', '--duration-note', plan.durationNote || `按用户意见保留完整主题并独立复核起因和收尾：${this.note}`);
           if (record.pendingCut || metadata.selectionRejection && metadata.selectionRejection.reason !== 'duration_out_of_bounds') {

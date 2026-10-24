@@ -23,6 +23,15 @@ it('proxies global upload status as read-only without enabling arbitrary queue e
   expect((await forwardAdmin(request('/queues/resume'))).status).toBe(404);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+it('forwards subtitle queue reads and rejects writes, cross-site access and arbitrary subpaths', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ queuedJobs: 7 }));
+  expect((await forwardAdmin(request('/queues/asr'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/queues/asr');
+  for (const method of ['POST', 'PUT', 'DELETE']) expect((await forwardAdmin(request('/queues/asr', { method, body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/queues/asr', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect((await forwardAdmin(request('/queues/asr/resume'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
 it('proxies campaign previews and only permits writes through the selected-candidate action', async () => {
   const id = 'a'.repeat(64);
   for (const endpoint of ['/campaign-candidates?room=100', `/campaign-candidates/${id}`, `/campaign-candidates/${id}/source-playback`]) {
@@ -122,4 +131,15 @@ it('forwards ID-bound cover preview bodies and binary images', async () => {
   expect(result.status).toBe(200); expect(result.headers.get('content-type')).toBe('image/jpeg');
   expect(await result.text()).toBe('jpeg'); expect(fetchMock.mock.calls[0][1].body).toBe(body);
   expect((await forwardAdmin(request('/clips/arbitrary/cover-preview', { method: 'POST', body }))).status).toBe(404);
+});
+
+
+it('forwards read-only ASR history pagination and rejects writes before reaching the service', async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ total: 0, items: [] }), { status: 200 }));
+  const response = await forwardAdmin(request('/queues/asr/history?page=2&pageSize=20'));
+  expect(response.status).toBe(200);
+  expect(String(fetchMock.mock.calls[0][0])).toBe('http://127.0.0.1:15127/queues/asr/history?page=2&pageSize=20');
+  fetchMock.mockClear();
+  expect((await forwardAdmin(request('/queues/asr/history', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect(fetchMock).not.toHaveBeenCalled();
 });

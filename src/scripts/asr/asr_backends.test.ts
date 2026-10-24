@@ -3,7 +3,7 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
-  test.each(['1', ''])('handoff releases resident GPU model and preserves CUDA for the supervisor (cpu=%s)', async cpu => {
+  test.each([['1', undefined], ['', undefined], ['', false], ['', true]])('handoff preserves CUDA and forwards CPU policy (cpu=%s, enabled=%s)', async (cpu, enabled) => {
     const fs = require('fs'), os = require('os'), path = require('path');
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-handoff-child-'));
     const adapter = path.join(directory, 'adapter.cjs');
@@ -29,10 +29,12 @@ describe('asr_backends', () => {
     process.env.CUDA_VISIBLE_DEVICES = '0';
     try {
       const result = await asr.transcribeParaformer('fixture.wav', { asr: {
-        device_handoff: { enabled: true, idle_s: 45 }, cpu_fallback: { min_available_memory_gb: 12 },
-        paraformer: { python_executable: process.execPath, python_args: [adapter], process_timeout_s: 10 }
+        device_handoff: { enabled: true, idle_s: 45 }, cpu_fallback: { enabled, min_available_memory_gb: 12 },
+        paraformer: { model_profile: 'default', model: 'paraformer-zh', finetuned_model: 'reserved-finetuned-model',
+          python_executable: process.execPath, python_args: [adapter], process_timeout_s: 10 }
       } });
-      expect(result).toMatchObject({ cuda: '0', cpu, handoff: { enabled: true, idle_s: 45, min_available_memory_gb: 12 } });
+      expect(result).toMatchObject({ cuda: '0', cpu, handoff: { enabled: true, idle_s: 45,
+        cpu_fallback_enabled: enabled !== false, min_available_memory_gb: 12 } });
       expect(requests).toEqual(['shutdown']);
     } finally {
       keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i]; });

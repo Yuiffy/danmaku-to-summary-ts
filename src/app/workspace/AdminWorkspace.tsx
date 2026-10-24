@@ -10,6 +10,7 @@ import { BilibiliLogin } from './BilibiliLogin';
 import { CommentReplies } from './CommentReplies';
 import { CampaignCandidates } from './CampaignCandidates';
 import { UploadQueue } from './UploadQueue';
+import { AsrQueue } from './AsrQueue';
 import { useResource } from './client';
 
 type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments';
@@ -48,7 +49,7 @@ export function AdminWorkspace() {
     <main className="admin-main">
       <header className="workspace-heading"><div><div className="eyebrow">SHIKAMOCHI / WORKSPACE</div><h1>{current.name}</h1></div><span className="local-label">本机工作区</span></header>
       {health.error && <div className="notice error" role="alert">{health.error}<button onClick={health.refresh}>重新连接</button></div>}
-      <div className="upload-global-wrap"><UploadQueue /></div>
+      <div className="upload-global-wrap"><UploadQueue /><AsrQueue /></div>
       <div className="workspace-body" key={view}>
         {view === 'review' && <ClipReview onJobs={() => navigate('operations')} />}
         {view === 'fuya' && <CampaignCandidates />}

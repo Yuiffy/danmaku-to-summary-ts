@@ -25,6 +25,7 @@ import {
 import { MikufansDelayedReplyCoordinator } from './mikufans/MikufansDelayedReplyCoordinator';
 import { MikufansSummaryQueueWorker } from './mikufans/MikufansSummaryQueueWorker';
 import { captureParticipantSnapshot } from './mikufans/participant_snapshot';
+import { CollectingStreamContinuity } from './mikufans/CollectingStreamContinuity';
 
 /**
  * 延迟动作类型
@@ -52,6 +53,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private stabilityChecker = new FileStabilityChecker();
   private duplicateGuard = new DuplicateProcessorGuard();
   private liveSessionManager = new LiveSessionManager();
+  private readonly collectingContinuity = new CollectingStreamContinuity();
   private fileMerger = new FileMerger();
   private screenshotService = new VideoScreenshotService();
   private readonly summaryQueueWorker: MikufansSummaryQueueWorker;
@@ -370,7 +372,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomKey);
     if (!session || session.segments.length === 0) return false;
 
-    const streamStartTime = this.streamTimestamps.get(roomKey)?.startTime?.getTime();
+    const streamStartTime = this.collectingContinuity.startFloor(session, this.streamTimestamps.get(roomKey)?.startTime?.getTime());
     const clockSkewToleranceMs = 5 * 1000;
 
     return session.segments.some(segment => {
@@ -527,6 +529,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.fileOpeningTimestamps.delete(roomKey);
       this.recorderReadyTimestamps.delete(roomKey);
     }
+    this.collectingContinuity.observeResume(this.liveSessionManager.getSession(roomKey), previousTimestamps, startTime);
     this.markLiveResumed(roomKey, 'StreamStarted');
 
     this.streamTimestamps.set(roomKey, { startTime, endTime: undefined });

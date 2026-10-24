@@ -2,6 +2,7 @@ const {
   applyFfmpegProcessPriority,
   waitForAsrAvailability,
   waitForCpuAvailability,
+  withFfmpegResourceLimits,
   parseGpuTelemetry,
   createGpuTelemetrySampler
 } = require('./ffmpeg_resource');
@@ -114,21 +115,46 @@ describe('topic clip CPU resource guard', () => {
     }
   };
 
-  test('waits while CPU is busy and resumes after hysteresis samples', async () => {
-    const samples = [85, 90, 70, 55, 50];
+  test.each([0, 1, 8])('admits sustained CPU load with capped threads instead of waiting (requested: %s)', async threads => {
     const sleep = jest.fn().mockResolvedValue(undefined);
     const log = jest.fn();
+    const sampleCpuPercent = jest.fn().mockResolvedValueOnce(85).mockResolvedValueOnce(95)
+      .mockRejectedValue(new Error('Busy admission must not wait for idle CPU'));
 
-    const result = await waitForCpuAvailability('ffmpeg test', resourceConfig, {
-      sampleCpuPercent: jest.fn(async () => samples.shift()),
+    const result = await waitForCpuAvailability('ffmpeg test', { ...resourceConfig, threads }, {
+      sampleCpuPercent,
       sleep,
       log
     });
 
-    expect(result).toEqual({ waitedMs: 10000, lastCpuPercent: 50 });
-    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ waitedMs: 0, lastCpuPercent: 95,
+      resourceOverrides: { threads: threads === 1 ? 1 : 2, priority: 'idle', cpuBusy: true } });
+    expect(sampleCpuPercent).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
     expect(log.mock.calls[0][0]).toContain('CPU 繁忙');
-    expect(log.mock.calls[1][0]).toContain('CPU 已恢复');
+    expect(log.mock.calls[0][0]).toContain('限线程继续');
+  });
+
+  test('caps every decoder, encoder and filter pool while retaining smaller explicit limits', () => {
+    const args = ['-y', '-threads', '0', '-i', 'first.mp4', '-threads', '1', '-i', 'second.mp4',
+      '-filter_threads', '0', '-filter_complex_threads', '16', '-threads:v', '12', '-threads:a', '1', 'out.mp4'];
+    const result = withFfmpegResourceLimits(args, { threads: 2, cpuBusy: true });
+    const first = result.indexOf('-i'), second = result.lastIndexOf('-i');
+    const limits = (scope: string[]) => scope.flatMap((arg, index) => arg === '-threads' ? [scope[index + 1]] : []);
+    expect(limits(result.slice(0, first))).toEqual(['2', '2']);
+    expect(limits(result.slice(first + 2, second))).toEqual(['2', '1']);
+    expect(limits(result.slice(second + 2))).toEqual(['2']);
+    for (const flag of ['-filter_threads', '-filter_complex_threads', '-threads:v']) {
+      expect(result[result.indexOf(flag) + 1]).toBe('2');
+    }
+    expect(result[result.indexOf('-threads:a') + 1]).toBe('1');
+    expect(args[2]).toBe('0');
+  });
+
+  test('adds bounded defaults for decoders and both filter pools without explicit thread options', () => {
+    expect(withFfmpegResourceLimits(['-i', 'in.mp4', '-c:v', 'h264_nvenc', 'out.mp4'], { threads: 1, cpuBusy: true }))
+      .toEqual(['-filter_complex_threads', '1', '-filter_threads', '1', '-threads', '1', '-i', 'in.mp4',
+        '-threads', '1', '-c:v', 'h264_nvenc', 'out.mp4']);
   });
 
   test('ignores a single transient CPU spike', async () => {

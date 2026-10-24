@@ -191,6 +191,29 @@ describe('topic automatic publication integration', () => {
         expect(fs.readFileSync(path.join(directory, 'topic_clips', 'REVIEW.md'), 'utf8')).toContain('状态: 已排队投稿');
     });
 
+    test('rendered no-clip holds keep numeric IDs and review evidence without entering the upload queue', async () => {
+        asr.writeSrt(asr.normalizeAsrResult({ backend: 'test', segments: [0, 1000, 2000].flatMap(start => [
+            { start, end: start + 8, text: 'The setup of this event.' },
+            { start: start + 10, end: start + 20, text: 'SUI has a story.' },
+            { start: start + 21, end: start + 42, text: '这段不要给我切片。' }
+        ]) }), subtitles, { write_evidence: true });
+        const job = run(), results = await job.promise;
+        expect(results).toHaveLength(3);
+        expect(results.map(row => row.uploadId)).toEqual(job.ids);
+        expect(results.every(row => row.output.mediaPath && !row.uploadReady && row.clipIntent.needsHumanReview)).toBe(true);
+        expect(results.every(row => row.publicationDecision.action === 'needs_human')).toBe(true);
+        expect(job.register).toHaveBeenCalledTimes(2);
+        expect(job.register.mock.calls[0][1]).toHaveLength(3);
+        expect(job.automaticEnqueue).not.toHaveBeenCalled();
+        for (const row of results) {
+            expect(JSON.parse(fs.readFileSync(row.output.metadataPath, 'utf8')).uploadId).toBe(row.uploadId);
+        }
+        const review = fs.readFileSync(path.join(directory, 'topic_clips', 'REVIEW.md'), 'utf8');
+        expect(review).not.toContain('未登记ID');
+        expect(review).toContain('别切意图待人工核对');
+        expect(sendWeChatMarkdown.mock.calls[0][1]).toContain('ID 713');
+    });
+
     test('failed unregistered siblings cannot shift the stable IDs sent to automatic enqueue', async () => {
         const mediaGenerator = jest.fn(async (_source, window, _srt, output) => {
             if (window.index === 'E1-1') throw new Error('fixture encode failed');
@@ -288,6 +311,8 @@ describe('topic automatic publication integration', () => {
         else expect(results.every(result => result.output.burnedSubtitles === false && result.status === 'partial')).toBe(true);
         expect(job.request).not.toHaveBeenCalled(); expect(job.inspect).not.toHaveBeenCalled();
         expect(job.automaticEnqueue).not.toHaveBeenCalled();
+        expect(results.map(row => row.uploadId)).toEqual(job.ids);
+        expect(job.register.mock.calls[0][1]).toHaveLength(3);
         expect(job.notify).toHaveBeenCalledTimes(1); expect(sendWeChatMarkdown).toHaveBeenCalledTimes(1);
         expect(sendWeChatMarkdown.mock.calls[0][1]).toContain('已排队 0');
     });

@@ -61,3 +61,20 @@ test('declining further viewing locates evidence after a preview without approvi
   expect(result.at(-1)).toEqual({ start: 4060, end: 4140 });
   expect(event.end).toBe(4000);
 });
+
+test('short viewing closes the unheard inner gap only within the existing audio budget', () => {
+  const short = { ...event, start: 1000, end: 1129 };
+  const packet = [{ start: 955, end: 1015 }, { start: 1114, end: 1174 }];
+  expect(watchContextIntervals(short, packet, [], 6000, [], 300))
+    .toEqual([{ start: 910, end: 1174 }]);
+  expect(watchContextFrameTimes(short, [{ start: 910, end: 1174 }]))
+    .toEqual(expect.arrayContaining([1000, 1129]));
+  expect(watchContextFrameTimes(short, [{ start: 910, end: 1174 }, { start: 1270, end: 1350 }]))
+    .toEqual(expect.arrayContaining([1000, 1129]));
+  expect(watchContextIntervals(short, packet, [], 6000, [], 200)).toHaveLength(2);
+  expect(watchContextIntervals(short, packet, [cue(1300, '看完了')], 6000, [], 400))
+    .toEqual([{ start: 910, end: 1174 }, { start: 1270, end: 1350 }]);
+  expect(watchContextIntervals(short, packet, [cue(1300, '看完了')], 6000, [], 300)).toHaveLength(3);
+  expect(watchContextIntervals(event, intervals, [], 6000, [], 6000)).toHaveLength(2);
+  expect(short.end).toBe(1129);
+});

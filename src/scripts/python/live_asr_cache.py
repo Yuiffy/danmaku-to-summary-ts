@@ -165,12 +165,13 @@ class CpuLiveTranscriber:
 
     def window(self, source, start, duration, final=False):
         import torch
+        from asr_window_result import transcription_result, vad_intervals
         audio = decode_window(source, start, duration)
         actual = len(audio) / 16000
         with torch.inference_mode():
             vad = self.model.inference(audio, model=self.model.vad_model,
                 kwargs={**self.model.vad_kwargs, 'max_single_segment_time': 240000}, disable_pbar=True)
-            intervals = vad[0].get('value', []) if vad else []
+            intervals = vad_intervals(vad, actual)
             end = commit_boundary(intervals, actual, final)
             if end is None:
                 return None
@@ -178,9 +179,8 @@ class CpuLiveTranscriber:
             results = self.model.generate(input=audio[:frames], cache={}, batch_size_s=30,
                 batch_size_threshold_s=30, sentence_timestamp=True, disable_pbar=True,
                 language=self.payload.get('language', 'auto'), use_itn=self.payload.get('use_itn', True))
-        if not results or not isinstance(results[0], dict):
-            raise RuntimeError('No valid FunASR output; checkpoint not advanced')
-        chunk = {'start': start, 'end': round(start + frames / 16000, 5), 'result': results[0]}
+        chunk = {'start': start, 'end': round(start + frames / 16000, 5),
+                 'result': transcription_result(results, intervals)}
         validate_chunks([chunk])
         aggregate_chunks([chunk])  # Refuse text with unusable time alignment before committing.
         return chunk

@@ -77,7 +77,9 @@ async function detectSummaryActivities(options, config, source, info, files, aud
         const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || [], options.boundaryFeedback) : null;
         const retriedIds = retryEvents?.map(event => event.id);
         plan.status = 'verifying'; save();
-        const checked = await (options.calibrate || calibrateBoundaries)(retryEvents || stages.selectEvents(plan.rawEvents, pending), { config, root: options.config, source,
+        const candidates = retryEvents || stages.selectEvents(plan.rawEvents, pending);
+        const checked = !candidates.length ? { events: [], rejected: [], requests: 0, cacheHits: 0, audioSeconds: 0 }
+            : await (options.calibrate || calibrateBoundaries)(candidates, { config, root: options.config, source,
             transcriptSha256: plan.transcript.sha256, info, directory: files.directory, rows: summary.rows, duration,
             diagnostics: plan.diagnostics, request: options.boundaryRequest, extract: options.extractBoundary,
             usedRequests: plan.efficiency?.boundaryRequests || 0, retryId: options.boundaryRetry?.id,

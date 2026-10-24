@@ -457,14 +457,17 @@ def enqueue_automatic(args, api):
                         reconciliations[str(clip_id)] = reconcile(clip, metadata, prior_metadata, queue.get("jobs", []))
                         candidate = {**clip, "reviewPending": False, "reviewIssues": [], "publicationIdentity": authorization["publicationIdentity"],
                             "automaticPublicationAuthorization": authorization}
-                    errors = api.validate_groups([[candidate]])
-                    if errors:
-                        raise ValueError("; ".join(errors))
                     identity = authorization["publicationIdentity"]
                     duplicate = reserved.get(identity)
                     if duplicate and int(duplicate["id"]) != clip_id:
                         result.update(status="duplicate", duplicateOf=int(duplicate["id"]))
                     else:
+                        errors = api.validate_groups([[candidate]])
+                        if selected:
+                            errors.extend(api.clip_upload_enqueue.publication_errors(api,
+                                [registry['clips'][str(i)] for i in selected] + [candidate], registry))
+                        if errors:
+                            raise ValueError("; ".join(errors))
                         result["status"] = "would_queue" if args.dry_run else "queued"
                         selected.append(clip_id)
                         authorizations[str(clip_id)] = authorization

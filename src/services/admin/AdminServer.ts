@@ -20,6 +20,7 @@ import { AdminBilibiliLogin } from './AdminBilibiliLogin';
 import { AdminCommentReplies } from './AdminCommentReplies';
 import { AdminCampaignCandidates } from './AdminCampaignCandidates';
 import { AdminCampaignFeedback } from './AdminCampaignFeedback';
+import { AdminAsrStatus } from './AdminAsrStatus';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -34,6 +35,7 @@ export interface AdminAdapters {
   commentReplies?: AdminCommentReplies;
   campaignCandidates?: AdminCampaignCandidates;
   campaignFeedback?: AdminCampaignFeedback;
+  asr?: AdminAsrStatus;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -209,6 +211,14 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.get('/queues', (_req, res) => res.json(adapters.clips.queues()));
   app.get('/queues/status', (_req, res) => res.json(adapters.clips.uploadStatus()));
+  app.get('/queues/asr', (_req, res) => {
+    if (!adapters.asr) throw new AdminError('字幕队列尚未配置', 503);
+    res.json(adapters.asr.status());
+  });
+  app.get('/queues/asr/history', (req, res) => {
+    if (!adapters.asr) throw new AdminError('字幕历史尚未配置', 503);
+    res.json(adapters.asr.history(req.query.page, req.query.pageSize, { streamer: req.query.streamer, date: req.query.date }));
+  });
   app.post('/queues/actions', (req, res) => {
     const queues = adapters.clips.queues(), list = req.body.action === 'cancel-upload' ? queues.uploads : queues.manual;
     if (!list.some((job: any) => job.id === req.body.id)) throw new AdminError('队列任务不存在', 404);

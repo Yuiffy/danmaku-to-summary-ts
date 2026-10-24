@@ -6,11 +6,13 @@ export interface CommentVideo { title: string; description: string; publishedAt:
 export interface CommentClue { room: string; date: string; time: string; quote: string; kind?: string }
 export interface CommentPostText { author: string; publishedAt: number; publishedDay?: string; text: string; mentionedUsers?: number }
 export interface CommentPost extends CommentPostText { original?: CommentPostText; partial?: boolean }
+export interface CommentProject { source: string; label: string; kind: 'code' | 'skill' | 'guide'; revision: string; text: string }
 export interface CommentContext {
   anchorDay: string; targetDay?: string; anchorBasis?: 'broadcast' | 'video-published' | 'comment' | 'unknown';
   video?: { title: string; description: string; content?: 'subtitles' | 'unavailable';
     scope?: 'first-page'; language?: string; sampled?: boolean; excerpts?: VideoCue[] };
   coverage: 'partial' | 'available' | 'unavailable'; clues: CommentClue[];
+  projects?: CommentProject[];
 }
 export interface CommentSocialContext {
   speaker: { name: string; identity: 'configured' | 'unverified'; fanTier?: string; wearingMedal?: string; medalStatus?: string };
@@ -18,12 +20,16 @@ export interface CommentSocialContext {
   post?: CommentPost;
 }
 export const videoContentQuestion = (text: string) => /总结|评价|点评|分析|概括|讲解|解读|观后感|讲了啥|说了啥|怎么看|讲的啥|说的啥|视频|这段|这期/u.test(text);
-export const needsCommentEvidence = (text: string) => videoContentQuestion(text) || /谁|哪些|什么|哪位|几点|何时|多少|哪天|哪场|哪次|联动|鸡马|舰礼|礼物|计划|安排|为什么|为啥|怎么|找出|记得|之前|上次|出处|黑料/u.test(text);
+export const projectComparisonQuestion = (text: string) => /我们[^。！？!?]{0,12}(?:能用|用得上|适合|支持)|这(?:套|种|个)(?:方式|方法|方案|流程|技术)|(?:对比|比较)[^。！？!?]{0,20}(?:代码|skill|流程|项目)|(?:代码|skill|工作流)[^。！？!?]{0,20}(?:支持|对比)/iu.test(text);
+export const needsCommentEvidence = (text: string) => videoContentQuestion(text) || projectComparisonQuestion(text) || /谁|哪些|什么|哪位|几点|何时|多少|哪天|哪场|哪次|联动|鸡马|舰礼|礼物|计划|安排|为什么|为啥|怎么|找出|记得|之前|上次|出处|黑料|(?:小岁|岁己|栞栞).{0,6}(?:是吧|对吧|吗)/u.test(text);
 export const collaborationQuestion = (text: string) => /联动|鸡马|连麦/u.test(text);
 export const historicalCollaborationQuestion = (text: string) => collaborationQuestion(text) &&
   /之前|以前|以往|过去|历史|历次|上次|回顾|盘点|几次|几场|多次|多场|(?:前|最近)[一二三四五六七八九十\d]+[次场]/u.test(text);
 export const videoOverviewQuestion = (text: string) => /总结|评价|点评|分析|概括|讲解|解读|观后感|讲了啥|说了啥|怎么看|讲的啥|说的啥/u.test(text);
 export const videoOnlyQuestion = (text: string) => !collaborationQuestion(text) && (
+  projectComparisonQuestion(text) || /(?:小岁|岁己|栞栞).{0,6}(?:是吧|对吧|吗)/u.test(text) ||
+  /回复(?:一下|下)?[^。！？!?]{0,6}(?:视频|这段|这期)/u.test(text) ||
+  /(?:视频|这段|这期|该片)(?:里|中)?(?:说|讲|提到|提及)/u.test(text) ||
   /(?:根据|结合|依据|针对|按照|看完|看下|看看|看一下)[^。！？!?]{0,12}(?:视频|这段|这期|该片)/u.test(text) ||
   videoOverviewQuestion(text) && (/视频|这段|这期|这条|这个|该片|内容/u.test(text) ||
     /^(?:总结|评价|点评|分析|概括|讲解|解读)(?:一下|下)?[\s。？！!?]*$/u.test(text.replace(/@\S+/gu, '').trim())));
@@ -96,11 +102,13 @@ export function fitCommentContext(text: string, system: string, context?: Commen
   // 4096 reservation minus 384 output and 256 protocol margin.
   if (bytes() > 3456 && value?.video) { value.video.description = ''; value.coverage = 'partial'; }
   while (bytes() > 3456 && value?.clues.length) { value.clues.pop(); value.coverage = 'partial'; }
+  while (bytes() > 3456 && (value?.projects?.length || 0) > 1) { value!.projects!.pop(); value!.coverage = 'partial'; }
   while (bytes() > 3456 && value?.video?.excerpts?.length) {
     value.video.excerpts.splice(Math.floor(value.video.excerpts.length / 2), 1);
     value.video.sampled = true; value.coverage = 'partial';
   }
   if (value?.video?.content === 'subtitles' && !value.video.excerpts?.length) value.video.content = 'unavailable';
+  if (bytes() > 3456 && value?.projects?.length) { delete value.projects; value.coverage = 'partial'; }
   if (bytes() > 3456 && value) { delete value.video; value.coverage = 'partial'; }
   if (bytes() > 3456 && socialValue?.post?.original) { delete socialValue.post.original; socialValue.post.partial = true; }
   if (bytes() > 3456 && socialValue?.post) { socialValue.post.text = ''; socialValue.post.partial = true; }

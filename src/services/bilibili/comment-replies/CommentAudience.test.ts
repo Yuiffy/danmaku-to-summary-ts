@@ -5,6 +5,8 @@ import { CommentAudience, CommentEvent, CommentPlatformBlocked, CommentReplyConf
 import { fanTier, HOUR_MS } from './CommentQuota';
 import { newCommentState } from './CommentState';
 import { CommentWorker } from './CommentWorker';
+import { createAudienceReader } from './CommentAudience';
+import example from '../../../../config/comment-replies.example.json';
 
 const config: CommentReplyConfig = { botUid: '99', unlimitedUids: [], credentialConfigPath: 'unused', providerConfigPath: 'unused',
   maxQueue: 100, maxUserQueue: 10, pollIntervalMs: 30000, dailyTokenBudget: 4096000,
@@ -72,22 +74,60 @@ test('unavailable badge reads consume the base tier without claiming no badge; e
   expect(f.state.paused).toBe(true); expect(f.answer).toHaveBeenCalledTimes(1);
 });
 
-test('MedalWall uses active badge and anchor UID, not an owned badge, nickname or medal name', async () => {
-  const data = { uid: 14279, close_space_medal: 0, list: [
-    { medal_info: { target_id: 1954091502, medal_name: '饼干岁', wearing_status: 0 } },
-    { medal_info: { target_id: 1609526545, medal_name: '獭獭栞', wearing_status: 1 } }
+test('signed target profile establishes wearing and a numeric medal ID resolves 米汀 without using the bot badge', async () => {
+  const profile = { mid: 14279, fans_medal: { show: true, wear: true, medal: { medal_name: '旁汀生' },
+    detail: { uid: 14279, medal_name: '旁汀生', medal_id: 1311217 } } };
+  const wall = { uid: 99, close_space_medal: 0, list: [
+    { medal_info: { target_id: 1954091502, medal_name: '饼干岁', wearing_status: 1, medal_id: 815662 } },
+    { medal_info: { target_id: 2124647716, medal_name: '旁汀生', wearing_status: 0, medal_id: 1311217 } }
   ] };
-  const transport = jest.fn().mockResolvedValue(response({ code: 0, data }));
+  const transport = jest.fn().mockResolvedValueOnce(response({ code: 0, data: { wbi_img: {
+    img_url: `https://i0.hdslb.com/bfs/wbi/${'a'.repeat(32)}.png`, sub_url: `https://i0.hdslb.com/bfs/wbi/${'b'.repeat(32)}.png` } } }))
+    .mockResolvedValueOnce(response({ code: 0, data: profile })).mockResolvedValueOnce(response({ code: 0, data: wall }));
   const api = new CommentApi('99', () => 'DedeUserID=99; SESSDATA=private; bili_jct=csrf', transport as unknown as typeof fetch);
-  expect(fanTier(config, await api.audience('14279', signal()))).toBe('related');
-  expect(transport.mock.calls[0][0]).toBe('https://api.live.bilibili.com/xlive/web-ucenter/user/MedalWall?target_id=14279');
+  const audience = await api.audience('14279', signal());
+  expect(audience).toEqual({ status: 'available', wearing: { anchorUid: '2124647716', name: '旁汀生' } });
+  expect(fanTier(example, audience)).toBe('related');
+  expect(transport.mock.calls[1][0]).toMatch(/^https:\/\/api.bilibili.com\/x\/space\/wbi\/acc\/info\?mid=14279&web_location=1550101&wts=\d+&w_rid=[a-f\d]{32}$/u);
+  expect(transport.mock.calls[2][0]).toBe('https://api.live.bilibili.com/xlive/web-ucenter/user/MedalWall?target_id=99');
   expect(transport.mock.calls[0][1]).toMatchObject({ redirect: 'error', size: 1048576, timeout: 3000 });
-  transport.mockResolvedValueOnce(response({ code: 0, data: { ...data, uid: 123 } }));
+  transport.mockResolvedValueOnce(response({ code: 0, data: { ...profile, mid: 99 } }));
   expect(await api.audience('14279', signal())).toEqual({ status: 'unavailable' });
-  transport.mockResolvedValueOnce(response({ code: 0, data: { ...data, close_space_medal: 1 } }));
+  transport.mockResolvedValueOnce(response({ code: 0, data: { ...profile, fans_medal: { ...profile.fans_medal, show: false } } }));
   expect(await api.audience('14279', signal())).toEqual({ status: 'unavailable' });
   transport.mockResolvedValueOnce(response({ code: -101 }));
   await expect(api.audience('14279', signal())).rejects.toBeInstanceOf(CommentPlatformBlocked);
+  expect(transport).toHaveBeenCalledTimes(6);
+});
+
+test('profile no-wear, unmatched/ambiguous IDs and mismatched catalogue stay conservative; signing cache expires', async () => {
+  let now = 1792847076000;
+  const profile: any = { mid: 10, fans_medal: { show: true, wear: false } };
+  const read = jest.fn(async (url: string) => url.endsWith('/nav') ? { wbi_img: {
+    img_url: `/${'a'.repeat(32)}.png`, sub_url: `/${'b'.repeat(32)}.png` } } : url.includes('MedalWall') ?
+    { uid: 77, list: [{ medal_info: { medal_id: 123, target_id: 55, medal_name: '旁汀生' } }] } : profile);
+  const audience = createAudienceReader('99', read, () => now);
+  expect(await audience('10', signal())).toEqual({ status: 'available' });
+  profile.fans_medal = { show: true, wear: true, medal: { medal_name: '旁汀生' }, detail: { uid: 10, medal_id: 123, medal_name: '旁汀生' } };
+  expect(await audience('10', signal())).toEqual({ status: 'unavailable' });
+  read.mockImplementation(async (url: string) => url.includes('MedalWall') ? { uid: 99, list: [] } : profile);
+  expect(await audience('10', signal())).toEqual({ status: 'unavailable' });
+  expect(read.mock.calls.filter(([url]) => url.endsWith('/nav'))).toHaveLength(1);
+  now += 300001;
+  expect(await audience('10', signal())).toEqual({ status: 'unavailable' });
+  expect(read.mock.calls.filter(([url]) => url.endsWith('/nav'))).toHaveLength(2);
+});
+
+test('带鱼 remains personally unlimited across exhausted hourly/daily counters and a stale ready notice', async () => {
+  expect(example.unlimitedUids).toContain('14279');
+  const f = fixture({ status: 'unavailable' }, { ...config, unlimitedUids: example.unlimitedUids });
+  f.state.days[shanghaiDay(f.now())] = { tokens: 0, users: { '14279': { count: 1000, notice: true } } };
+  f.state.userWindows = { '14279': { starts: Array(30).fill(f.now()), noticeUntil: f.now() + HOUR_MS } };
+  await f.worker.admit(f.event(1));
+  Object.assign(f.state.jobs[0], { status: 'ready', notice: true, answer: '困困了', quotaDay: shanghaiDay(f.now()), noticeUntil: f.now() + HOUR_MS });
+  await f.worker.tick();
+  expect(f.answer).toHaveBeenCalledTimes(1); expect(f.send).toHaveBeenCalledWith(expect.anything(), '来啦，一起聊聊～', expect.anything());
+  expect(f.state.jobs[0].notice).toBeUndefined();
 });
 
 test('one hot page is deduplicated, excludes self/current comment, filters instructions and keeps three short texts', async () => {

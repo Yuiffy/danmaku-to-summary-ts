@@ -11,6 +11,9 @@ it('admits the actual CPU-capable model route only with sufficient RAM and expli
   expect(canUseAsrCpuFallback(config('fun_asr_nano_vllm'), task, 12 * 1024 ** 3)).toBe(false);
   expect(canUseAsrCpuFallback(config(), task, 5 * 1024 ** 3)).toBe(false);
   expect(canUseAsrCpuFallback({ asr: { default_backend: 'paraformer' } }, task, 30 * 1024 ** 3)).toBe(false);
+  const disabled = config();
+  disabled.asr.cpu_fallback.enabled = false;
+  expect(canUseAsrCpuFallback(disabled, task, 30 * 1024 ** 3)).toBe(false);
   const rollout = config();
   Object.assign(rollout.asr, { moss_rollout: { enabled: true, room_ids: [], ratio: 1, eligibility: 'confirmed_multi' } });
   expect(canUseAsrCpuFallback(rollout, task, 30 * 1024 ** 3)).toBe(false);

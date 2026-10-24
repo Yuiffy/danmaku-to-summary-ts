@@ -4,6 +4,7 @@ import type { CommentPost, CommentPostText, CommentVideo } from './CommentContex
 import { safeEvidenceText } from './CommentContext';
 import { BILIBILI_WEB_UA, readVideoTranscript } from './CommentVideoText';
 import { CommentFeedError } from './CommentPolling';
+import { createAudienceReader } from './CommentAudience';
 
 /** Preserve 64-bit notification/dynamic IDs before JSON.parse can round them. */
 export function parseBilibiliJson(text: string): any {
@@ -14,8 +15,10 @@ export interface FeedPage { items: any[]; cursor: { is_end: boolean; id?: string
 
 /** Only fixed Bilibili endpoints; URLs from notifications and model output are never followed. */
 export class CommentApi {
+  private readonly readAudience: ReturnType<typeof createAudienceReader>;
   constructor(private readonly botUid: string, private readonly cookie: () => string, private readonly transport = fetch) {
     if (!positiveId(botUid)) throw new Error('Invalid comment bot UID');
+    this.readAudience = createAudienceReader(botUid, (url, signal) => this.socialGet(url, signal));
   }
   private credentials(): { headers: Record<string, string>; csrf: string } {
     const cookie = this.cookie();
@@ -67,18 +70,9 @@ export class CommentApi {
     return result;
   }
 
-  /** MedalWall list[].medal_info.wearing_status, not ownership, establishes the active badge. */
+  /** Profile establishes wearing; an exact medal ID resolves its anchor UID. */
   async audience(uid: string, signal: AbortSignal): Promise<CommentAudience> {
-    if (!positiveId(uid)) throw new Error('Invalid comment audience UID');
-    const data = await this.socialGet(`https://api.live.bilibili.com/xlive/web-ucenter/user/MedalWall?target_id=${uid}`, signal);
-    if (positiveId(data.uid) !== uid || !Array.isArray(data.list) || data.list.length > 1000 ||
-      data.close_space_medal === 1 || data.close_space_medal === true) return { status: 'unavailable' };
-    const wearing = data.list.filter((row: any) => row?.medal_info?.wearing_status === 1);
-    if (wearing.length > 1 || data.list.some((row: any) => ![0, 1].includes(row?.medal_info?.wearing_status))) return { status: 'unavailable' };
-    if (!wearing.length) return data.count > data.list.length ? { status: 'unavailable' } : { status: 'available' };
-    const medal = wearing[0].medal_info, anchorUid = positiveId(medal.target_id);
-    const name = typeof medal.medal_name === 'string' ? safeEvidenceText(medal.medal_name, 20) : '';
-    return anchorUid && name ? { status: 'available', wearing: { anchorUid, name } } : { status: 'unavailable' };
+    return this.readAudience(uid, signal);
   }
 
   /** One heat-sorted page; only three independent audience comments reach the agent. */

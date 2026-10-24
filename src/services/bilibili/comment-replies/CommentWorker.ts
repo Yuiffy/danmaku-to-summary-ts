@@ -98,7 +98,8 @@ export class CommentWorker {
     now = this.adapters.now();
     const day = state.days[shanghaiDay(now)] ||= { tokens: 0, users: {} };
     // A ready notice from yesterday must not tell someone their fresh quota is exhausted.
-    if (job.status === 'ready' && job.notice && (job.quotaDay !== shanghaiDay(now) || job.noticeUntil !== undefined && job.noticeUntil <= now)) {
+    if (job.status === 'ready' && job.notice && (this.config.unlimitedUids.includes(job.event.uid) ||
+      job.quotaDay !== shanghaiDay(now) || job.noticeUntil !== undefined && job.noticeUntil <= now)) {
       job.status = 'queued'; delete job.answer; delete job.notice; delete job.quotaDay; delete job.noticeUntil;
     }
     if (job.status === 'queued') {

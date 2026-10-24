@@ -110,6 +110,10 @@ function buildLiveContentSummaryPrompt(sharedPrefix, options = {}) {
         'activityTypes：只能从 chat、singing、watch_movie、watch_anime、watch_bilibili、game、other 中选择并去重。',
         'songs：只列本场明确实际演唱或播放表演的歌曲名；仅提到、点歌未唱、无法确认歌名时不要列。',
         'games：只列本场明确实际游玩的游戏名；只聊天提到时不要列。',
+        ...(Array.isArray(options.canonicalGames) && options.canonicalGames.length ? [
+            `本次活动的规范游戏名：${JSON.stringify(options.canonicalGames)}；已核实的转写别名：${JSON.stringify(options.gameAliases || {})}。`,
+            '这些名字只用于纠正同一游戏的名称，不证明本场玩过。只有完整语境证实实际游玩时才写入 games；仅提及、计划、否定和其他游戏仍按原规则处理。'
+        ] : []),
         'topics：列出0-10个今天明确聊到的极简话题，每项尽量4-14字，例如“妈妈做火烧云”“男人打架”“最喜欢的前辈”；纯歌回或没有明确话题时可为空数组，不要写空泛的“日常杂谈”。',
         'songs、games、topics、activityTypes 的每个元素必须是字符串，不能是对象或 null。'
             + (options.includeActivityTimeline ? '演唱的时间、证据和未知歌名只放在 activityTimeline.events。' : ''),
@@ -358,7 +362,8 @@ async function generateLiveContentSummary(options = {}) {
     }
 
     const source = buildSourceMetadata(fullContextPayload, activityOptions);
-    const prompt = buildLiveContentSummaryPrompt(fullContextPayload.sharedPrefix, { includeActivityTimeline });
+    const prompt = buildLiveContentSummaryPrompt(fullContextPayload.sharedPrefix, { includeActivityTimeline,
+        canonicalGames: experiment.canonicalGames, gameAliases: experiment.gameAliases });
     const generationAttempts = [];
     try {
         const maxAttempts = Math.max(1, Number(experiment.maxAttempts) || DEFAULT_MAX_ATTEMPTS);

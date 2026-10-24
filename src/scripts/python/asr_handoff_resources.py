@@ -1,10 +1,11 @@
-"""Bounded telemetry while CPU inference runs, and quiet GPU boundary sampling."""
+"""Continuous telemetry, attributing Windows GPU load to external processes."""
 from collections import deque
 import math
 import os
 import subprocess
 import threading
 import time
+from asr_handoff_gpu import WindowsGpuCounters
 
 
 def available_memory_gb():
@@ -36,16 +37,24 @@ class ResourceMonitor:
         self.gpu_id = visible or None  # An explicitly hidden GPU must stay hidden.
         self.samples = deque(maxlen=256)
         self.lock = threading.Lock()
+        self.sampling_lock = threading.Lock()
         self.stop = threading.Event()
         self.device = 'cpu'
         self.owned_gpu_mb = 0
+        self.owner_pid = None
+        self.counters = WindowsGpuCounters()
+        self.latest = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
-    def sample(self):
+    def sample(self, *, quiet=False):
+        with self.sampling_lock:
+            return self._sample(quiet=quiet)
+
+    def _sample(self, *, quiet=False):
         value = {'gpu_idle': None, 'game_running': None, 'available_gb': 0}
         try:
             value['available_gb'] = available_memory_gb()
-            if self.guard.active:
+            if self.guard.active or (self.config['allow_shared_gpu'] and self.guard.enabled and self.guard.game_process_names):
                 # Unlike the legacy guard, failed observation does not prove idle.
                 from sensevoice_runtime import _normalize_process_name
                 names = self.guard._process_names_fn()
@@ -62,41 +71,56 @@ class ResourceMonitor:
             util, used, total = map(float, result.stdout.strip().split(','))
             if not all(math.isfinite(v) for v in (util, used, total)) or not (0 <= util <= 100 and 0 <= used <= total and total > 0):
                 raise ValueError('Invalid GPU telemetry')
-            # At a GPU boundary the model's own allocator is still resident.
-            # Compare external usage with the same budget used before admission.
-            external_used = max(0, used - self.owned_gpu_mb)
-            value['gpu_idle'] = (util < self.config['gpu_util_pct']
-                and external_used / total * 100 < self.config['gpu_memory_pct']
-                and total - external_used >= self.config['gpu_free_mb'])
+            attributed = self.counters.sample(self.owner_pid)
+            owned = max(self.owned_gpu_mb, (attributed or {}).get('owned_gpu_mb') or 0)
+            external_used = max(0, used - owned)
+            value['memory_pressure'] = (external_used / total * 100 >= self.config['gpu_memory_pct']
+                or total - external_used < self.config['gpu_free_mb'])
+            if attributed is not None:
+                util = attributed['external_util_pct']
+                value['external_util_pct'] = util
+            elif self.owner_pid is not None and not quiet:
+                # Whole-device utilization cannot identify external pressure
+                # while our own inference is active. Use quiet boundary fallback.
+                util = None
+            value['gpu_idle'] = (False if value['memory_pressure'] else
+                                 None if util is None else util < self.config['gpu_util_pct'])
         except (OSError, ValueError, TypeError, subprocess.SubprocessError):
             pass
         return value
 
     def _run(self):
         while not self.stop.is_set():
-            if self.device != 'cuda':
-                sample = self.sample()
-                with self.lock:
-                    self.samples.append((time.monotonic(), sample))
+            sample = self.sample()
+            with self.lock:
+                self.samples.append((time.monotonic(), sample))
             self.stop.wait(self.config['poll_s'])
 
     def __enter__(self):
         self.thread.start()
         return self
 
-    def snapshot(self, policy, current):
-        if current == 'cuda':
-            # nvidia-smi utilization includes our previous kernel's sampling period.
-            time.sleep(1.2)
-        sample = self.sample()
+    def snapshot(self, policy, current, *, in_flight=False):
         with self.lock:
             observations = list(self.samples)
             self.samples.clear()
-        observations.append((time.monotonic(), sample))
+        if not observations and not in_flight and (self.latest is None or
+                time.monotonic() - self.latest[0] > self.config['poll_s'] * 3):
+            observations.append((time.monotonic(), self.sample()))
         for now, value in sorted(observations, key=lambda item: item[0]):
             policy.observe(value, now)
+            self.latest = (now, value)
+        sample = dict(self.latest[1]) if self.latest else {}
+        if not in_flight and current == 'cuda' and sample.get('gpu_idle') is None:
+            # Unsupported attribution retains conservative boundary admission.
+            # Windows PDH observations avoid this wait entirely.
+            time.sleep(1.2)
+            sample = self.sample(quiet=True)
+            policy.observe(sample, time.monotonic())
         return sample
 
     def __exit__(self, *_):
         self.stop.set()
         self.thread.join(timeout=5)
+        if not self.thread.is_alive():
+            self.counters.close()

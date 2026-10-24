@@ -84,6 +84,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
 | `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded text agent, target-video subtitles through fixed API/credential-free allowlisted CDN with asset/timeline checks, source-dated read-only room FTS/clip evidence, durable fair queue, quotas, token/send gates and explicit live CLI | desktop agent tools, arbitrary URLs/paths, media download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
 | `comment-replies/CommentVisibility`, `tools/bilibili/inspectComment` | bounded read-only anonymous/account comparison of exact reply IDs through fixed comment-list GETs; upstream selection is documented in `docs/bilibili-api-upstreams.md` | publication, model calls, state/queue writes, automatic retries or interpreting absence as permission to repost |
+| `comment-replies/CommentAudience`, `CommentProjects` | fixed signed UID-bound profile/medal catalogue reads; bounded operator-approved public project file excerpts with revisions | inferring badges from names/ownership, arbitrary model-selected paths, private configuration, model tools or publication |
 | `handlers/mikufans` | resource admission, durable summary execution, reply coordination | publishing policy |
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
@@ -114,6 +115,13 @@ Comment text and user attributes are decoded once on read and escaped once on
 write, including when merging a merged file again. Entry parsing tolerates old
 malformed preview markup; relative times still use segment durations plus the
 existing gap policy, and the remaining `p` fields retain their values.
+
+`handlers/mikufans/CollectingStreamContinuity` retains the source eligibility
+floor of the same unprocessed collecting session across an observed end/resume
+within the five-minute reconnect grace. A brief resume with no new recording
+must not orphan the already closed tail. Actual event timestamps still govern
+stale-event rejection; processed sessions, old tails and new session objects do
+not inherit this floor. Finalization remains single-owner and status guarded.
 
 `core/media/CampaignEarlyPolicy` decides closed title-switch batches;
 `tools/clipping/campaignEarly` observes configured recording roots and delegates

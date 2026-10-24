@@ -59,6 +59,34 @@ test('failed generation persists and notifies its known and unknown cost without
     expect(f.notify.mock.calls[0][1]).toContain('状态：失败');
 });
 
+test.each(['no_gameplay', 'no_activities'])('cached %s stays quiet while new paid work is still reported', async status => {
+    const f = fixture();
+    const absent = async () => ({ status, submissions: 0, parts: 0 });
+    await runClipUsage(f.options, absent);
+    expect(f.notify).not.toHaveBeenCalled();
+    expect(f.ledger().runs[0].notification?.status).toBe('suppressed_no_new_work');
+    await runClipUsage(f.options, async () => {
+        recordAiUsage({ promptTokens: 20, completionTokens: 2 });
+        return absent();
+    });
+    expect(f.notify).toHaveBeenCalledTimes(1);
+    await runClipUsage(f.options, absent);
+    expect(f.notify).toHaveBeenCalledTimes(1);
+    expect(f.ledger().runs).toHaveLength(3);
+    expect(f.ledger().summary?.requests).toBe(1);
+});
+
+test('repeated unchanged failures without new work stay quiet but changed errors are reported', async () => {
+    const f = fixture();
+    const fail = async () => { throw new Error('missing evidence'); };
+    await expect(runClipUsage(f.options, fail)).rejects.toThrow('missing evidence');
+    await expect(runClipUsage(f.options, fail)).rejects.toThrow('missing evidence');
+    await expect(runClipUsage(f.options, fail)).rejects.toThrow('missing evidence');
+    expect(f.notify).toHaveBeenCalledTimes(1);
+    await expect(runClipUsage(f.options, async () => { throw new Error('different failure'); })).rejects.toThrow('different failure');
+    expect(f.notify).toHaveBeenCalledTimes(2);
+});
+
 test('concurrent recording scopes and phase changes do not mix usage or trigger network without a notifier', async () => {
     const a = fixture(), b = fixture();
     const [first, second] = await Promise.all([

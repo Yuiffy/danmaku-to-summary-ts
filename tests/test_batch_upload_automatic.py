@@ -93,7 +93,7 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
             saved = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(upload.find_intent(saved, clip)[1]["mediaPath"], clip["path"])
             self.assertNotIn("1", saved.get("done", {}))
-            self.assertFalse(has_terminal_upload_error(output.getvalue()))
+            self.assertTrue(has_terminal_upload_error(output.getvalue()))
 
             # A definitive rejection is safe to retry through the existing account cooldown.
             state_path.unlink()

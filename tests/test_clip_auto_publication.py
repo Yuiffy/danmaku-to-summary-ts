@@ -458,6 +458,30 @@ class AutomaticPublicationTests(unittest.TestCase):
         Path(self.metadata["source"]["srtPath"]).write_text("Corrected subtitles", encoding="utf-8")
         self.assertEqual(publication.publication_identity(self.metadata), identity)
 
+    def test_shifted_window_cannot_automatically_republish_under_a_new_identity(self):
+        self.data['clips']['2'] = {**self.record, 'id': 2, 'status': 'uploaded',
+            'start': 9, 'duration': 11, 'metadataPath': '', 'publicationIdentity': 'older-window',
+            'mediaPath': str(self.root / 'older-render.mp4'), 'uploadState': {'bvid': 'BVOLD'}}
+        registry.save_json(self.registry_path, self.data)
+        result = self.enqueue()
+        self.assertEqual(result['queuedIds'], [])
+        self.assertEqual(result['results'][0]['status'], 'needs_human')
+        self.assertIn('duplicate source content', result['results'][0]['error'])
+
+    def test_two_new_automatic_clips_cannot_reserve_overlapping_windows(self):
+        other = self.make_metadata('two')
+        other['window'] = {'start': 11, 'end': 20, 'duration': 9}
+        other['publicationReview']['artifactWindow'] = copy.deepcopy(other['window'])
+        path = self.root / 'two.json'
+        path.write_text(json.dumps(other), encoding='utf-8')
+        self.data['clips']['2'] = {**load_upload_manifest(path)[0], 'id': 2, 'status': 'review',
+                                  'statePath': str(self.root / 'two-state.json')}
+        registry.save_json(self.registry_path, self.data)
+        result = self.enqueue('1,2')
+        self.assertEqual(result['queuedIds'], [1])
+        self.assertEqual(result['results'][1]['status'], 'needs_human')
+        self.assertIn('duplicate source content', result['results'][1]['error'])
+
     def test_import_is_side_effect_free_and_preserves_required_flag_and_authorization(self):
         self.enqueue()
         self.metadata.pop("automaticPublicationRequired")

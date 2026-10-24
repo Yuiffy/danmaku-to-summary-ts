@@ -48,6 +48,7 @@ function getFfmpegResourceConfig(config = {}) {
         priority: String(process.env.FFMPEG_PRIORITY || ffmpeg.priority || DEFAULT_PRIORITY),
         cpuGuard: {
             enabled: normalizeBoolean(process.env.FFMPEG_CPU_GUARD_ENABLED ?? cpuGuard.enabled, false),
+            busyThreads: Math.max(1, normalizeThreads(cpuGuard.busyThreads, 2)),
             busyPercentThreshold: normalizeNumber(cpuGuard.busyPercentThreshold, 80, 1),
             resumePercentThreshold: normalizeNumber(cpuGuard.resumePercentThreshold, 60, 0),
             sampleIntervalMs: normalizeNumber(cpuGuard.sampleIntervalMs, 750, 50),
@@ -129,56 +130,27 @@ async function waitForCpuAvailability(stage, resourceConfig = {}, dependencies =
 
     const sample = dependencies.sampleCpuPercent
         || (() => sampleCpuPercent(guard.sampleIntervalMs, dependencies));
-    const sleep = dependencies.sleep || delay;
     const log = dependencies.log || console.log;
     const busyThreshold = normalizeNumber(guard.busyPercentThreshold, 80, 1);
-    const resumeThreshold = Math.min(
-        busyThreshold,
-        normalizeNumber(guard.resumePercentThreshold, 60, 0)
-    );
     const busySamplesRequired = Math.floor(normalizeNumber(guard.consecutiveBusySamples, 2, 1));
-    const idleSamplesRequired = Math.floor(normalizeNumber(guard.consecutiveIdleSamples, 2, 1));
-    const waitMs = normalizeNumber(guard.waitMs, 5000, 50);
-    const maxWaitMs = normalizeNumber(guard.maxWaitMs, 0, 0);
-    let busySamples = 0;
-    let idleSamples = 0;
-    let waitedMs = 0;
-    let announced = false;
     let lastCpuPercent = null;
 
-    while (true) {
+    // Retain the async compatibility entry point, but admit busy stages with a
+    // small thread budget instead of waiting indefinitely for a quiet machine.
+    for (let busySamples = 0; busySamples < busySamplesRequired; busySamples++) {
         lastCpuPercent = Number(await sample());
         if (!Number.isFinite(lastCpuPercent)) {
-            return { waitedMs, lastCpuPercent: null };
+            return { waitedMs: 0, lastCpuPercent: null };
         }
-
-        if (!announced) {
-            if (lastCpuPercent < busyThreshold) {
-                return { waitedMs, lastCpuPercent };
-            }
-            busySamples += 1;
-            if (busySamples < busySamplesRequired) continue;
-            announced = true;
-            log(`[resource] CPU 繁忙，暂停 ${stage}: 当前=${lastCpuPercent.toFixed(0)}%，阈值=${busyThreshold}%`);
-        } else if (lastCpuPercent <= resumeThreshold) {
-            idleSamples += 1;
-            if (idleSamples >= idleSamplesRequired) {
-                log(`[resource] CPU 已恢复，继续 ${stage}: 当前=${lastCpuPercent.toFixed(0)}%，已等待=${(waitedMs / 1000).toFixed(1)}s`);
-                return { waitedMs, lastCpuPercent };
-            }
-            continue;
-        } else {
-            idleSamples = 0;
+        if (lastCpuPercent < busyThreshold) {
+            return { waitedMs: 0, lastCpuPercent };
         }
-
-        if (maxWaitMs > 0 && waitedMs >= maxWaitMs) {
-            log(`[resource] CPU 等待达到上限，继续 ${stage}: ${(maxWaitMs / 1000).toFixed(1)}s`);
-            return { waitedMs, lastCpuPercent };
-        }
-        const currentWaitMs = maxWaitMs > 0 ? Math.min(waitMs, maxWaitMs - waitedMs) : waitMs;
-        await sleep(currentWaitMs);
-        waitedMs += currentWaitMs;
     }
+    const budget = Math.max(1, normalizeThreads(guard.busyThreads, 2));
+    const requested = normalizeThreads(resourceConfig.threads);
+    const threads = requested > 0 ? Math.min(requested, budget) : budget;
+    log(`[resource] CPU 繁忙，限线程继续 ${stage}: 当前=${lastCpuPercent.toFixed(0)}%，threads=${threads}, priority=idle`);
+    return { waitedMs: 0, lastCpuPercent, resourceOverrides: { threads, priority: 'idle', cpuBusy: true } };
 }
 
 function isAsrClaimActive(resourceConfig = {}, dependencies = {}) {
@@ -420,6 +392,32 @@ function startResourcePeakMonitor(stage, options = {}) {
 
 function withFfmpegResourceLimits(args, resourceConfig = {}) {
     const threads = normalizeThreads(resourceConfig.threads, DEFAULT_THREADS);
+    if (resourceConfig.cpuBusy && threads > 0) {
+        const limitedArgs = [...args];
+        const threadFlag = flag => /^-threads(?::[av](?::\d+)?)?$/.test(flag);
+        const filterFlag = flag => ['-filter_threads', '-filter_complex_threads'].includes(flag);
+        for (let index = 0; index < limitedArgs.length - 1; index++) {
+            if (!threadFlag(limitedArgs[index]) && !filterFlag(limitedArgs[index])) continue;
+            const requested = Number(limitedArgs[index + 1]);
+            limitedArgs[index + 1] = String(requested > 0 ? Math.min(requested, threads) : threads);
+            index++;
+        }
+        // Input decoder and output encoder options have separate scopes. Filter
+        // pools also need a cap; limiting only the encoder leaves CPU fan-out.
+        const lastInput = limitedArgs.lastIndexOf('-i');
+        limitedArgs.splice(lastInput < 0 ? 0 : lastInput + 2, 0, '-threads', String(threads));
+        for (let index = lastInput; index >= 0; index--) {
+            if (limitedArgs[index] !== '-i') continue;
+            const previousInput = index > 0 ? limitedArgs.lastIndexOf('-i', index - 1) : -1;
+            // Prepend defaults within each scope so an explicit smaller budget
+            // later in that scope still wins.
+            limitedArgs.splice(previousInput < 0 ? 0 : previousInput + 2, 0, '-threads', String(threads));
+        }
+        for (const flag of ['-filter_threads', '-filter_complex_threads']) {
+            if (!limitedArgs.includes(flag)) limitedArgs.unshift(flag, String(threads));
+        }
+        return limitedArgs;
+    }
     if (threads <= 0 || args.includes('-threads')) {
         return [...args];
     }

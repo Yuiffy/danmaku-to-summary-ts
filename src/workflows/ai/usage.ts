@@ -193,7 +193,14 @@ export async function runClipUsage<T extends Data>(options: RunOptions, work: ()
     }
     run.finishedAt = new Date(io.now()).toISOString(); run.elapsedMs = io.now() - started;
     persist();
-    if (options.notifyEnabled !== false && options.webhookUrl && options.sendMarkdown) {
+    const usage = summarizeUsage(run.events);
+    const noNewWork = usage.requests === 0 && usage.localAsrRuns === 0;
+    const previousRun = ledger.runs.slice(0, -1).reverse().find(item => item.finishedAt);
+    const sameResult = previousRun?.status === run.status && previousRun?.error === run.error
+        && JSON.stringify(previousRun?.outcome) === JSON.stringify(run.outcome);
+    const quiet = noNewWork && (['no_gameplay', 'no_activities'].includes(String(run.outcome?.status))
+        || sameResult && ['sent', 'sending', 'unknown', 'suppressed_no_new_work'].includes(previousRun?.notification?.status || ''));
+    if (options.notifyEnabled !== false && options.webhookUrl && options.sendMarkdown && !quiet) {
         run.notification = { status: 'sending' }; persist();
         try {
             const sent = await options.sendMarkdown(options.webhookUrl, usageMarkdown(ledger, run, ledgerPath), { timeout: 30000 });
@@ -202,7 +209,7 @@ export async function runClipUsage<T extends Data>(options: RunOptions, work: ()
             run.notification = { status: 'unknown', error: safeText(error instanceof Error ? error.message : error) };
             io.warn(`Clip AI usage notification delivery unconfirmed: ${ledgerPath}`);
         }
-    } else run.notification = { status: 'disabled' };
+    } else run.notification = { status: quiet ? 'suppressed_no_new_work' : 'disabled' };
     persist();
     if (failure !== undefined) throw failure;
     return { ...result as T, aiUsagePath: ledgerPath, aiUsage: summarizeUsage(run.events) };

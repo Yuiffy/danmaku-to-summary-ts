@@ -12,7 +12,8 @@ function resolveRoomConfig(base, roomId, recordedAt, now, manualReview) {
     if (!(sourceTime >= start && sourceTime < end && (manualReview || now >= start && now < end))) return { ...base, enabled: false };
     const settings = campaign.settings || {};
     return { ...base, ...settings, roomIds: [...new Set([...(base.roomIds || []).map(String), room])],
-        ...(campaign.requiredGames ? { campaignContentGate: { id: campaign.id, requiredGames: campaign.requiredGames } } : {}),
+        ...(campaign.requiredGames ? { campaignContentGate: { id: campaign.id, requiredGames: campaign.requiredGames,
+            ...(campaign.gameAliases ? { gameAliases: campaign.gameAliases } : {}) } } : {}),
         ai: { ...base.ai, ...settings.ai },
         publicationPolicy: { ...base.publicationPolicy, ...settings.publicationPolicy, roomIds: [room] },
         enhancements: { ...base.enhancements, ...settings.enhancements,

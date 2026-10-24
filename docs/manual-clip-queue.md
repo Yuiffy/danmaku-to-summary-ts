@@ -59,6 +59,11 @@ worker 会自动采集前台窗口、运行进程、GPU 活跃度和主机 CPU�
 
 - 空闲时使用配置的高速档，当前为 `2 路 / 2 线程`；
 - 游戏或明显资源占用时自动降为 `1 路 / 1 线程`；
+- `audio.ffmpeg.cpuGuard` 连续检测到 CPU 繁忙时继续执行，使用 `idle` 优先级并将线程数限制到
+  `busyThreads`（默认 2）与当前资源档位的较小值；配置为自动线程（0）时也应用上限。
+  每个 FFmpeg 输入解码器、输出编码器和普通/复杂滤镜线程池均受此限制，已有更小的显式预算保留。
+  封面生成同样继续并降低优先级。旧 `waitMs/maxWaitMs/resumePercentThreshold/consecutiveIdleSamples`
+  仍可读取，但不再因等待 CPU 空闲而暂停任务；ASR 租约等待仍使用自己的规则。
 - 不需要设置 `DANMAKU_CLIP_CONCURRENCY` 或 `DANMAKU_CLIP_FFMPEG_THREADS`；
 - 每个成片 JSON 会记录 `resourceMode`、`ffmpegThreads`、实际编码器和硬件解码设置，便于复核。
 

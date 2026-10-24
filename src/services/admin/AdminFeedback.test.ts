@@ -247,6 +247,29 @@ it('applies an explicit title to an existing highlight-first video without rebui
   expect(readJson(f.metadataPath).window.duration).toBe(5.2);
 });
 
+it.each([false, true])('restores a composed clip to source order before extending its ending (direct feedback: %s)', async directFeedback => {
+  const f = fixture({ start: 0, end: 4 }, undefined, directFeedback), metadata = readJson(f.metadataPath);
+  fs.writeFileSync(f.srt, '1\n00:00:00,000 --> 00:00:02,000\n建功\n\n2\n00:00:02,000 --> 00:00:04,000\n后续回应说完了\n');
+  metadata.source = { srtPath: f.srt };
+  metadata.window = { start: 0, end: 2, duration: 5.26 };
+  metadata.editorialTimeline = { version: 1, segments: [] };
+  metadata.editorialStyle = { selected: 'highlight_first', status: 'completed' };
+  atomicJson(f.metadataPath, metadata);
+  const original = f.run.getMockImplementation()!;
+  f.run.mockImplementation(async (command, output) => {
+    if (command.action === 'rebuild' && !command.args.includes('--ordinary')) {
+      output('Editorial timeline rebuild requires --ordinary to restore source order before correcting subtitles');
+      return 2;
+    }
+    return original(command, output);
+  });
+  f.feedback.submit('3354', f.input('结尾话题没说完，得往后切')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['--ordinary', '--start', '0', '--end', '4']));
+  expect(f.run.mock.calls[1][0].args).toContain(directFeedback ? '--feedback-authorized' : '--automatic-review');
+});
+
 it('recovers source context for a rejected candidate whose formal window was lost', async () => {
   const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
   metadata.selectionRejection = { reason: 'missing_selected_candidate_detail' };

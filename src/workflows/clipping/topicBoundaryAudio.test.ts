@@ -63,6 +63,22 @@ describe('bounded pre-render boundary audio diagnosis', () => {
         expect(keywordAudioPlan({ ...artifact, publicationReview: { status: 'needs_review', issues: ['封面遮挡'] } }, input)).toBeNull();
         expect(keywordAudioPlan({ ...artifact, aiReview: { keyword: { hits: [{ verdict: 'mention', cueId: 'unseen', start: 10, end: 18 }] } } }, input)).toBeNull();
     });
+    test('an explicit recheck can retry transient ASR contention twice without approving or resetting the shared budget', async () => {
+        const artifact = { publicationKind: 'keyword_topic', window: { start: 10, end: 40 },
+            publicationReview: { status: 'needs_review', issues: ['称呼需要核验'] },
+            aiReview: { keyword: { hits: [{ verdict: 'mention', cueId: 'G1', start: 10, end: 18 }] } } };
+        const busy = { now: () => 1, run: jest.fn(async () => { throw new Error('another ASR resource lease is active'); }) };
+        const first = await diagnoseKeywordAudio(artifact, input, config, source, runtime, busy);
+        expect(first.publicationReview.status).toBe('needs_review');
+        expect(keywordAudioPlan(first, input)).not.toBeNull();
+        const second = await diagnoseKeywordAudio(first, input, config, source, runtime, busy);
+        const third = await diagnoseKeywordAudio(second, input, config, source, runtime, busy);
+        expect(keywordAudioPlan(third, input)).toBeNull();
+        expect(third.finalKeywordAudioDiagnostics.topicAudioBudget.windows).toBe(3);
+        expect(third.aiReview.boundaryAudioHistory).toHaveLength(2);
+        expect(keywordAudioPlan({ ...first, aiReview: { ...first.aiReview,
+            boundaryAudioChecks: { status: 'unavailable', reason: 'source hash changed' } } }, input)).toBeNull();
+    });
     test('diagnoses six adjacent doubtful cues within two windows and the shared audio budget', async () => {
         const cues = [10, 14, 18, 40, 44, 48].map((start, index) => ({
             id: `G${index + 1}`, start, end: start + 3, text: '需要核对原音的连续字幕'

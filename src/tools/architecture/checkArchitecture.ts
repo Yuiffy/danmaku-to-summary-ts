@@ -21,7 +21,7 @@ const lineBudgets: Record<string, number> = {
   'src/scripts/enhanced_auto_summary.js': 1941,
   'src/scripts/clipping/topic_compilation.js': 1600,
   'src/scripts/audio_processor.js': 1420,
-  'src/scripts/asr/asr_backends.js': 1292,
+  'src/scripts/asr/asr_backends.js': 1232,
   'src/scripts/asr/asr_corrections.js': 1243,
   'src/scripts/python/sensevoice_runtime.py': 1214
 };

@@ -38,7 +38,7 @@ export async function runArchiveStages(run: (kind: string, reuseSummaryOnly?: bo
     try {
       const result = await run(kind);
       completed(kind, result);
-      if (kind === 'watch' && result.status === 'rendered' && songsNeedSummary) {
+      if (kind === 'watch' && ['rendered', 'no_activities'].includes(result.status) && songsNeedSummary) {
         try { completed('songs', await run('songs', true)); }
         catch (error) { failed('songs', error); }
       }

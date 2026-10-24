@@ -59,7 +59,8 @@
   "include": [
     "src/**/*",
     ".next/types/**/*.ts",
-    "build/cover-editor-web/types/**/*.ts"
+    "build/cover-editor-web/types/**/*.ts",
+    "build/next-asr-history-review/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

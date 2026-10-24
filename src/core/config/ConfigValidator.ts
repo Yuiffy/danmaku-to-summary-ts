@@ -51,6 +51,12 @@ export class ConfigValidator {
       if (!config.bilibili.anchors) errors.push({ path: 'bilibili.anchors', message: 'Bilibili anchors configuration is required', type: 'required' });
     }
 
+    const speakerPolicy = config.asr?.speaker_processing;
+    if (speakerPolicy && (!['auto', 'on', 'off'].includes(speakerPolicy.mode)
+        || speakerPolicy.max_pending_jobs !== undefined && (!Number.isInteger(speakerPolicy.max_pending_jobs) || speakerPolicy.max_pending_jobs < 1)
+        || speakerPolicy.max_wait_s !== undefined && (!Number.isFinite(speakerPolicy.max_wait_s) || speakerPolicy.max_wait_s <= 0))) {
+      errors.push({ path: 'asr.speaker_processing', message: 'Invalid speaker processing mode or thresholds', type: 'invalid' });
+    }
     if (errors.length > 0) {
       return {
         valid: false,

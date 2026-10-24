@@ -8,6 +8,7 @@ export interface CommentReplyConfig {
   maxUserQueue: number;
   pollIntervalMs: number;
   knowledge?: { runtimeConfigPath: string; roomId: string; collaborationRooms: string[] };
+  projectSources?: Array<{ id: string; label: string; path: string; keywords: string[]; section?: string; kind: 'code' | 'skill' | 'guide' }>;
   speakerNames?: Record<string, string>;
   fanQuota?: {
     suiUid: string; relatedUids: string[];
@@ -51,6 +52,14 @@ export function validateCommentConfig(config: CommentReplyConfig): void {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid comment replies ${key}`);
   }
   const knowledge = config.knowledge;
+  if (config.projectSources && (!Array.isArray(config.projectSources) || config.projectSources.length > 8 ||
+    config.projectSources.some(source => !source || !/^[a-z0-9-]{1,40}$/u.test(source.id) ||
+      !['code', 'skill', 'guide'].includes(source.kind) || typeof source.label !== 'string' || !source.label.trim() ||
+      source.label.length > 60 || unsafeComment(source.label) || typeof source.path !== 'string' || !source.path.trim() ||
+      !Array.isArray(source.keywords) || !source.keywords.length || source.keywords.length > 12 ||
+      source.keywords.some(word => typeof word !== 'string' || !word.trim() || word.length > 40) ||
+      source.section !== undefined && (typeof source.section !== 'string' || !source.section.trim() || source.section.length > 120)) ||
+    new Set(config.projectSources.map(source => source.id)).size !== config.projectSources.length)) throw new Error('Invalid public project sources');
   if (knowledge && (typeof knowledge.runtimeConfigPath !== 'string' || !knowledge.runtimeConfigPath.trim() ||
       !positiveId(knowledge.roomId) || !Array.isArray(knowledge.collaborationRooms) || knowledge.collaborationRooms.length > 3 ||
       knowledge.collaborationRooms.some(id => typeof id !== 'string' || !positiveId(id)))) throw new Error('Invalid comment knowledge config');

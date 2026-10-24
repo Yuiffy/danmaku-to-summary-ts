@@ -3,7 +3,7 @@
 跨直播间未来行程通过[行程与联动记忆](streamer-itinerary-memory.md)加入开放声纹候选；
 历史计划不构成本场到场或逐句说话人证据，不改变声纹验收阈值。
 
-> **当前状态（2026-09-29）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。生产仅对已确认多人联动的场次启用 20% MOSS 灰度，其余按原房间路由运行（默认 Paraformer + CAM++）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
+> **当前状态（2026-10-25）**：默认 backend 是 `paraformer`，生产 Paraformer 配置 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`），同时通过 `asr.speaker_processing.mode="auto"` 在繁忙或排队积压时跳过可选说话人工作。生产仅对已确认多人联动的场次启用 20% MOSS 灰度，其余按原房间路由运行（默认 Paraformer + CAM++，受负载准入限制）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
 项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
@@ -14,21 +14,42 @@
 `asr.device_handoff.enabled` 在默认配置中关闭、生产配置中开启。标准 `paraformer-zh` 的 CUDA 路由使用
 单任务 Python 协调器，接入原 ASR 锁、队列与结果消费者；先退出空闲常驻模型，避免重复占显存。
 微调 Paraformer、显式 CPU、SenseVoice、MOSS、Nano 和 Whisper 保留原路线。
+是否使用微调模型以实际选中的模型及 profile 为准：`model_profile: "default"` 选择
+`paraformer-zh` 时，配置中预留但未启用的 `finetuned_model` 路径不应关闭标准模型接力。
 中央队列通过 `ASR_CPU_FALLBACK=1` 准入的任务仍遵守队列轮次和文件锁，获取锁后跳过旧 GPU 等待。
 
 协调器保留原设备配置；只有 CPU 模型子进程隐藏 CUDA，并沿用 2 线程、BelowNormal、EcoQoS
-与 E 核策略。CPU 运行期间每 5 秒观察资源；GPU 连续空闲 `idle_s`（45 秒）且剩余音频至少
+与 E 核策略。转写期间每 5 秒持续观察资源；GPU 连续空闲 `idle_s`（45 秒）且剩余音频至少
 `min_remaining_s`（600 秒）才接力。默认空闲条件：利用率低于 40%、显存占比低于 70%、
-可用显存至少 4096MiB，且原资源保护配置未检测到游戏。GPU 边界按扣除本模型 CUDA allocator
+可用显存至少 4096MiB，且原资源保护配置未要求因游戏而暂停。GPU 边界按扣除本模型 CUDA allocator
 后的外部显存用量比较同一预算，避免把自己加载的显存误判为外部压力。采样失败不证明空闲。
+可按机器实际余量调节 `gpu_util_pct` 与 `window_s`；较高利用率门槛配合较短目标窗可用部分
+GPU 余量提速，但不构成 GPU 配额或游戏帧率保证。游戏进程阻止接力的条件沿用
+`resource_guard.pause_when_game_running`；关闭该选项时仍检查利用率和显存。
 已有 `CUDA_VISIBLE_DEVICES` 限制仍保留，GPU 采样使用该列表的第一块卡。
 
-每窗最长 120 秒音频，在 VAD 观察到的语音结束处提交；换设备只发生在已保存的窗口边界。
-GPU 边界采样前留 1.2 秒消除上一窗自身计算的利用率影响；再次繁忙则先释放 GPU 模型，
-可用内存达到 `asr.cpu_fallback.min_available_memory_gb`（默认 10GiB，下限 4GiB）时回 CPU，
+每窗最长 120 秒**音频**，在 VAD 观察到的语音结束处提交，不代表等待 120 秒墙钟时间。
+Windows 使用 PDH GPU Engine 计数器按 PID 排除当前模型进程，按同一物理引擎累加外部进程，
+取最忙引擎；多适配器取保守的全机最大值。GPU Process Memory 计数器与 allocator 记录用于
+扣除自身显存。支持计数器时直接复用后台采样，取消原来逐窗固定 1.2 秒的等待。
+计数器不可用时，推理中不根据包含自身的总利用率退让，仍观察显存与已配置的游戏保护；
+窗口边界保留 1.2 秒安静采样的保守回退。未知或过期观测不证明 GPU 空闲。
+
+请求等待期间每 0.25 秒检查最近资源记录。GPU 外部繁忙持续一个采样周期后可打断当前窗；
+显存压力或原游戏保护明确要求退让时无需再等一个周期。CPU 满足连续空闲及剩余时长门槛后，
+也可打断当前窗并升至 GPU。已收到的成功结果优先保存；打断时终止并回收隔离模型子进程，
+仅在新设备重做尚未提交的窗口，不能跳过音频或复用旧子进程响应。返回 GPU 必须重新满足
+完整空闲观察期，防止频繁重载；此策略不覆盖最终说话人/情感后处理。
+GPU 档沿用配置中的 `batch_size_s` 与 `batch_size_threshold_s`（生产为 600 / 60）；
+CPU 档保持 30 / 30。实际批量仍受窗口长度和 VAD 分句限制，不保证恢复整场批处理吞吐。
+同设备连续窗口复用已加载的模型进程，不按窗口或 batch 释放模型。CPU 中断升档已经满足的
+空闲观察期须保留到 GPU 准入完成，不能提前清零后再次判定不满足而立即退回 CPU。
+再次繁忙则先释放 GPU 模型；`asr.cpu_fallback.enabled=false` 时等待 GPU 恢复，
+不启动 CPU 转写。允许 CPU 回退时，可用内存达到
+`asr.cpu_fallback.min_available_memory_gb`（默认 10GiB，下限 4GiB）时回 CPU，
 否则等待。已经加载的 CPU 模型按实际可用内存至少 4GiB 的运行底线继续，避免因自身加载
 减少了入场余量而逐窗反复重载；释放后的新 CPU 模型仍须达到入场门槛。
-没有操作系统级“只用剩余 GPU”的硬保证，游戏刚启动时最多仍需完成当前窗口。
+没有操作系统级“只用剩余 GPU”的硬保证；响应受采样、设备释放与模型重新加载耗时影响。
 模型加载、单窗与后处理请求受 `worker_timeout_s`（600 秒）限制；原外层任务超时仍有效。
 
 录像一次解码为对齐媒体 PTS 的临时 float32 PCM，约 64KB/秒音频，退出时清理；磁盘不足时失败，
@@ -37,6 +58,9 @@ GPU 边界采样前留 1.2 秒消除上一窗自身计算的利用率影响；�
 源、配方不匹配或损坏的接力侧车拒绝复用，应先保留并核对旧侧车。默认模型文件应保持固定，
 不要在任务中替换同一路径下的权重。启用房间可导入验证通过的 `.live-asr.json`，只读不回写。
 `timings.handoff_*` 记录本次 CPU/GPU 覆盖音频秒数、复用音频、切换次数与转写耗时。
+`handoff_interruptions` 记录未完成窗口被打断的次数。`[[ASR_HANDOFF_STATUS]]` JSON 进度标记
+包含 `policy_version: 3`（修复 CPU 升 GPU 时空闲计时被提前清零）、累计已保存音频秒数（含复用）、总音频秒数、设备、阶段、窗口和 batch 上限；
+Web 按该契约计算速度与剩余转写时间，不把复用进度当作本次处理速度。
 
 整场文字完成后仅执行一次既有说话人、情感与谐音修正，保留输出 JSON/字幕契约。
 自动接力范围为文字转写阶段，最终说话人/情感阶段继续遵守原保护和设备策略。
@@ -44,6 +68,53 @@ GPU 边界采样前留 1.2 秒消除上一窗自身计算的利用率影响；�
 不跨任务复用常驻 ASR 权重；短任务可能更慢，应结合真实长录播耗时决定是否启用。
 这是同模型分窗推理，分句边界可能与整场推理不同，不能承诺逐字相同。
 关闭开关恢复原入口；运行中的协调器不会热读开关。开发/验证只写隔离目录，开关上线需单独部署。
+
+## GPU 低占用与 CPU 接力
+
+`asr.device_handoff.allow_shared_gpu=true` 时，支持 GPU 高吞吐和 GPU 低占用。
+`asr.cpu_fallback.enabled=false` 同时禁止中央队列的 CPU 准入和任务内部的 CPU 接力；
+生产已关闭该开关。GPU 余量不足时释放模型、保留已保存窗口并等待，恢复后从断点继续。
+配置载入任务后不热读；中央队列所属 webhook 需要重启后使用新的准入配置。
+外部 GPU 占用达到 `gpu_util_pct` 或检测到配置中的游戏时，保留同一个 GPU 模型，
+下一音频窗口改用 `gpu_throttle.low_impact.batch_size_s`（生产 30 秒），每窗完成后按
+`gpu_throttle.low_impact.yield_s`（生产 0.2 秒）让出时间。音频覆盖窗口仍为 120 秒；
+batch 变化不重载模型。小 batch 与让出时间降低占用，但不是显卡算力或帧率的硬限额。
+
+外部占用连续达到 `shared_gpu_util_pct`（默认 90%）满 `gpu_busy_s`（默认 15 秒）后才
+退回 CPU（若已禁用则等待）；显存安全余量不足仍立即中断当前未提交窗口。退回后按 `device_cooldown_s`
+（默认 120 秒）冷却，冷却不会阻止 GPU 安全降档。重新进入 GPU 还必须连续观察
+`idle_s`（生产 45 秒）的可用余量；低占用档回高吞吐也需要完整空闲观察期，防止
+阈值附近反复重载。未知/失效采样不证明 GPU 可用。关闭此选项保持原两档策略。
+共享 GPU 下仍独立应用说话人负载准入，游戏运行或积压时不启动可选 speaker。
+日志策略版本为 6，增加 `cpu_fallback_enabled` 表明 CPU 回退是否获准；
+`performance_tier` 和实际 batch 记录本窗实际派发的档位。
+`handoff_gpu_low_impact_*` / `handoff_gpu_throughput_*` 分别记录新增音频、窗口耗时和 batch，
+写入 `.asr_meta.json`，供 Web 历史查看；旧 GPU 汇总不推断为具体档位。
+
+## 按负载跳过说话人处理
+
+`asr.speaker_processing` 控制可选说话人阶段的准入，生产使用：
+
+```json
+{ "mode": "auto", "max_pending_jobs": 3, "max_wait_s": 900 }
+```
+
+`auto` 遇到 CPU 降档、其他待处理 ASR 任务达到 3 个，或最老待处理任务等待至少
+15 分钟时，本场不加载说话人模型、不做 probe/full 聚类和参考声纹匹配。只统计中央
+ASR 队列的 `pending`，排除本场，后台 AI 任务和失败任务不算积压。任务启动时检查一次；
+设备接力路线在最终说话人阶段开始前再检查实时资源及队列，GPU 外部繁忙或游戏运行也会跳过。
+已跳过的任务本场不再补跑；下一个任务重新评估，压力消退后恢复原有 backend 的说话人设置。
+不打断已开始的说话人阶段，文字转写、字幕时间轴和情感设置维持原契约。
+
+`mode: "off"` 手动禁止可选说话人工作，`mode: "on"` 保留原配置行为；省略整个配置
+也保持原行为，`on` 不强制打开 backend 原本关闭的 speaker。负载跳过优先于自动多人发现和
+speaker-once 的完整处理请求。日志及 Paraformer `speaker_processing.load_policy` 保留
+`resource_busy`、`queue_backlog`、`queue_wait` 或 `manual_off` 原因，状态为 `disabled`，
+不把跳过误记为识别失败或单人结论。跳过的字幕仍可用于摘要，但没有新识别的说话人标签。
+
+自动 MOSS 灰度也受此准入限制，压力大时使用原路由 backend。显式指定 MOSS 属于联合
+转写模型选择，其内建说话人解码不能通过此开关关闭。转写速度与说话人耗时分别计算，
+跳过后处理不能据此宣称文字转写倍速提高。
 
 ## MOSS 说话人灰度
 
@@ -141,7 +212,7 @@ worker 在线才能读取；缓存无效或缺失则回退原转写流程，不�
 
 ### GPU 繁忙时的 CPU 队列处理
 
-`asr.cpu_fallback` 默认为关闭，当前生产开启，`min_available_memory_gb: 10`。
+`asr.cpu_fallback` 默认为关闭，当前生产也已关闭，`min_available_memory_gb: 10` 保留供再次开启时使用。
 中央 summary 队列检测到游戏保护或既有 GPU 使用率/显存阈值繁忙时，对 CPU 支持的
 Paraformer/SenseVoice 任务改用一次性 CPU 子进程；保持单个队列 ASR 槽位、原模型、说话人
 及后处理要求，停止 GPU 常驻 worker。CPU ASR 与岁己实时 worker 可各运行一个，内存门槛
@@ -794,6 +865,19 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 
 ## Compare 模式
+
+### 空语音窗口与显式失败恢复
+
+Paraformer 接力和实时 CPU 缓存使用同一 `asr_window_result` 校验：只有本窗口
+VAD 返回结构有效、区间为空时，FunASR 的空列表才代表无语音，保存空文本及
+已观察覆盖范围。检测到语音、VAD 缺失/越界或识别结构无效时仍失败，不前移检查点，
+不以空字幕掩盖丢词。源 Python 变更在下一子进程加载；常驻实时 worker 需空闲刷新。
+
+查看中央字幕失败项使用 `node src/scripts/asr_queue_recovery.ts list`。
+确认修复后使用 `node src/scripts/asr_queue_recovery.ts retry --ids <原任务ID,...> --note '修复及核验依据'`。
+该入口只恢复 failed，同源已有活动/完成任务或原素材缺失时拒绝；保留任务 ID、
+原参数、加入时间和失败历史，只重置本轮有界重试及旧进程所有权。由现有中央 worker
+调度并复用检查点，不建立并行 ASR worker；入队不等于字幕或切片已完成。
 
 同一段媒体同时跑多个 backend：
 

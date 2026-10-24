@@ -902,7 +902,7 @@ def exclude_clips(args: argparse.Namespace) -> int:
 
 
 def cancel_job(args: argparse.Namespace) -> int:
-    """Cancel a waiting upload job and make its unfinished clips enqueueable again."""
+    """Cancel a waiting/blocked job and make unfinished clips enqueueable again."""
     if not acquire_lock():
         print(
             "[ERROR] upload worker is running; stop it before cancelling a job",
@@ -922,7 +922,7 @@ def cancel_job(args: argparse.Namespace) -> int:
         if job.get("status") == "cancelled":
             print(f"[OK] upload job already cancelled: {args.job}")
             return 0
-        if job.get("status") not in ("pending", "retry_wait"):
+        if job.get("status") not in ("pending", "retry_wait", "blocked"):
             print(
                 f"[ERROR] job {args.job} cannot be cancelled from status "
                 f"{job.get('status')}",
@@ -1870,7 +1870,7 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     """
     errors: List[str] = validate_registry_qa(groups)
     for group in groups:
-        errors.extend(clip_upload_enqueue.saved_title_errors(sys.modules[__name__], group))
+        errors.extend(clip_upload_enqueue.saved_title_errors(sys.modules[__name__], group) + clip_upload_enqueue.publication_errors(sys.modules[__name__], group))
         errors.extend(f"clip {clip.get('id')} is editorially excluded: {clip['editorialExclusion'].get('reason')}"
                       for clip in group if clip.get("editorialExclusion"))
         errors.extend(f"candidate {clip.get('id')} needs cutting first" for clip in group if clip.get("pendingCut"))
@@ -2102,6 +2102,7 @@ def run_one_job() -> bool:
     account_upload_limited = False
     made_upload_progress = False
     last_returncode = 0
+    terminal_reason = ""
     upload_groups = split_upload_groups(groups, batch_size_for_job(job))
     group_index = 0
     while group_index < len(upload_groups):
@@ -2134,6 +2135,7 @@ def run_one_job() -> bool:
         cp = run_batch(group, job)
         last_returncode = cp.returncode or last_returncode
         output = cp.stdout or ""
+        terminal_reason = terminal_reason or terminal_upload_error_reason(output)
         all_outputs.append(output[-8000:])
         print(output, end="", flush=True)
 
@@ -2169,7 +2171,7 @@ def run_one_job() -> bool:
             break
         if cp.returncode != 0:
             failed = True
-            if "submission outcome unknown" not in output or terminal_upload_error_reason(output):
+            if terminal_upload_error_reason(output) != "deterministic uploader error: submission outcome unknown":
                 break
         if account_upload_limited:
             break
@@ -2192,7 +2194,7 @@ def run_one_job() -> bool:
     if not pending_after_run:
         clip_candidate_queue.finish_job(sys.modules[__name__], registry, current, lastOutput=last_output)
     else:
-        terminal_reason = terminal_upload_error_reason(last_output)
+        terminal_reason = terminal_reason or terminal_upload_error_reason(last_output)
         if terminal_reason:
             reason = f"{terminal_reason}; subprocess exited with code {last_returncode}"
             set_unfinished_clip_statuses(registry, pending_after_run, "failed", reason)
@@ -2389,7 +2391,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note", required=True)
     p.set_defaults(func=exclude_clips)
 
-    p = sub.add_parser("cancel", help="Cancel a pending upload job")
+    p = sub.add_parser("cancel", help="Cancel a waiting or blocked upload job")
     p.add_argument("--job", required=True)
     p.add_argument("--note", default="")
     p.set_defaults(func=cancel_job)

@@ -17,6 +17,18 @@ test.each([[], ['其他游戏'], ['明天玩芙娅之魂'], ['未玩芙娅之魂
 test.each(['芙娅之魂', '《芙娅之魂》', '芙娅之魂巡礼测试'])('actual gameplay accepts a configured game name (%s)', name => {
     expect(decideCampaignContent(config.campaignContentGate.requiredGames, summary([name]), true).allowed).toBe(true);
 });
+test('reviewed aliases match only the actual-play list without weakening source binding or mention exclusions', () => {
+    const games = config.campaignContentGate.requiredGames, aliases = { '普雅之魂': '芙娅之魂', '抚雅之魂': '芙娅之魂' };
+    expect(decideCampaignContent(games, summary(['普雅之魂']), true, aliases).allowed).toBe(true);
+    expect(decideCampaignContent(games, summary(['抚雅之魂']), false, aliases).allowed).toBe(false);
+    expect(decideCampaignContent(games, { ...summary([]), content: { games: [], topics: ['普雅之魂'] } }, true, aliases).allowed).toBe(false);
+    expect(decideCampaignContent(games, summary(['明天玩普雅之魂']), true, aliases).allowed).toBe(false);
+    expect(decideCampaignContent(games, summary(['未玩普雅之魂']), true, aliases).allowed).toBe(false);
+    expect(decideCampaignContent(games, summary(['普雅之魂']), true, { '普雅之魂': '其他游戏' }))
+        .toMatchObject({ allowed: false, evidenceReady: false });
+    expect(decideCampaignContent(['游戏A', '游戏B'], summary(['游戏A']), true, { '游戏A': '游戏B' }))
+        .toMatchObject({ allowed: false, evidenceReady: false });
+});
 test('unknown, failed and stale summaries do not start selection', () => {
     const games = config.campaignContentGate.requiredGames;
     expect(decideCampaignContent(games, summary(games), false).allowed).toBe(false);
@@ -35,7 +47,7 @@ test('missing campaign evidence differs from a completed non-game decision', () 
 
 test('active campaign preparation needs no room summary opt-in and grants no public tasks', () => {
     expect(campaignSummaryExperiment({ ...config, enabled: true }, null))
-        .toEqual({ enabled: true, compactEvidence: true, tasks: ['summary'] });
+        .toEqual({ enabled: true, compactEvidence: true, tasks: ['summary'], canonicalGames: config.campaignContentGate.requiredGames, gameAliases: {} });
     expect(campaignSummaryExperiment({ ...config, enabled: true }, { enabled: true, model: 'existing', tasks: ['goodnight', 'comic'] }))
         .toMatchObject({ model: 'existing', tasks: ['summary'] });
     expect(campaignSummaryExperiment({ ...config, enabled: false }, null)).toBeNull();
@@ -71,6 +83,16 @@ test('sidecar admission checks the current source, room and hashes without model
         fs.writeFileSync(srtPath, 'subtitles'); fs.writeFileSync(xmlPath, 'danmaku'); save();
         expect(checkCampaignContent(config, options).allowed).toBe(true);
         expect(campaignReviewContext(config, options)).toMatchObject({ actualGames: ['芙娅之魂'], coverage: 'verified_recording_context_only' });
+        const aliasedConfig = { campaignContentGate: { ...config.campaignContentGate,
+            gameAliases: { '普雅之魂': '芙娅之魂' } } };
+        content.content.games = ['《普雅之魂》', '其他游戏', '明天玩普雅之魂']; save();
+        expect(campaignReviewContext(aliasedConfig, options)).toMatchObject({
+            actualGames: ['芙娅之魂', '其他游戏', '明天玩普雅之魂'],
+            rawActualGames: ['《普雅之魂》', '其他游戏', '明天玩普雅之魂'],
+            gameAliases: { '普雅之魂': '芙娅之魂' }, sourceSha256: hash('source')
+        });
+        expect(campaignReviewContext(config, options)).toBeNull();
+        content.content.games = ['芙娅之魂']; save();
         expect(checkCampaignContent(config, { ...options, roomId: 'other' }).allowed).toBe(false);
         fs.writeFileSync(srtPath, 'changed');
         expect(checkCampaignContent(config, options).allowed).toBe(false);

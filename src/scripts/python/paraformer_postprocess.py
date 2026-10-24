@@ -58,8 +58,11 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
             "mode": "disabled" if not enable_speaker else str(payload.get("speaker_detection_mode") or "auto"),
             "status": "disabled" if not enable_speaker else "failed",
             "decision": "disabled" if not enable_speaker else "inconclusive",
-            "reason": "speaker_disabled" if not enable_speaker else "missing_sentence_info",
+            "reason": ((payload.get('speaker_processing_policy') or {}).get('reason', 'speaker_disabled')
+                if (payload.get('speaker_processing_policy') or {}).get('enabled') is False
+                else "speaker_disabled" if not enable_speaker else "missing_sentence_info"),
             "full_run": False,
+            "load_policy": payload.get('speaker_processing_policy'),
         }
         log_progress(
             f"字符时间戳切分完成: 输出段数={len(segments)}, "
@@ -178,8 +181,10 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
             "mode": "disabled",
             "status": "disabled",
             "decision": "disabled",
-            "reason": "speaker_disabled",
+            "reason": ((payload.get('speaker_processing_policy') or {}).get('reason', 'speaker_disabled')
+                if (payload.get('speaker_processing_policy') or {}).get('enabled') is False else 'speaker_disabled'),
             "full_run": False,
+            "load_policy": payload.get('speaker_processing_policy'),
         }
 
     postprocess_started = time.perf_counter()
@@ -315,6 +320,8 @@ def postprocess_cached_paraformer(payload, audio_path, device, results, cache, g
     from funasr import AutoModel
     speaker = None
     enabled = bool(payload.get('enable_speaker', False))
+    if not enabled and (payload.get('speaker_processing_policy') or {}).get('enabled') is False:
+        log_progress('说话人处理策略跳过: ' + str(payload['speaker_processing_policy'].get('reason')))
     audio_data, sample_rate = None, None
     if enabled or (payload.get('emotion_analysis') or {}).get('enabled'):
         audio_data, sample_rate = load_audio_16k_mono(audio_path, align_timestamps=True)

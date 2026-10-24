@@ -5,6 +5,20 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+try:
+    from .clip_publication_duplicates import duplicate_errors
+except ImportError:
+    from clip_publication_duplicates import duplicate_errors
+
+
+def publication_errors(api, clips, registry=None):
+    registry = registry if registry is not None else api.load_json(api.REGISTRY_PATH, api.default_registry())
+    def read_metadata(value):
+        try:
+            return api.load_json(Path(value), {})
+        except (OSError, ValueError):
+            return {}
+    return duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
 
 
 def validate_saved_titles(api, registry, ids):
@@ -99,6 +113,10 @@ def enqueue(args: argparse.Namespace, api) -> int:
         print("[ERROR] --collection-section-id requires one JSON-backed clip and a positive ID", file=sys.stderr)
         return 2
     if args.dry_run:
+        errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry)
+        if errors:
+            print('[ERROR] ' + '; '.join(errors), file=sys.stderr)
+            return 2
         for clip_id in ids:
             clip = registry["clips"][str(clip_id)]
             action = "cut_then_upload" if clip.get("pendingCut") or clip.get("pendingRebuild") else "upload"
@@ -148,6 +166,9 @@ def enqueue(args: argparse.Namespace, api) -> int:
             print("[OK] requested IDs are already queued; no duplicate job created")
             return 0
         try:
+            errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry)
+            if errors:
+                raise ValueError('; '.join(errors))
             validate_saved_titles(api, registry, ids)
             snapshots = api.clip_candidate_queue.approve_for_queue(api, registry, ids, args.note,
                 getattr(args, "expected_candidate_drafts", None))

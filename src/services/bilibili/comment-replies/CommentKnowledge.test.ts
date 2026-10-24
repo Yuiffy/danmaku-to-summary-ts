@@ -67,6 +67,23 @@ test('banter performs no video/index reads; cached evidence expires so correctio
   for (const [config] of Corpus.mock.calls) expect(Object.keys(config.recordingRoots)).toHaveLength(1);
 });
 
+test('这套方式我们能用不 compares target subtitles with configured project evidence without unrelated room recall', async () => {
+  const request = { ...event, text: '@鹿饼Shikamochi 这套方式我们能用不' };
+  const projects = jest.fn(async () => [{ source: 'video', label: 'AI Video Workflow', kind: 'guide' as const, revision: 'abcdef012345', text: '本机可选逐镜头超分，再烧字幕，保留原始帧率。' }]);
+  const io = { video: jest.fn(async () => ({ ...video, title: 'NVIDIA 超分', transcript: { language: 'zh', partial: false,
+    cues: [{ at: 0, text: '先去噪再超分，皮肤纹理会被抹平' }, { at: 12, text: '切镜补帧出现重影，要分镜处理' }] } })), projects, now: () => event.createdAt };
+  const knowledge = createCommentKnowledge(runtime, options, io);
+  const evidence = await knowledge(request, signal());
+  expect(evidence?.projects?.[0].text).toContain('逐镜头超分'); expect(evidence?.video?.excerpts?.length).toBeGreaterThan(0);
+  expect(projects).toHaveBeenCalledWith(expect.stringContaining('NVIDIA'), expect.anything()); expect(search).not.toHaveBeenCalled();
+  const transport = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: '能用于我们出片前的逐镜头超分，先比较纹理再选去噪；补帧需要另测切镜。' } }] }) });
+  await createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch, knowledge)(request.text, signal(), request);
+  const body = JSON.parse(transport.mock.calls[0][1].body);
+  expect(body.messages[0].content).toContain('逐项对照'); expect(body.messages[1].content).toContain('逐镜头超分');
+  expect(body.messages[1].content).toContain('纹理会被抹平'); expect(body.tools).toBeUndefined();
+  expect(Buffer.byteLength(JSON.stringify(body.messages)) + LIMITS.outputTokens + 256).toBeLessThanOrEqual(LIMITS.tokenReservation);
+});
+
 test('historical collaboration lists search beyond three days and retain distinct primary-room dates in the model prompt', async () => {
   search.mockImplementation(async (room, args) => ({ limited: true, hits: args.date !== null ? [] : [
     ...Array.from({ length: 8 }, (_, i) => ({ evidenceId: `recent${i}`, date: '2026-10-21', time: '00:58:26',
@@ -182,6 +199,16 @@ test('summary without captions explicitly reports missing video content, with no
   const knowledge = createCommentKnowledge(runtime, options, { video: async () => video, now: Date.now });
   const result = await knowledge({ ...event, text: '总结一下这个视频' }, signal());
   expect(result).toMatchObject({ video: { content: 'unavailable' }, coverage: 'unavailable', clues: [] });
+  expect(search).not.toHaveBeenCalled();
+});
+
+test.each(['视频说猫转氨酶高,是啥问题', '视频里提到小岁什么', '回复一下这个视频'])('target-video factual question avoids unrelated recordings: %s', async text => {
+  const knowledge = createCommentKnowledge(runtime, options, { video: async () => ({ ...video,
+    title: '【栞栞Shiori】娜娜血检出来转氨酶有点高', description: '栞栞Shiori直播间',
+    transcript: { language: 'ai-zh', partial: false, cues: [{ at: 1, text: '医生说他转氨酶有一点点偏高一点点' }] }
+  }), now: Date.now });
+  const result = await knowledge({ ...event, text }, signal());
+  expect(result?.video?.content).toBe('subtitles'); expect(result?.clues).toEqual([]);
   expect(search).not.toHaveBeenCalled();
 });
 

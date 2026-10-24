@@ -29,7 +29,8 @@ async function runFfmpeg(args, options = {}) {
         );
         console.log(`[resource] ${stage} 与 ASR 重叠，FFmpeg threads=${effectiveResourceConfig.threads}`);
     }
-    await waitForCpuAvailability(stage, effectiveResourceConfig);
+    const cpuState = await waitForCpuAvailability(stage, effectiveResourceConfig);
+    Object.assign(effectiveResourceConfig, cpuState.resourceOverrides);
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
         const commandArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);

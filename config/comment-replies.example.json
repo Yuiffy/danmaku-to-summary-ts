@@ -1,6 +1,6 @@
 {
   "botUid": "412141275",
-  "unlimitedUids": [],
+  "unlimitedUids": ["14279"],
   "speakerNames": { "14279": "带鱼", "1954091502": "岁己SUI" },
   "fanQuota": {
     "suiUid": "1954091502",
@@ -14,6 +14,14 @@
   "maxQueue": 200,
   "maxUserQueue": 10,
   "pollIntervalMs": 30000,
+  "projectSources": [
+    { "id": "ai-video-enhancement", "label": "AI Video Workflow 超分流程", "kind": "guide",
+      "path": "../ai-video-workflow/docs/video-enhancement.md", "section": "## 公开流程摘要",
+      "keywords": ["超分", "NVIDIA", "放大", "去噪", "补帧", "HDR"] },
+    { "id": "ai-video-skill", "label": "AI Video Workflow skill", "kind": "skill",
+      "path": "../ai-video-workflow/.agents/skills/ai-video-workflow/SKILL.md", "section": "## Choose the work path first",
+      "keywords": ["视频", "方式", "方法", "工作流", "workflow", "Upscaling", "NVIDIA"] }
+  ],
   "knowledge": {
     "runtimeConfigPath": "data/runtime/live-vote.json",
     "roomId": "25788785",

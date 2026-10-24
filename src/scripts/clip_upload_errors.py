@@ -27,6 +27,8 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "submission recovery conflict",
     "submission recovery authorization invalid",
     "automatic publication authorization invalid",
+    "submission outcome unknown",
+    "duplicate source content",
 )
 
 

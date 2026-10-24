@@ -426,6 +426,41 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["1"], "uploaded")
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["2"], "queued")
 
+    def test_unknown_submission_stops_job_without_automatic_retry(self):
+        fixture = self.make_fixture()
+
+        def run_batch(group, job):
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 2, stdout=(
+                "[STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying"))
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "uploaded")
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "failed")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
+        self.assertNotIn("retryAt", saved_queue["jobs"][0])
+
+    def test_source_overlap_blocks_enqueue_and_worker_preflight_even_with_force(self):
+        fixture = self.make_fixture()
+        old, new = fixture['clips']
+        for clip in (old, new):
+            clip.update(sourceMediaPath='source.flv', start=100, duration=100,
+                        manifestPath='manifest.json')
+        old.update(status='uploaded', uploadState={'bvid': 'BVOLD'})
+        new.update(start=120, duration=80, title='A changed title')
+        fixture['runtime'].mkdir(parents=True)
+        registry.save_json(fixture['registry_path'], fixture['registry'])
+        registry.save_json(fixture['queue_path'], {'jobs': []})
+        with patch.object(registry, 'RUNTIME_DIR', fixture['runtime']), \
+                patch.object(registry, 'REGISTRY_PATH', fixture['registry_path']), \
+                patch.object(registry, 'QUEUE_PATH', fixture['queue_path']), \
+                patch.object(registry, 'validate_registry_qa', return_value=[]):
+            args = registry.build_parser().parse_args(['enqueue', '--ids', '2', '--force'])
+            self.assertEqual(registry.enqueue(args), 2)
+            errors = registry.validate_groups([[new]])
+            self.assertTrue(any('duplicate source content' in error for error in errors))
+        self.assertEqual(json.loads(fixture['queue_path'].read_text())['jobs'], [])
+
     def test_137022_sets_account_cooldown_even_after_many_generic_retries(self):
         fixture = self.make_fixture(count=1)
         fixture["queue"]["jobs"][0]["attempts"] = (
@@ -614,7 +649,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
 
     def test_unknown_submission_waits_for_reconciliation_and_continues_other_groups(self):
-        fixture = self.make_fixture(count=2)
+        fixture = self.make_fixture(count=3)
         fixture["queue"]["jobs"][0]["batchSize"] = 1
         calls = []
 
@@ -623,14 +658,16 @@ class ClipUploadRegistryTests(unittest.TestCase):
             calls.append(ids)
             if ids == [1]:
                 return subprocess.CompletedProcess([], 2, stdout="[WAIT] automatic submission outcome unknown")
-            self.write_done(fixture, [2])
-            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+            self.write_done(fixture, [2, 3] if ids == [3] else [2])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded" + "x" * 13000)
 
         saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
-        self.assertEqual(calls, [[1], [2]])
+        self.assertEqual(calls, [[1], [2], [3]])
         self.assertEqual(saved_registry["clips"]["2"]["status"], "uploaded")
-        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
-        self.assertIn("retryAt", saved_queue["jobs"][0])
+        self.assertEqual(saved_registry["clips"]["3"]["status"], "uploaded")
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "failed")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
+        self.assertNotIn("retryAt", saved_queue["jobs"][0])
 
     def test_all_state_success_wins_over_subprocess_exit_code(self):
         fixture = self.make_fixture()
@@ -905,6 +942,38 @@ class ClipUploadRegistryTests(unittest.TestCase):
         )
         self.assertEqual(resumed_queue["jobs"][-1]["status"], "pending")
         self.assertEqual(resumed_queue["jobs"][-1]["clipIds"], [1, 2])
+
+    def test_cancel_blocked_job_preserves_uploaded_clip_and_rejects_running_job(self):
+        for status, expected in (("blocked", 0), ("running", 2)):
+            with self.subTest(status=status):
+                fixture = self.make_fixture(count=2)
+                fixture["queue"]["jobs"][0].update(status=status, attempts=3,
+                    retryAt="2026-08-23T00:00:00+08:00", error="retry limit reached")
+                fixture["registry"]["clips"]["1"]["status"] = "needs_retry"
+                fixture["registry"]["clips"]["2"].update(status="uploaded", bvid="BV-fixture")
+                fixture["runtime"].mkdir(parents=True, exist_ok=True)
+                registry.save_json(fixture["registry_path"], fixture["registry"])
+                registry.save_json(fixture["queue_path"], fixture["queue"])
+                args = type("Args", (), {"job": "upload-test", "note": "obsolete job"})()
+                with patch.object(registry, "REGISTRY_PATH", fixture["registry_path"]), \
+                     patch.object(registry, "QUEUE_PATH", fixture["queue_path"]), \
+                     patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), \
+                     patch.object(registry, "acquire_lock", return_value=True), \
+                     patch.object(registry, "release_lock"):
+                    self.assertEqual(registry.cancel_job(args), expected)
+                    saved = registry.load_json(fixture["queue_path"], {})["jobs"][0]
+                    clips = registry.load_json(fixture["registry_path"], {})["clips"]
+                    if status == "blocked":
+                        self.assertEqual(saved["status"], "cancelled")
+                        self.assertEqual(saved["cancellationReason"], "obsolete job")
+                        self.assertNotIn("retryAt", saved)
+                        self.assertEqual(clips["1"]["status"], "review")
+                        self.assertEqual(registry.cancel_job(args), 0)
+                    else:
+                        self.assertEqual(saved["status"], "running")
+                        self.assertEqual(clips["1"]["status"], "needs_retry")
+                    self.assertEqual(clips["2"]["status"], "uploaded")
+                    self.assertEqual(clips["2"]["bvid"], "BV-fixture")
 
     def test_manual_resume_clears_cooldown_and_releases_rate_limited_jobs(self):
         fixture = self.make_fixture(count=1)

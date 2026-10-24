@@ -17,12 +17,26 @@ const digest = (value: string | Buffer) => createHash('sha256').update(value).di
 const gameName = (value: string) => value.normalize('NFKC').replace(/[\s《》]/gu, '').toLowerCase();
 
 // Only the summary's actual-play list is evidence; overview, topics and titles are not.
-export function decideCampaignContent(requiredGames: string[], summary: Data, sourceMatches: boolean): Decision {
+export function decideCampaignContent(requiredGames: string[], summary: Data, sourceMatches: boolean,
+    gameAliases: Record<string, string> = {}): Decision {
     if (!sourceMatches || summary.schemaVersion !== 1 || summary.status !== 'success'
         || summary.source?.promptVersion !== 2 || summary.source?.coverage !== 'full_srt_and_merged_danmaku'
         || !Array.isArray(summary.content?.games)) return { allowed: false, evidenceReady: false, reason: '缺少与当前字幕、弹幕匹配的实际游戏摘要' };
     const names = new Set(requiredGames.map(gameName));
-    return summary.content.games.some((name: unknown) => typeof name === 'string' && names.has(gameName(name)))
+    if (!gameAliases || typeof gameAliases !== 'object' || Array.isArray(gameAliases)) {
+        return { allowed: false, evidenceReady: false, reason: '活动游戏别名配置无效' };
+    }
+    const aliases = new Map<string, string>();
+    for (const [alias, canonical] of Object.entries(gameAliases)) {
+        if (!alias.trim() || typeof canonical !== 'string' || !names.has(gameName(canonical))
+            || names.has(gameName(alias)) && gameName(alias) !== gameName(canonical)
+            || aliases.has(gameName(alias)) && aliases.get(gameName(alias)) !== gameName(canonical)) {
+            return { allowed: false, evidenceReady: false, reason: '活动游戏别名配置无效或存在歧义' };
+        }
+        aliases.set(gameName(alias), gameName(canonical));
+    }
+    return summary.content.games.some((name: unknown) => typeof name === 'string'
+        && names.has(aliases.get(gameName(name)) || gameName(name)))
         ? { allowed: true, evidenceReady: true, reason: '本场实际游玩活动游戏' }
         : { allowed: false, evidenceReady: true, reason: '本场未实际游玩活动游戏' };
 }
@@ -49,7 +63,7 @@ export function checkCampaignContent(config: Data, options: CampaignSource): Dec
             && options.srtPath && options.xmlPath && inputs
             && inputs.srtSha256 === digest(fs.readFileSync(options.srtPath))
             && inputs.xmlSha256 === digest(fs.readFileSync(options.xmlPath)));
-        return decideCampaignContent(gate.requiredGames, summary, matches);
+        return decideCampaignContent(gate.requiredGames, summary, matches, gate.gameAliases);
     } catch {
         return { allowed: false, evidenceReady: false, reason: '活动游戏摘要缺失、不可读或来源不完整' };
     }
@@ -58,7 +72,8 @@ export function checkCampaignContent(config: Data, options: CampaignSource): Dec
 /** Internal prerequisite only; it does not enable public summaries or publication. */
 export function campaignSummaryExperiment(config: Data, existing: Data | null): Data | null {
     if (!config.enabled || !config.campaignContentGate) return null;
-    return { ...(existing?.enabled === true ? existing : {}), enabled: true, compactEvidence: true, tasks: ['summary'] };
+    return { ...(existing?.enabled === true ? existing : {}), enabled: true, compactEvidence: true, tasks: ['summary'],
+        canonicalGames: config.campaignContentGate.requiredGames, gameAliases: config.campaignContentGate.gameAliases || {} };
 }
 
 export async function ensureCampaignContent(config: Data, options: CampaignSource,
@@ -82,7 +97,16 @@ export function campaignReviewContext(config: Data, options: CampaignSource): Da
     if (!config.campaignContentGate || !checkCampaignContent(config, options).allowed) return null;
     const base = path.join(path.dirname(options.mediaPath || ''), path.parse(options.mediaPath || '').name);
     const summary = JSON.parse(fs.readFileSync(options.liveContentSummaryPath || `${base}_LIVE_CONTENT.json`, 'utf8'));
-    return { requiredGames: config.campaignContentGate.requiredGames, actualGames: summary.content.games,
+    const gate = config.campaignContentGate;
+    // Admission has already validated these exact-name aliases against requiredGames.
+    // Review must use the same names, while retaining the original summary for traceability.
+    const canonical = new Map<string, string>(gate.requiredGames.map((name: string) => [gameName(name), name]));
+    const aliases = new Map<string, string>(Object.entries(gate.gameAliases || {}).map(([alias, name]) =>
+        [gameName(alias), canonical.get(gameName(name as string))!]));
+    const actualGames = summary.content.games.map((name: unknown) => typeof name === 'string'
+        ? aliases.get(gameName(name)) || canonical.get(gameName(name)) || name : name);
+    return { requiredGames: gate.requiredGames, actualGames, rawActualGames: summary.content.games,
+        gameAliases: gate.gameAliases || {},
         overview: summary.content.overview, coverage: 'verified_recording_context_only',
         sourceSha256: summary.source.sourceSha256 };
 }

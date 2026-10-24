@@ -994,6 +994,39 @@
     "defaultReferenceImage": "",
     "defaultCharacterDescription": "主播（帅气/美丽的人类），粉丝（有细细四肢的小小的可爱生物）",
     "roomSettings": {
+      "5332": {
+        "audioOnly": false,
+        "anchorName": "萤火虫官方",
+        "fanName": "萤火虫",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 12,
+          "maxMentionedContextCharacters": 12,
+          "maxTotalImages": 5,
+          "allowedExtraStreamerIds": [
+            "sui",
+            "shiori",
+            "rhea",
+            "seki",
+            "mizuki",
+            "miting",
+            "harei",
+            "nightin",
+            "hazel",
+            "liko",
+            "kloa",
+            "izayoi"
+          ],
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "appendCharacterDescriptions": true
+        }
+      },
       "80397": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/azusa_standing.png",
@@ -1638,39 +1671,6 @@
           "filterMentionedImagesByComicScript": false,
           "appendCharacterDescriptions": true
         }
-      },
-      "5332": {
-        "audioOnly": false,
-        "anchorName": "萤火虫官方",
-        "fanName": "萤火虫",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true,
-        "multiReferenceImages": {
-          "enabled": true,
-          "maxExtraCharacters": 12,
-          "maxMentionedContextCharacters": 12,
-          "maxTotalImages": 5,
-          "allowedExtraStreamerIds": [
-            "sui",
-            "shiori",
-            "rhea",
-            "seki",
-            "mizuki",
-            "miting",
-            "harei",
-            "nightin",
-            "hazel",
-            "liko",
-            "kloa",
-            "izayoi"
-          ],
-          "includeMentionedStreamers": true,
-          "includeMentionedStreamerImages": true,
-          "filterExtraImagesByComicScript": true,
-          "filterMentionedImagesByComicScript": true,
-          "appendCharacterDescriptions": true
-        }
       }
     }
   },
@@ -1993,13 +1993,20 @@
         "id": "fuya-pilgrimage-2026-10",
         "earlyTrigger": {
           "enabled": true,
-          "titleKeywords": ["芙娅之魂", "我魂"],
+          "titleKeywords": [
+            "芙娅之魂",
+            "我魂"
+          ],
           "activatedAt": "2026-10-23T23:48:00+08:00"
         },
         "requiredGames": [
           "芙娅之魂",
           "芙娅之魂巡礼测试"
         ],
+        "gameAliases": {
+          "普雅之魂": "芙娅之魂",
+          "抚雅之魂": "芙娅之魂"
+        },
         "enabled": true,
         "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
         "startsAt": "2026-10-22T10:51:05+08:00",
@@ -2447,10 +2454,16 @@
     "device_handoff": {
       "enabled": true,
       "idle_s": 45,
-      "min_remaining_s": 600
+      "min_remaining_s": 600,
+      "gpu_util_pct": 70,
+      "window_s": 120,
+      "allow_shared_gpu": true,
+      "shared_gpu_util_pct": 90,
+      "gpu_busy_s": 15,
+      "device_cooldown_s": 120
     },
     "cpu_fallback": {
-      "enabled": true,
+      "enabled": false,
       "min_available_memory_gb": 10
     },
     "live": {
@@ -3596,6 +3609,11 @@
         ]
       },
       "hotwords": "PSP\nVirtuaReal\n东爱璃Lovely\n伊索尔Sol\n克罗雅Kloa\n十六萤Izayoi\n南町Nightin\n小岁\n岁己\n岁己SUI\n时守星沙\n星汐Seki\n栞栞\n栞栞Shiori\n弥月Mizuki\n弥月\n老弥\n灰泽满Hazel\n瑞娅\n瑞娅Rhea\n礼墨Sumi\n笙歌\n米汀\n米汀Nagisa\n莉蔻Liko\n饼干岁"
+    },
+    "speaker_processing": {
+      "mode": "auto",
+      "max_pending_jobs": 3,
+      "max_wait_s": 900
     }
   },
   "subtitle": {

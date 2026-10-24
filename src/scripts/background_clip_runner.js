@@ -105,6 +105,7 @@ async function generateOwnStreamClipsForMedia(
     });
     if (!decision.allowed) { console.log(`跳过活动有趣切片（${clipConfig.campaignContentGate?.id}）：${decision.reason}；保留原关键词流程。`); return []; }
     if (!context.earlyCampaign && config.ownStreamClips?.campaigns?.some(campaign => campaign.id === clipConfig.campaignContentGate?.id && campaign.earlyTrigger?.enabled)) {
+        await require('./recording_map_recovery.ts').ensureRecordingMap(mediaPath);
         require('../core/media/RecordingCoverage.ts').reserveFinalCampaign(mediaPath, clipConfig.campaignContentGate.id);
     }
     require('../core/media/RecordingCoverage.ts').filterCampaignCoverage([], mediaPath);
@@ -358,7 +359,11 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
     const recovery = require('./workflow-runtime').loadWorkflow('clipping/activityRecovery');
     const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : { version: 1, completed: {} };
-    const save = value => writeJsonAtomic(statePath, { ...value, pid: process.pid, updatedAt: new Date().toISOString() });
+    const save = value => {
+        const next = { ...value, pid: process.pid, updatedAt: new Date().toISOString() };
+        if (next.status === 'completed') delete next.lastError;
+        writeJsonAtomic(statePath, next);
+    };
     const stage = (name, run) => recovery.resumeStage(state, name, save, run);
     const restoreLogger = installBackgroundClipLogger(payload.logPath);
     try {

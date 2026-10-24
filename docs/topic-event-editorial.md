@@ -12,6 +12,13 @@ The keyword workflow also supports a pre-render review path controlled by
 When that path is enabled it replaces the event/copy calls below, rather than
 adding two shadow review calls after them. The legacy path remains available.
 
+Explicit `recheck-auto --review-final` preserves a bounded keyword-audio diagnosis.
+An unavailable diagnosis caused specifically by an active ASR resource lease may
+be retried by up to two further explicit rechecks, after contention clears. It
+retains the shared recording budget and previous evidence; successful, ambiguous,
+changed-source and other failed diagnoses are not automatically retried. Resource
+contention is not evidence that the keyword is absent or that subtitles passed.
+
 The keyword topic workflow now treats a publishable event, not a keyword hit or
 an arbitrary duration, as the unit of selection. This applies to `clipTopics`;
 own-stream and manual-queue selection keep their existing policies.
@@ -144,7 +151,11 @@ worker，worker 在上传前重验文件、证据和授权。源录播保留供�
 
 用户说“把 123 号待定的不确定词 zzz 改为睡睡睡，然后烧录并投稿”时，执行：
 
+生产恢复及投稿命令须先设置 `NODE_ENV=production`，让 Node 子流程加载生产的
+选材、审核与投稿配置；默认开发配置不能替代生产审核设置。
+
 ```powershell
+$env:NODE_ENV = 'production'
 python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "睡睡睡" --enqueue --note "用户确认 zzz 应为睡睡睡，并要求烧录投稿"
 ```
 
@@ -372,6 +383,16 @@ python src/scripts/clip_upload_registry.py recheck-auto --ids 123 --review-final
 人名再次阻塞；相邻“我们/她/他”按连续语义解析，仍保留实际改口、换人和未解指代拦截。
 终止的旧队列授权不阻止重新复核当前成片；复核保留原授权和队列记录，不更新投稿授权。
 旧任务提交结果不明或修订后来源标识变化时，仍须先核对原投稿，不能因新复核通过重复提交。
+上传子进程返回 `submission outcome unknown` 时，该任务以失败结束，不进入自动重试；
+同批独立分组可继续，已成功的回执保留。后续分组的长日志不能覆盖这一停止条件。
+人工、自动入队及 worker 投稿前共用源片段查重：同一录播与同类用途下，重叠至少十秒且
+覆盖较短片段一半，或覆盖较短片段至少 98%，均需先处理重复内容。改标题、换成片路径、
+修改边界、反馈接受和 `--force` 均不能绕过；同一成片文件也不能以新编号重复入队。
+检查已投稿、有 BV/AID 回执、排队或上传中的历史编号，并检查本次选中的编号之间的重叠。
+未解决的 `submission_intents` 继续占用原源片段，即使任务已失败或取消也不能用新编号绕开。
+旧 REVIEW 编号按直播间、完整来源描述及起止时间参与检查。完整歌切、同步视听、游戏归档
+与普通精华使用独立用途；归档按各 P 的实际源区间检查，不把 P 间空白算作已覆盖内容。
+跨录播的游戏长精切成片时钟不代表单场源区间，不以 `start + duration` 冒充其素材覆盖。
 终止的旧自动任务可显式使用保存的旧元数据快照核对并重试：
 
 ```powershell
@@ -676,6 +697,10 @@ registration, including already corroborated AI corrections but not rejected gue
 Failed or `needs_review` candidates retain evidence and reasons, and reserve globally unique numeric IDs in the same
 upload registry (`pending_cut`). REVIEW and WeChat show those IDs beside the
 per-stream labels such as `E1-1`; a candidate keeps its numeric ID after rendering.
+Rendered clips held by final review, no-clip intent, missing covers or subtitle-burn
+fallback also receive numeric IDs through `import-json --include-pending`, retaining
+their current metadata and blockers as `needs_review`. Registration does not enqueue
+or approve them; the Web review list reads these same registry records.
 Source changes, unsaved plans and exceeded evidence budgets hold the
 affected candidates rather than truncating their subtitles. Never overwrite the
 recording's original SRT. A preflight `ready` result alone does not authorize upload;

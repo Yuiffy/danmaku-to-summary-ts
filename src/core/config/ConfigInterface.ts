@@ -51,6 +51,18 @@ export interface FFmpegConfig {
   timeout: number;
   threads?: number;
   priority?: 'idle' | 'belowNormal' | 'normal' | 'aboveNormal' | 'high' | string;
+  cpuGuard?: {
+    enabled?: boolean;
+    busyThreads?: number;
+    busyPercentThreshold?: number;
+    sampleIntervalMs?: number;
+    consecutiveBusySamples?: number;
+    /** Legacy waiting settings are accepted; busy work now continues with capped threads. */
+    resumePercentThreshold?: number;
+    waitMs?: number;
+    maxWaitMs?: number;
+    consecutiveIdleSamples?: number;
+  };
   asrGuard?: {
     enabled?: boolean;
     claimFile?: string;
@@ -322,12 +334,17 @@ export interface AsrAdaptiveSpeakerConfig {
 }
 
 export interface AsrConfig {
+  speaker_processing?: { mode: 'auto' | 'on' | 'off'; max_pending_jobs?: number; max_wait_s?: number };
   device_handoff?: {
     enabled: boolean;
     idle_s?: number;
     min_remaining_s?: number;
     poll_s?: number;
     gpu_util_pct?: number;
+    allow_shared_gpu?: boolean;
+    shared_gpu_util_pct?: number;
+    gpu_busy_s?: number;
+    device_cooldown_s?: number;
     gpu_memory_pct?: number;
     gpu_free_mb?: number;
     window_s?: number;

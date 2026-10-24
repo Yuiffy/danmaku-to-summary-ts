@@ -115,6 +115,28 @@ function parseTimeline(response, count, games) {
     return result;
 }
 
+async function extractTimelineFrame(frame, options) {
+    const valid = async () => {
+        try {
+            const info = await sharp(frame.path).metadata();
+            return info.format === 'jpeg' && info.width === 480 && info.height === 270;
+        } catch { return false; }
+    };
+    if (await valid()) return;
+    const run = options.extract || runFfmpeg;
+    const settings = { ffmpegPath: options.config.audio?.ffmpeg?.path || 'ffmpeg',
+        threads: 1, stage: '整场游戏画面检查', timeoutMs: 60000 };
+    const tail = ['-frames:v', '1', '-vf', 'scale=480:270', '-q:v', '4', frame.path];
+    await run(['-y', '-ss', String(frame.time), '-i', options.mediaPath, ...tail], settings);
+    if (await valid()) return;
+    // A successful fast seek can decode zero frames near a damaged final GOP.
+    // Decode preroll, then seek to the SAME source time; never substitute a nearby image.
+    const preroll = Math.min(10, frame.time);
+    await run(['-y', '-ss', String(frame.time - preroll), '-i', options.mediaPath,
+        '-ss', String(preroll), ...tail], settings);
+    if (!await valid()) throw new Error(`Missing game timeline frame at ${frame.time} seconds after exact-time retry`);
+}
+
 async function auditGameTimeline(plan, options, config, files) {
     const interval = config.visual?.sampleSeconds || 120;
     const { provider, model, apiMode } = mediaSettings(options.config, config, 'visual');
@@ -135,10 +157,7 @@ async function auditGameTimeline(plan, options, config, files) {
     times.push(Math.max(0, plan.duration - .5));
     const samples = times.map((time, i) => ({ index: i + 1, time, path: path.join(scratch, `frame-${String(i + 1).padStart(4, '0')}.jpg`) }));
     for (const frame of samples) {
-        if (fs.existsSync(frame.path) && fs.statSync(frame.path).size > 1000) continue;
-        await (options.extract || runFfmpeg)(['-y', '-ss', String(frame.time), '-i', options.mediaPath, '-frames:v', '1',
-            '-vf', 'scale=480:270', '-q:v', '4', frame.path], { ffmpegPath: options.config.audio?.ffmpeg?.path || 'ffmpeg',
-            threads: 1, stage: '整场游戏画面检查', timeoutMs: 60000 });
+        await extractTimelineFrame(frame, options);
         if (frame.index % 16 === 0) console.log(`[GAME_VISUAL] ${plan.recordedAt} ${frame.index}/${samples.length} frames`);
     }
     const inputs = [];
@@ -209,4 +228,4 @@ function reconcileTimeline(plan, timeline) {
     for (const event of plan.events) if (!used.has(event.id)) events.push({ ...event, visualMismatch: true });
     return mergeEvents(events).map(event => ({ ...event, visualWindow: events.find(e => e.gameId === event.gameId && e.start === event.start)?.visualWindow }));
 }
-module.exports = { parseTimeline, parseSampleReview, resolveUncertainSamples, auditGameTimeline, reconcileTimeline };
+module.exports = { parseTimeline, parseSampleReview, resolveUncertainSamples, auditGameTimeline, reconcileTimeline, extractTimelineFrame };

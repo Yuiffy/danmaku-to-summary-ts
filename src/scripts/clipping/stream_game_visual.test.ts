@@ -7,6 +7,29 @@ const { getGameConfig } = require('./stream_game_plan');
 const { mediaSettings } = require('./stream_game_verification');
 
 describe('independent full gameplay timeline', () => {
+  test('retries zero-output fast seek with preroll at the same evidence timestamp', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-frame-retry-'));
+    try {
+      const frame = { time: 3719.228, path: path.join(directory, 'frame.jpg') };
+      const jpeg = await sharp({ create: { width: 480, height: 270, channels: 3, background: '#000000' } }).jpeg().toBuffer();
+      const extract = jest.fn(async (args: string[]) => {
+        if (args.filter(value => value === '-ss').length === 2) fs.writeFileSync(frame.path, jpeg);
+      });
+      await visual.extractTimelineFrame(frame, { mediaPath: 'recording.flv', config: {}, extract });
+      expect(extract).toHaveBeenCalledTimes(2);
+      expect(extract.mock.calls[1][0].slice(0, 9)).toEqual(['-y', '-ss', '3709.228', '-i', 'recording.flv', '-ss', '10', '-frames:v', '1']);
+      await visual.extractTimelineFrame(frame, { config: {}, extract });
+      expect(extract).toHaveBeenCalledTimes(2);
+      // A valid black JPEG can be smaller than 1 KB; bytes alone do not identify missing frames.
+      const small = await sharp(jpeg).jpeg({ quality: 5, mozjpeg: true }).toBuffer();
+      expect(small.length).toBeLessThan(1000);
+      fs.writeFileSync(frame.path, small);
+      await visual.extractTimelineFrame(frame, { config: {}, extract });
+      expect(extract).toHaveBeenCalledTimes(2);
+      fs.unlinkSync(frame.path);
+      await expect(visual.extractTimelineFrame(frame, { mediaPath: 'recording.flv', config: {}, extract: async () => {} })).rejects.toThrow(/after exact-time retry/);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
   test.each([
     [{}, { provider: 'daiYu', apiMode: 'openai_chat', model: 'sub-model' }],
     [{ ai: { frameModel: 'frame-model' } }, { provider: 'daiYu', apiMode: 'openai_chat', model: 'frame-model' }],

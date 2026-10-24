@@ -34,9 +34,15 @@
 `https://s1.hdslb.com/bfs/seed/jinkela/commentpc/bili-comments.js`；资源可能滚动更新，
 排查时把下载时间、URL 和内容哈希留在当次临时目录。协议资料也可能落后于线上。
 
-佩戴粉丝牌使用 `api.live.bilibili.com/xlive/web-ucenter/user/MedalWall` 的认证 GET，
-2026-10-22 已只读核对 `data.uid`、`list[].medal_info.target_id/medal_name/wearing_status`。
-佩戴状态取 `wearing_status=1`，不按列表先后或仅拥有某牌推断；隐藏或不完整牌墙按未知处理。
+2026-10-24 复核发现 `MedalWall?target_id=其他用户` 可返回登录账号自己的 `data.uid`，
+不能作为目标用户佩戴证据。`CommentAudience` 改用固定 nav GET 提供的 WBI key 材料，
+按现存 SDK `_get_mixin_key/_enc_wbi` 规则签名固定 `/x/space/wbi/acc/info?mid=目标UID`；
+key URL 仅用于解析字符串，不请求图片。核对返回 `mid` 后，以 `fans_medal.show/wear`
+确认佩戴。当前响应可能省略主播 UID，此时用绑定目标用户的 `detail.medal_id` 与本账号
+牌墙的同 ID 记录解析 `target_id`，名称只作一致性核对，不能单独授予额度。
+本账号牌墙只作牌子 ID 目录，不能把其 `wearing_status` 当成他人的佩戴状态。
+隐藏、错 UID、目录不完整且无法匹配、多个匹配均为未知；缓存 WBI key 5 分钟、目录
+1 小时，不缓存目标用户当前佩戴。拒绝后不自动重签名或重试，平台风险继续暂停消费者。
 热评复用固定 `/x/v2/reply` 的热度排序一页，不引入 SDK、签名服务、用户资料爬取或分页遍历；
 字段限额、分层和失败语义见 [评论回复契约](bilibili-comment-replies.md)。
 文字／转发动态的上下文使用现有 polymer detail GET，并带 `features=itemOpusStyle`。

@@ -15,12 +15,13 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
     return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   }
   const endpoint = url.pathname.slice('/api/admin'.length);
-  const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/(actions|status))?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
+  const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/(actions|status|asr(?:\/history)?))?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
   const campaignCandidate = /^\/campaign-candidates(?:\/[a-f0-9]{64}(?:\/source-playback|\/assets\/source-preview|\/feedback|\/actions)?)?$/u.test(endpoint);
   if (!allowed.test(endpoint) && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && !campaignCandidate) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
   if (campaignCandidate && (endpoint.endsWith('/actions') ? request.method !== 'POST' : !['GET', 'HEAD'].includes(request.method))) return NextResponse.json({ error: '活动候选接口方法无效' }, { status: 405 });
   if (endpoint === '/comment-replies' && request.method !== 'GET') return NextResponse.json({ error: '评论记录仅可读取' }, { status: 405 });
   if (endpoint === '/queues/status' && request.method !== 'GET') return NextResponse.json({ error: '投稿进度仅可读取' }, { status: 405 });
+  if ((endpoint === '/queues/asr' || endpoint === '/queues/asr/history') && request.method !== 'GET') return NextResponse.json({ error: '字幕队列仅可读取' }, { status: 405 });
   let body: string | undefined;
   if (!['GET', 'HEAD'].includes(request.method)) {
     body = await request.text();

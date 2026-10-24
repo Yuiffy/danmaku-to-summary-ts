@@ -1801,6 +1801,7 @@
           "activatedAt": "2026-10-23T23:48:00+08:00"
         },
         "requiredGames": ["芙娅之魂", "芙娅之魂巡礼测试"],
+        "gameAliases": { "普雅之魂": "芙娅之魂", "抚雅之魂": "芙娅之魂" },
         "enabled": true,
         "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
         "startsAt": "2026-10-22T10:51:05+08:00",

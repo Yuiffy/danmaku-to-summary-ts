@@ -103,6 +103,10 @@ async function generateStreamGames(options = {}) {
         const source = sourceSnapshot({ source: options });
         const plan = await detectGames(options, config, source, info, files);
         if (options.planOnly) return { status: plan.status, events: plan.events.length, parts: plan.parts.length, planPath: files.plan };
+        // Every text window was inspected. Absence is a completed result, not a media job.
+        if (plan.coverage?.status === 'complete' && !plan.events.length && !plan.uploadManifestPath) {
+            return { status: 'no_gameplay', submissions: 0, parts: 0, planPath: files.plan };
+        }
         if (plan.status === 'rendered' && plan.uploadManifestPath) {
             return require('./stream_game_render').renderGames(plan, options, config, files);
         }
