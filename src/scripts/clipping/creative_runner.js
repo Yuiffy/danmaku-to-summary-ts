@@ -414,10 +414,10 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             + (compact ? '关键操作正在发生时保护目标和HUD；纯反应、嘴硬或反问时允许切到全屏脸部，不必同时保留游戏全景。' : '勿裁掉战斗目标、HUD或关键动作。')
             + 'sticker的x/y是放大后的屏幕位置，须避开人物脸、重点和下方字幕；贴图只能作为后期情景说明，不当作现场发生的事，无新增台词。'
             + (compact ? '' : '杂谈可强调表情；游戏优先保证操作可见。')
-            + '罐头笑声放在自嘲/反转之后，offsetSeconds可延迟到句尾，1–2秒即收，不抢原声，不用于严肃/难过内容。'
+            + '罐头笑声默认不用。它是岁己本人说出反常识观点且仍认真确信正确时的特定梗，必须引用原话并确认说话人是岁己；提到小岁不算岁己本人发言。瑞娅等其他主播的自嘲、嘴硬、榜单定语、普通反转都不因此加笑声。符合条件才放句尾，不抢原声；素材听感未获认可时宁可省略。'
             + (compact ? '本次要密集但有节奏的综艺剪辑，按故事决定画面主体。找路、解谜和操作本身构成笑点时，必须保留游戏主画面，面部反应用faceInset圆形放大窗；纯聊天或无需看操作的反应才用全屏脸部zoom。禁止把所有反应机械变成全屏脸。'
                 + '每个zoom都填写targetBox:{x,y,width,height}标出三帧内确认的脸部或关键物体，坐标相对单个源帧。脸小可用3–5倍，整个脸框要留在裁切区域，字幕稍后独立烧录；动态物体不确定就用贴图/音效。'
-                + '至少让多数选中节拍有表达，交替用表情特写、疑问符号、捂嘴笑/头晕实物贴图、黑白停顿与正常画面。笑声选2–4个真正成立的反差点，前后辅以pop/ding；不要只有一个很轻的笑声。'
+                + '至少让多数选中节拍有表达，交替用表情特写、疑问符号、捂嘴笑/头晕实物贴图、黑白停顿与正常画面。笑声没有数量下限，允许全片零笑声；不得为效果密度凑笑声，也不要用pop/ding替代凑数。'
                 + '音效现在先做响度归一化，levelDb是归一化后的相对增益，笑声用-3到0，短提示音用-8到-4。BGM会在对白下方自动铺底。' : '')
             + '放大默认锚定原主体位置，不把右侧头像搬去左侧挡弹幕；问号/反应贴纸也要围绕同一主体。字幕会自动避开放大区域，原头像在底部时不必为字幕把头像搬到别处。'
             + 'faceInset与zoom二选一。faceInset.sourceBox标出单帧中脸部（眼睛、嘴部和下巴，尽量不含帽子与身体），归一化x/y/width/height；placement填source时程序在原头像处放大，并按实际画幅适配。'
@@ -504,7 +504,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         if (limits.variety && limits.soundEffects && profile?.laughter !== false && plan.effects.length && !plan.effects.some(row => row.sound)
             && Object.values(assets).some(asset => asset.kind === 'sound')) {
             const soundPlan = await request('sound-plan', 'sounds',
-                '独立设计后期声音：视觉方案没有使用音效。读取台词，选择至多两处适合罐头笑声的轻松自嘲或操作反转。'
+                '独立复核是否确实需要后期声音，零音效是正常结果。罐头笑声仅用于已确认是岁己本人说出反常识观点且认真确信正确的特定梗，引用具体原话及说话人依据；其他主播的自嘲、嘴硬、榜单定语或操作反转不适用，提到小岁也不算。至多两处，没有符合条件的节点返回空数组，不为视觉方案补音效。'
                 + '笑声放在完整笑点和末字说完后立刻开始，最多重合尾字0.08秒，不嘲讽真实苦恼。offsetSeconds相对该节点start，可延后到节点end之后1.5秒以内；给笑声留短暂停顿，不以压低对白代替正确落点。'
                 + '只选给出的节点和素材ID，严肃或没有自然落点时返回空数组。返回 {"sounds":[{"momentId":"M1","id":"audience_laugh","offsetSeconds":3.2,"levelDb":-10,"reason":"具体依据"}]}。\n'
                 + JSON.stringify({ speech, duration, moments: plan.effects, assets: assetChoices(assets).filter(row => row.kind === 'sound') }));
