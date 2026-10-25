@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,6 +113,13 @@ class PrecisionPublicationTests(unittest.TestCase):
         self.run_transport(False, precision=True)
 
     def test_shared_generator_preserves_online_copy_and_uses_actual_audio_offset(self):
+        # The real Node bridge uses the test candidate, including in a fresh worktree.
+        if not os.environ.get('DANMAKU_WORKFLOW_RELEASE'):
+            candidate = Path(__file__).resolve().parents[1] / 'build/workflow-candidate.json'
+            release = json.loads(candidate.read_text(encoding='utf-8'))['releaseDir']
+            workflow_env = patch.dict(os.environ, {'DANMAKU_WORKFLOW_RELEASE': release})
+            workflow_env.start()
+            self.addCleanup(workflow_env.stop)
         metadata = {'creativeResult': {'status': 'edited'}, 'qaResult': {'status': 'passed'},
             'creativePlan': {'workflow': 'creative', 'duration': 20,
                 'effects': [{'start': 2, 'end': 6, 'sound': {'id': 'sitcom_laugh', 'offsetSeconds': 3}}]},

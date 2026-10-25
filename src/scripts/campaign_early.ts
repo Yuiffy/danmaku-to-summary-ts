@@ -29,7 +29,7 @@ export function discoverCampaignRecordings(config: any, dates: string[]): any[] 
     return rows;
 }
 
-export function admitEarlyBatch(batch: any, enqueue = (payload: any) => localRequire('./src/scripts/background_clip_runner').spawnBackgroundClipProcess(payload), ledgerRoot = ledger): any {
+export function admitEarlyBatch(batch: any, enqueue = (payload: any) => localRequire('./src/scripts/background_clip_support').spawnBackgroundClipProcess(payload), ledgerRoot = ledger): any {
     return coverage.withRecordingAdmissionLock(ledgerRoot, () => {
         const sources = batch.sources.map((source: any) => ({ ...source, identity: coverage.recordingIdentity(source.videoPath) }));
         const id = createHash('sha256').update(JSON.stringify([batch.campaignId, batch.roomId, sources.map((s: any) => s.identity)])).digest('hex').slice(0, 20);
@@ -86,7 +86,7 @@ export async function runEarlyCampaign(payload: any, adapters: any = {}): Promis
     const asr = adapters.processMedia || localRequire('./src/scripts/enhanced_auto_summary').processMedia;
     const result = await asr(media, null, { bypassQueueTurn: true, asrContext: { roomId: claim.roomId, room_id: claim.roomId, sourceMediaPath: media, xmlPath: xml } });
     if (!result?.srtPath || !fs.existsSync(result.srtPath)) throw new Error('Early campaign ASR did not produce subtitles');
-    const run = adapters.generateOwn || localRequire('./src/scripts/background_clip_runner').generateOwnStreamClipsForMedia;
+    const run = adapters.generateOwn || localRequire('./src/scripts/background_clip_support').generateOwnStreamClipsForMedia;
     await run(media, result.srtPath, xml, claim.roomId, { roomId: claim.roomId, earlyCampaign: claim.id });
     coverage.atomicRecordingJson(payload.earlyCampaign.claimPath,
         { ...JSON.parse(fs.readFileSync(payload.earlyCampaign.claimPath, 'utf8')), completedAt: new Date().toISOString() });

@@ -152,6 +152,13 @@ export interface PublishCommentResponse {
   imageUrl?: string;
 }
 
+/** Exact attempted payload, retained across retries/restarts for read-only reconciliation. */
+export interface MainReplyIntent {
+  request: PublishCommentRequest;
+  startedAt: number;
+  attachedSummary: boolean;
+}
+
 export type LiveContentSummaryDeliveryMode = 'separate' | 'attach_if_ready';
 
 export type LiveContentSummaryDeliveryState =
@@ -225,6 +232,7 @@ export interface DelayedReplyTask {
   replyId?: string;
   /** Persisted before publishing so interrupted sends are not automatically repeated. */
   mainReplyState?: 'ready' | 'publishing' | 'published' | 'unknown';
+  mainReplyIntent?: MainReplyIntent;
   /** Records actual main-reply delivery, not whether an image was merely planned. */
   mainReplyHasImage?: boolean;
   /** 补图回复ID */

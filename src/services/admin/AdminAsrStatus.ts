@@ -4,8 +4,8 @@ import { AsrQueueItem, AsrQueueStatus } from '../../core/admin/asrStatus';
 import { AdminError, readJson } from './AdminFiles';
 import { AdminAsrTelemetry } from './AdminAsrTelemetry';
 import { readAsrHistory } from './AdminAsrHistory';
-import { AdminAsrHistoryIndex, AsrHistoryFilter, queryAsrHistory } from './AdminAsrHistoryIndex';
-import { backfillAsrHistory } from './AdminAsrHistoryBackfill';
+import { AsrHistoryFilter, queryAsrHistory } from './AdminAsrHistoryIndex';
+import { AdminAsrHistoryObserver } from './AdminAsrHistoryObserver';
 
 type Data = Record<string, any>;
 const iso = (value: unknown): string | undefined => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 8640000000000000
@@ -104,8 +104,7 @@ export function asrQueueStatus(queue: unknown, log: string | undefined, config: 
 
 /** Bounded, read-only file adapter. No queue manager, model, GPU query or worker is started by a page read. */
 export class AdminAsrStatus {
-  private historyTimer?: ReturnType<typeof setInterval>;
-  private historyIndex?: AdminAsrHistoryIndex;
+  private historyObserver?: AdminAsrHistoryObserver;
   private readonly historyFile: string;
   constructor(private readonly root: string, private readonly options: { queueFile?: string; logFile?: string; now?: () => number; isAlive?: (pid: number) => boolean } = {}) {
     this.historyFile = path.join(root, 'data/runtime/admin/asr-history.sqlite');
@@ -122,30 +121,17 @@ export class AdminAsrStatus {
       page, pageSize, this.options.now?.() ?? Date.now());
   }
   startHistoryIndex(): void {
-    if (this.historyIndex) return;
-    const index = this.historyIndex = new AdminAsrHistoryIndex(this.historyFile);
-    const sync = () => {
-      try {
-        const queueFile = this.options.queueFile || path.join(this.root, 'src/scripts/.whisper_queue.json');
-        const queue = readJson(queueFile), roots = this.recordingRoots();
-        const paths = new Map<string, string>((queue.tasks || []).filter((task: Data) => typeof task.mediaPath === 'string')
-          .map((task: Data) => { const parsed = path.parse(task.mediaPath); return [String(task.id), path.join(parsed.dir, `${parsed.name}.asr_meta.json`)]; }));
-        for (let page = 1; page <= 20; page++) {
-          const result = readAsrHistory(queueFile, roots, page, 50);
-          for (const row of result.items) { const source = paths.get(row.id); if (source) index.upsert(source, row); }
-          if (page * 50 >= result.total) break;
-        }
-      } catch { console.warn('ASR 历史索引同步失败，保留已有记录'); }
-    };
-    sync();
-    this.historyTimer = setInterval(sync, 30000); this.historyTimer.unref();
-    void backfillAsrHistory(this.recordingRoots(), index, () => this.historyIndex !== index)
-      .then(count => { if (this.historyIndex === index) { sync(); console.log(`ASR 历史索引导入 ${count} 份统计文件`); } })
-      .catch(() => console.warn('ASR 历史文件导入失败，保留已有索引'));
+    if (this.historyObserver) return;
+    this.historyObserver = new AdminAsrHistoryObserver({
+      queueFile: this.options.queueFile || path.join(this.root, 'src/scripts/.whisper_queue.json'),
+      historyFile: this.historyFile, roots: () => this.recordingRoots(),
+      diagnostic: (stage, error) => console.warn('ASR 历史观测失败，保留已有记录', { stage, ...error })
+    });
+    this.historyObserver.start();
   }
   close(): void {
-    if (this.historyTimer) clearInterval(this.historyTimer);
-    const index = this.historyIndex; this.historyIndex = undefined; index?.close();
+    this.historyObserver?.close();
+    this.historyObserver = undefined;
   }
   status(): AsrQueueStatus {
     let queue: unknown;

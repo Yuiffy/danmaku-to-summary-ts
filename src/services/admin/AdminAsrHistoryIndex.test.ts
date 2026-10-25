@@ -41,3 +41,18 @@ it('imports old sidecars without modifying them and stops discovery when closed'
     expect(fs.readFileSync(sidecar, 'utf8')).toBe(before);
   } finally { writer.close(); }
 });
+
+
+it('rolls back an entire batch when one row cannot be persisted', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-rollback-')); roots.push(root);
+  const file = path.join(root, 'history.sqlite'), writer = new AdminAsrHistoryIndex(file);
+  try {
+    writer.upsert(path.join(root, 'old'), row('old'));
+    const invalid = { ...row('bad'), elapsedSeconds: BigInt(1) } as any;
+    expect(() => writer.upsertMany([{ source: path.join(root, 'new'), row: row('new') },
+      { source: path.join(root, 'bad'), row: invalid }])).toThrow();
+    expect(queryAsrHistory(file).items.map(item => item.id)).toEqual(['old']);
+    writer.upsertMany([{ source: path.join(root, 'new'), row: row('new') }]);
+    expect(queryAsrHistory(file).total).toBe(2);
+  } finally { writer.close(); }
+});

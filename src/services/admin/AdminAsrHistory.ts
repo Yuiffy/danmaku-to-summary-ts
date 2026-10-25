@@ -37,34 +37,45 @@ export function asrHistoryMetrics(meta: Data): Pick<AsrHistoryItem, 'tiers' | 's
     generatedAt: typeof meta.generatedAt === 'string' && Number.isFinite(Date.parse(meta.generatedAt)) ? meta.generatedAt : undefined };
 }
 
+/** One immutable queue snapshot per page or observer pass. */
+export function loadAsrHistoryTasks(queueFile: string): Data[] {
+  let queue: Data;
+  try { queue = JSON.parse(readText(queueFile, 16 * 1024 * 1024)); }
+  catch (cause) { throw Object.assign(new AdminError('字幕历史暂时无法读取', 503), { cause }); }
+  if (!Array.isArray(queue?.tasks)) throw new AdminError('字幕历史数据无效', 503);
+  return queue.tasks.filter((task: Data) => task && typeof task === 'object' && !['pending', 'processing'].includes(task.status))
+    .sort((a: Data, b: Data) => (number(b.completedTime) || number(b.startTime) || 0) - (number(a.completedTime) || number(a.startTime) || 0));
+}
+
+export function trustedAsrHistoryRoots(roots: string[]): string[] {
+  return roots.flatMap(root => { try { return [fs.realpathSync(root)]; } catch { return []; } });
+}
+
+export function readAsrHistoryItem(task: Data, trusted: string[], read = readText): AsrHistoryItem {
+
+  const parts = String(task.mediaPath || '').split(/[\\/]/u), name = parts.at(-1) || '';
+  const row: AsrHistoryItem = { id: String(task.id || ''),
+    streamerName: parts.find(part => part.startsWith(`${task.roomId}_`))?.slice(String(task.roomId).length + 1) || String(task.roomId || '未知主播'),
+    title: name.replace(/^录制-\d+-\d{8}-\d{6}-\d+-/u, '').replace(/(?:_merged)?\.[^.]+$/u, ''),
+    status: ['completed', 'completed_with_cleanup_crash', 'failed', 'cancelled', 'ignored'].includes(task.status) ? task.status : 'unknown',
+    metadata: 'missing', tiers: [], speakerState: 'unknown' };
+  try {
+    if (typeof task.mediaPath !== 'string' || !path.isAbsolute(task.mediaPath)) return row;
+    const parsed = path.parse(task.mediaPath), file = fs.realpathSync(path.join(parsed.dir, `${parsed.name}.asr_meta.json`));
+    if (!trusted.some(root => { const relative = path.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); })) return { ...row, metadata: 'unavailable' as const };
+    const meta = JSON.parse(read(file, 4 * 1024 * 1024));
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new Error('Invalid metadata');
+    return { ...row, ...asrHistoryMetrics(meta), metadata: 'available' as const };
+  } catch (error) {
+    return { ...row, metadata: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' as const : 'unavailable' as const };
+  }
+}
+
 /** Reads only queue-bound sidecars beneath configured recording roots; no directory crawl or queue singleton. */
 export function readAsrHistory(queueFile: string, roots: string[], pageInput: unknown = 1, sizeInput: unknown = 20, now = Date.now()): AsrHistory {
   const page = Number(pageInput), pageSize = Number(sizeInput);
   if (!Number.isInteger(page) || page < 1 || page > 10000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) throw new AdminError('历史分页参数无效');
-  let queue: Data;
-  try { queue = JSON.parse(readText(queueFile, 16 * 1024 * 1024)); }
-  catch { throw new AdminError('字幕历史暂时无法读取', 503); }
-  if (!Array.isArray(queue?.tasks)) throw new AdminError('字幕历史数据无效', 503);
-  const tasks: Data[] = queue.tasks.filter((task: Data) => task && typeof task === 'object' && !['pending', 'processing'].includes(task.status))
-    .sort((a: Data, b: Data) => (number(b.completedTime) || number(b.startTime) || 0) - (number(a.completedTime) || number(a.startTime) || 0));
-  const trusted = roots.flatMap(root => { try { return [fs.realpathSync(root)]; } catch { return []; } });
-  const items = tasks.slice((page - 1) * pageSize, page * pageSize).map(task => {
-    const parts = String(task.mediaPath || '').split(/[\\/]/u), name = parts.at(-1) || '';
-    const row: AsrHistoryItem = { id: String(task.id || ''),
-      streamerName: parts.find(part => part.startsWith(`${task.roomId}_`))?.slice(String(task.roomId).length + 1) || String(task.roomId || '未知主播'),
-      title: name.replace(/^录制-\d+-\d{8}-\d{6}-\d+-/u, '').replace(/(?:_merged)?\.[^.]+$/u, ''),
-      status: ['completed', 'completed_with_cleanup_crash', 'failed', 'cancelled', 'ignored'].includes(task.status) ? task.status : 'unknown',
-      metadata: 'missing', tiers: [], speakerState: 'unknown' };
-    try {
-      if (typeof task.mediaPath !== 'string' || !path.isAbsolute(task.mediaPath)) return row;
-      const parsed = path.parse(task.mediaPath), file = fs.realpathSync(path.join(parsed.dir, `${parsed.name}.asr_meta.json`));
-      if (!trusted.some(root => { const relative = path.relative(root, file); return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); })) return { ...row, metadata: 'unavailable' as const };
-      const meta = JSON.parse(readText(file, 4 * 1024 * 1024));
-      if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new Error('Invalid metadata');
-      return { ...row, ...asrHistoryMetrics(meta), metadata: 'available' as const };
-    } catch (error) {
-      return { ...row, metadata: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' as const : 'unavailable' as const };
-    }
-  });
+  const tasks = loadAsrHistoryTasks(queueFile), trusted = trustedAsrHistoryRoots(roots);
+  const items = tasks.slice((page - 1) * pageSize, page * pageSize).map(task => readAsrHistoryItem(task, trusted));
   return { observedAt: new Date(now).toISOString(), page, pageSize, total: tasks.length, items };
 }

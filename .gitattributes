@@ -1,0 +1,3 @@
+# These assets are byte-bound by OP/provenance SHA-256 values across platforms.
+/public/branding/shikamochi/*.srt text eol=lf
+/public/branding/shikamochi/*.json text eol=lf

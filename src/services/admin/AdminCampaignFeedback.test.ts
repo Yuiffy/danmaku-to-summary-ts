@@ -150,7 +150,7 @@ it('imports prepared metadata through the actual locked Python CLI contract in a
   const f = fixture(), registration = f.candidates.registration(f.id, f.input().revision);
   const prepared = spawnSync(process.execPath, ['-r', 'ts-node/register', path.resolve(__dirname, '../../tools/clipping/promoteCampaignCandidate.ts'),
     '--state', registration.state, '--id', f.id, '--selection-digest', registration.selectionDigest, '--source-digest', registration.sourceDigest], {
-    encoding: 'utf8', windowsHide: true
+    encoding: 'utf8', windowsHide: true, env: { ...process.env }
   });
   expect({ status: prepared.status, stderr: prepared.stderr }).toEqual({ status: 0, stderr: '' });
   expect(prepared.stdout).toContain('CAMPAIGN_CANDIDATE_RESULT:');
