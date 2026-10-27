@@ -3,20 +3,30 @@ import { useState } from 'react';
 import Image from 'next/image';
 import { QQ_RECORD_STATUSES, type AdminQQRecordsView } from '../../core/admin/qqRecords';
 import { dateText, useResource } from './client';
+import { QQUserStats } from './QQUserStats';
 
 export function QQRecords() {
   const [date, setDate] = useState(''), [scope, setScope] = useState('all'), [status, setStatus] = useState('all');
   const [search, setSearch] = useState(''), [query, setQuery] = useState(''), [page, setPage] = useState(1);
-  const resource = useResource<AdminQQRecordsView>(`/qq-records?date=${date}&scope=${scope}&status=${status}&search=${encodeURIComponent(query)}&page=${page}`, 5000);
+  const [user, setUser] = useState(''), [conversation, setConversation] = useState('');
+  const resource = useResource<AdminQQRecordsView>(`/qq-records?date=${date}&scope=${scope}&status=${status}&user=${encodeURIComponent(user)}&conversation=${encodeURIComponent(conversation)}&search=${encodeURIComponent(query)}&page=${page}`, 5000);
   const data = resource.data;
+  const selectUser = (value: string) => { setUser(value); setConversation(''); setPage(1); };
+  const resetPeople = () => { setUser(''); setConversation(''); setPage(1); };
   return <div className="comment-replies">
     <div className="toolbar"><p className="muted">群聊仅响应艾特，私聊回复入群引导。问答长期保存在本机，每 5 秒更新。</p><button onClick={resource.refresh}>刷新</button></div>
     <form className="toolbar" onSubmit={event => { event.preventDefault(); setQuery(search.trim()); setPage(1); }}>
-      <label>日期 <select value={date} onChange={event => { setDate(event.target.value); setPage(1); }}><option value="">最新有记录日期</option>
+      <label>日期 <select value={date} onChange={event => { setDate(event.target.value); resetPeople(); }}><option value="">最新有记录日期</option>
         {data?.dates.map(day => <option key={day} value={day}>{day}</option>)}
       </select></label>
-      <label>会话 <select value={scope} onChange={event => { setScope(event.target.value); setPage(1); }}>
+      <label>消息类型 <select value={scope} onChange={event => { setScope(event.target.value); resetPeople(); }}>
         <option value="all">全部</option><option value="group">群聊艾特</option><option value="c2c">私聊</option></select></label>
+      <label>用户 <select value={user} onChange={event => selectUser(event.target.value)}><option value="">全部用户</option>
+        {data?.users.map(item => <option key={item.key} value={item.key}>{item.senderName || item.user.slice(0, 12)} · {item.scope === 'group' ? '群聊' : '私聊'} · {item.stats.records} 条</option>)}
+      </select></label>
+      <label>会话 <select value={conversation} onChange={event => { setConversation(event.target.value); setPage(1); }}><option value="">全部会话</option>
+        {data?.conversations.map(item => <option key={item.key} value={item.key}>{item.scope === 'group' ? '群聊' : '私聊'} {item.conversation.slice(0, 12)} · {item.records} 条</option>)}
+      </select></label>
       <label>状态 <select value={status} onChange={event => { setStatus(event.target.value); setPage(1); }}><option value="all">全部</option>
         {Object.entries(QQ_RECORD_STATUSES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
       </select></label>
@@ -24,10 +34,17 @@ export function QQRecords() {
     </form>
     {resource.error && <div className="notice error" role="alert">{resource.error}</div>}
     {!data && resource.loading && <p role="status">正在读取 QQ 问答…</p>}
-    {data && <><p className="muted">{data.date} · 共 {data.total} 条。仅“已回复”表示收到 QQ 成功回执；“待核对”不会自动重发。</p>
+    {data && <>
+      <QQUserStats data={data} selectedUser={user} onSelect={selectUser} />
+      <dl className="qq-statistics" aria-label="本次筛选统计">
+        {[['记录', data.summary.records], ['已回复', data.summary.replied], ['生成 / 发送异常', data.summary.failed],
+          ['额度提示', data.summary.quotaNotices], ['用户', data.summary.users], ['会话', data.summary.conversations]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+      </dl>
+      <p className="muted">{data.date} · 本次筛选共 {data.total} 条（分页前统计）· 处理中 {data.summary.active} · 跳过 {data.summary.skipped} · 成图 {data.summary.images}。仅“已回复”表示收到 QQ 成功回执。</p>
       <div className="table-scroll"><table><thead><tr><th>时间与会话</th><th>提问</th><th>鹿饼回复</th><th>状态</th></tr></thead><tbody>
         {data.rows.map(row => <tr key={row.id}><td>{dateText(row.requestedAt)}<p>{row.scope === 'group' ? '群聊艾特' : '私聊'}</p>
-          <p>{row.senderName || 'QQ 未提供昵称'}</p><small>会话 {row.conversation.slice(0, 12)}<br />用户 {row.user.slice(0, 12)}</small></td>
+          <p>{row.senderName || 'QQ 未提供昵称'}</p><small><button className="qq-link" onClick={() => { setConversation(`${row.appId}:${row.conversation}`); setPage(1); }}>会话 {row.conversation.slice(0, 12)}</button><br />
+            <button className="qq-link" onClick={() => selectUser(`${row.appId}:${row.user}`)}>用户 {row.user.slice(0, 12)}</button></small></td>
           <td><p className="comment-copy">{row.question || '（空艾特）'}</p></td><td><p className="comment-copy">{row.answer || '—'}</p><small>{row.model || '固定回复'}</small>
             {row.agent && <details><summary>查询过程 · {row.agent.modelCalls} 次模型调用</summary>
               <p>{row.agent.tools.length ? row.agent.tools.map(step => `${step.name}（${step.status === 'ok' ? '完成' : '失败'}，${step.elapsedMs} ms）`).join(' → ') : '直接回答，未调用资料工具'}</p>

@@ -15,6 +15,28 @@ export interface QQRecord {
 }
 export interface AdminQQRecordsView {
   date: string; dates: string[]; total: number; page: number; pages: number; rows: QQRecord[];
+  asOf: number; summary: QQRecordStats; users: QQUserSummary[]; conversations: QQConversationSummary[];
+  accounts: QQAccountUsage[];
+}
+export interface QQRecordStats {
+  records: number; replied: number; failed: number; active: number; skipped: number;
+  quotaNotices: number; images: number; users: number; conversations: number;
+}
+export interface QQQuotaStatus {
+  status: 'available' | 'limited' | 'paused' | 'unavailable';
+  used?: number; limit?: number; remaining?: number; windowMs?: number;
+  reasons: Array<{ code: string; label: string; until?: number }>;
+}
+export interface QQUserSummary {
+  key: string; appId: string; user: string; scope: QQRecord['scope']; senderName?: string;
+  lastAt: number; stats: QQRecordStats; text: QQQuotaStatus; image?: QQQuotaStatus;
+}
+export interface QQConversationSummary {
+  key: string; appId: string; conversation: string; scope: QQRecord['scope']; records: number; users: number;
+}
+export interface QQAccountUsage {
+  appId: string; status: 'ok' | 'paused' | 'unavailable'; day?: string;
+  tokensUsed?: number; tokenBudget?: number; starts?: number; startsLimit?: number;
 }
 export function validQQRecord(value: QQRecord): boolean {
   return !!value && value.version === 1 && /^[1-9]\d{0,24}$/u.test(value.appId) &&

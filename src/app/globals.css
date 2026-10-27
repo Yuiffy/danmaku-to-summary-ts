@@ -167,6 +167,25 @@ body {
 .login-status dd { margin: 0; }
 .comment-replies .comment-copy { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 680px; }
 .comment-replies .comment-answer { color: var(--accent); }
+.qq-user-stats { margin: 18px 0 24px; border-block: 1px solid var(--line); padding: 14px 0; }
+.qq-user-stats > summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.qq-user-stats > p { font-size: 12px; margin: 12px 0; }
+.qq-user-table { max-height: 340px; overflow: auto; }
+.qq-user-table th { white-space: nowrap; }
+.qq-user-table td { min-width: 125px; font-variant-numeric: tabular-nums; }
+.qq-user-table td small, .qq-quota small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.qq-user-table .qq-user-selected { background: #eff5f1; }
+.qq-quota-available > strong { color: var(--accent); }
+.qq-quota-limited > strong, .qq-quota-paused > strong { color: #a26438; }
+.qq-quota-unavailable > strong { color: var(--muted); }
+.qq-account-usage p { margin: 12px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.qq-statistics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.qq-statistics dt { color: var(--muted); font-size: 12px; }
+.qq-statistics dd { margin: 6px 0 0; font-size: 24px; font-variant-numeric: tabular-nums; }
+.admin-shell .qq-link { border: 0; background: transparent; color: var(--accent); padding: 2px 0; font-size: inherit; text-align: left; }
+.admin-shell .qq-link:hover { text-decoration: underline; }
+.qq-user-stats > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 850px) { .qq-statistics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .comment-replies select { max-width: 260px; } }
 .login-recovery form label { display: block; margin: 18px 0 8px; }
 .login-recovery textarea, .login-recovery input { width: 100%; }
 .login-recovery textarea { -webkit-text-security: disc; }
