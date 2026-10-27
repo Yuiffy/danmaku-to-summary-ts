@@ -23,6 +23,24 @@ function sourceEvidenceHash(metadata) {
         || metadata.editorial?.copyGrounding?.sourceSha256 || metadata.manualRevisionSource?.sourceSha256;
 }
 
+// Own-stream selection historically hashes speaker-prefixed rows and their own
+// ASR sidecar. Topic parsing strips those prefixes and links the plain SRT instead.
+// Accept only an exact match to the saved identity; never replace its digest.
+function readRenderedSourceEvidence(metadata) {
+    const file = metadata.source.srtPath;
+    const evidence = buildSubtitleEvidence(topic.parseTopicSrt(file).segments);
+    const expected = sourceEvidenceHash(metadata);
+    if (evidence.sourceSha256 === expected || metadata.mode !== 'own_stream_fun_review'
+        || metadata.publicationKind === 'keyword_topic' || !/\.speaker\.srt$/iu.test(file)) return evidence;
+    const parsed = require('./asr/asr_backends').parseSrt(file, 'own_stream_clip');
+    const linked = require('./asr/evidence_sidecar').loadAsrEvidence(file, parsed.segments);
+    for (const rows of [linked.segments, parsed.segments]) {
+        const original = buildSubtitleEvidence(rows);
+        if (original.sourceSha256 === expected) return original;
+    }
+    return evidence;
+}
+
 function assertRenderedRevision(metadata) {
     const draft = metadata.renderedSubtitles;
     if (draft && (metadata.rebuildRequired || draft.renderedSha256 !== draft.sha256
@@ -75,8 +93,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
     const window = metadata.window;
     if (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start) throw new Error('Invalid clip window');
     const snapshot = sourceSnapshot(metadata);
-    const parsed = topic.parseTopicSrt(metadata.source.srtPath);
-    const evidence = buildSubtitleEvidence(parsed.segments);
+    const evidence = readRenderedSourceEvidence(metadata);
     const expected = sourceEvidenceHash(metadata);
     if (!expected || expected !== evidence.sourceSha256) throw new Error('Original subtitle evidence changed; re-plan/review against the current source first');
     const reviewedEvidence = metadata.renderedSubtitles
@@ -113,7 +130,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
 }
 
 module.exports = { approveRenderedClip, sourceSnapshot, fileDigest, reviewCopy, publicDescription, assertRenderedRevision,
-    RENDERED_CLIP_MODES, sourceEvidenceHash };
+    RENDERED_CLIP_MODES, sourceEvidenceHash, readRenderedSourceEvidence };
 if (require.main === module) {
     const { values } = parseArgs({ options: { metadata: { type: 'string' }, id: { type: 'string' },
         'review-index': { type: 'string' }, 'review-note': { type: 'string' }, title: { type: 'string' },

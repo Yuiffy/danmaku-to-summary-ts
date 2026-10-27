@@ -52,6 +52,31 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test('rebuilds own-stream speaker SRT evidence in its original serialized form and still rejects changed ASR evidence', async () => {
+    const asr = require('./asr/asr_backends'), sidecar = require('./asr/evidence_sidecar');
+    metadata.source.srtPath = path.join(directory, 'source.speaker.srt');
+    const content = '1\n00:00:01,000 --> 00:10:01,000\n[UNKNOWN] Hello world\n';
+    fs.writeFileSync(metadata.source.srtPath, content);
+    sidecar.writeAsrEvidence(metadata.source.srtPath, content, [{ start: 1, end: 601, text: '[UNKNOWN] Hello world',
+      asr: { recognizedText: 'Hello world' }, speaker: { version: 1, status: 'unknown', observations: [] } }], 'fixture');
+    const parsed = asr.parseSrt(metadata.source.srtPath);
+    const hash = buildSubtitleEvidence(sidecar.loadAsrEvidence(metadata.source.srtPath, parsed.segments).segments).sourceSha256;
+    metadata.grounding.sourceSha256 = hash; metadata.attributionReview.sourceSha256 = hash;
+    metadata.ownStreamHumanReview.source = sourceSnapshot(metadata); save();
+    await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech', feedbackAuthorized: 'yes' }, config);
+    expect(load()).toMatchObject({ rebuildRequired: true, renderedSubtitles: { sourceSha256: hash } });
+    const savedBefore = fs.readFileSync(file, 'utf8');
+    const evidencePath = sidecar.evidencePath(metadata.source.srtPath), data = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+    data.segments[0].asr.recognizedText = 'Changed recognition'; fs.writeFileSync(evidencePath, JSON.stringify(data));
+    await expect(correct()).rejects.toThrow('Original source evidence changed');
+    expect(fs.readFileSync(file, 'utf8')).toBe(savedBefore);
+    fs.unlinkSync(evidencePath);
+    await expect(correct()).rejects.toThrow('Original source evidence changed');
+    fs.writeFileSync(metadata.source.srtPath, content.replace('Hello world', 'Different words'));
+    await expect(correct()).rejects.toThrow('Original source evidence changed');
+    expect(render).not.toHaveBeenCalled();
+  });
+
   test('an explicit ordinary rebuild removes inserted OP cues and stale editorial mappings under the same ID', async () => {
     metadata.style = 'highlight_first';
     metadata.editorialStyle = { selected: 'highlight_first' };

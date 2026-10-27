@@ -1,5 +1,6 @@
 {
   "botUid": "412141275",
+  "feedbackOwnerUids": ["412141275"],
   "unlimitedUids": ["14279"],
   "speakerNames": { "14279": "带鱼", "1954091502": "岁己SUI" },
   "fanQuota": {
@@ -14,6 +15,7 @@
   "maxQueue": 200,
   "maxUserQueue": 10,
   "pollIntervalMs": 30000,
+  "videoVision": true,
   "projectSources": [
     { "id": "ai-video-enhancement", "label": "AI Video Workflow 超分流程", "kind": "guide",
       "path": "../ai-video-workflow/docs/video-enhancement.md", "section": "## 公开流程摘要",

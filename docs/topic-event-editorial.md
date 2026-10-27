@@ -23,6 +23,58 @@ The keyword topic workflow now treats a publishable event, not a keyword hit or
 an arbitrary duration, as the unit of selection. This applies to `clipTopics`;
 own-stream and manual-queue selection keep their existing policies.
 
+## 未点名的梗句召回
+
+`clipTopics.keywords` 继续表示目标人物称呼；不要把梗句、普通口头禅或观众用户名混入
+这个数组。`clipTopics.memeRecall` 单独维护与目标人物有关的短语线索，补回只接梗、
+没有说出人名的语音。默认关闭，生产配置收录“陪你这个猪／配你这个猪”和“这只猪”
+写法；“搞了个大笑”、单个“猪”或其他泛用词不独立触发。
+
+```json
+{
+  "memeRecall": {
+    "enabled": true,
+    "contextSeconds": 60,
+    "rules": [{
+      "id": "sui-accompany-pig-title",
+      "keyword": "岁己",
+      "targetNames": ["岁己", "小岁", "饼干岁", "SUI"],
+      "forms": ["陪你这个猪", "配你这个猪", "陪你这只猪", "配你这只猪"]
+    }]
+  }
+}
+```
+
+每条规则有稳定 `id`、映射到既有 `keywords` 的 `keyword`、5–40 个规范化字符的
+`forms`，可选 `targetNames` 也只使用当前配置的目标称呼；`roomIds` 可限制来源房间。
+规则只在 `review.enabled: true`、`review.mode: preflight` 下生效，沿用房间忽略名单。
+匹配忽略标点、空白和全半角差异，最多连读三条相邻字幕、跨度十五秒、相邻间隔
+不超过 1.5 秒。保留完整原句和时间，不使用任意模糊匹配，也不改写源 SRT。
+
+梗线索通过既有 burst、分组和同一次 AI 预审处理，不额外请求整场 AI 扫描。
+`recall.kind: meme_reference` 与 `ambiguous_asr` 分开；`recall.meme` 保存规则、目标
+称呼、匹配短语及每条原字幕，`hypotheses` 只描述线索（字符位置基于规范化后的连读
+文本），不表示主播说出了人名。字面人名命中保留原有协议。
+
+预审仍逐条返回 `mention / false_match / uncertain`。此类线索的 `mention` 表示确认
+片内接梗与目标相关，不能解释为“主播口头提到了该人”。除了完整保留并引用梗句，
+还必须引用另一条明确点名并说明梗关联的字幕或弹幕，例如“岁己前辈先用的”。
+单纯重复梗句、目录映射、人名刷屏或用户名均不能独立确认。
+
+命中级 `evidenceDanmakuIds` 是可选的新字段，校验时必须来自已提供的原弹幕 D-ID。
+字幕佐证须在最终片内；明确解释梗关联的弹幕可在短语前后 `contextSeconds` 内帮助
+消歧（默认 60 秒，上限 120 秒），即使略超出成片窗口，也只作为指代上下文。
+片外弹幕不能当成片内原话或授权新增文案事实；片段级 `evidenceDanmakuIds` 仍仅能
+引用片内观众内容。公开文案不能据此声称谁首创了梗，或说主播念出了没有说过的人名。
+
+未确认关联的候选保留待审核编号；明确无关的用法可判 `false_match`。缺少所引用的
+原句、独立关联依据或语义未确认时，即使模型返回 `ready` 也不烧录。最终独立审核
+再次校验当前原句和弹幕引用，并绑定原有来源及成片哈希。梗句不会被纠正为人名，
+也不调用带人名热词的听音来寻找没有说过的名字；真实疑似人名仍沿用原听音流程。
+
+这个入口只扩展待审选材线索，不改变自动投稿授权或补跑历史录播。实现属于编译
+workflow，经验证生成的候选 release 仍需单独授权激活，才会用于新任务。
+
 ## 疑似 ASR 人名召回
 
 `clipTopics.ambiguousRecall` 在正常字面关键词之外保留人名假设，供同一次 preflight
@@ -383,8 +435,10 @@ python src/scripts/clip_upload_registry.py recheck-auto --ids 123 --review-final
 人名再次阻塞；相邻“我们/她/他”按连续语义解析，仍保留实际改口、换人和未解指代拦截。
 终止的旧队列授权不阻止重新复核当前成片；复核保留原授权和队列记录，不更新投稿授权。
 旧任务提交结果不明或修订后来源标识变化时，仍须先核对原投稿，不能因新复核通过重复提交。
-上传子进程返回 `submission outcome unknown` 时，该任务以失败结束，不进入自动重试；
-同批独立分组可继续，已成功的回执保留。后续分组的长日志不能覆盖这一停止条件。
+上传子进程返回 `submission outcome unknown` 时，未完成条目进入 `retry_wait`，
+沿用有上限的指数退避；同批独立分组可继续，已成功的回执保留。重试先按原 ID、
+媒体及授权核对提交意图和创作中心，确认不存在后才再次上传；查询暂不可用继续等待。
+标题、媒体或授权冲突仍以失败结束，后续分组的长日志不能覆盖这些停止条件。
 人工、自动入队及 worker 投稿前共用源片段查重：同一录播与同类用途下，重叠至少十秒且
 覆盖较短片段一半，或覆盖较短片段至少 98%，均需先处理重复内容。改标题、换成片路径、
 修改边界、反馈接受和 `--force` 均不能绕过；同一成片文件也不能以新编号重复入队。
@@ -537,6 +591,11 @@ python src/scripts/clip_upload_registry.py rebuild --id 123 --review-note "已�
 ```
 
 `rebuild` 只准备待重压资料，不立即压制或投稿。
+自有直播的 `.speaker.srt` 候选若由带说话人前缀的行及对应 `.speaker.asr_evidence.json`
+生成，重建和批准时按同一表示核对原始 `sourceSha256`。兼容读取必须逐字节复现已有
+证据摘要，不剥去前缀后误用普通 `.srt` 的证据，也不把新摘要写回旧候选来绕过来源检查。
+此前使用普通话题解析的候选沿用原校验；关键词候选不启用自有直播的兼容分支。
+源字幕或已绑定的 ASR 证据改变、丢失仍停止操作，不授予新的字幕或投稿权限。
 
 重点前置片的字幕包含 OP 和重排时间轴，不能直接套回原录播。需要去掉 OP 并恢复
 原片顺序时，显式使用 `rebuild --ordinary`，再执行 `cut --automatic-review`。

@@ -9,10 +9,12 @@ import { pollCommentInbox } from '../../services/bilibili/comment-replies/Commen
 import { CommentReplyConfig, validateCommentConfig } from '../../services/bilibili/comment-replies/CommentPolicy';
 import { CommentState, CommentStateStore } from '../../services/bilibili/comment-replies/CommentState';
 import { CommentWorker } from '../../services/bilibili/comment-replies/CommentWorker';
+import { CommentFeedbackStore } from '../../services/bilibili/comment-replies/CommentFeedbackStore';
 import { readQuestionRuntime } from '../../services/live-vote/questions/EvidenceQuery';
 import { createCommentKnowledge } from '../../services/bilibili/comment-replies/CommentKnowledge';
 import { CommentFeedError, CommentPoller } from '../../services/bilibili/comment-replies/CommentPolling';
 import { createProjectReader } from '../../services/bilibili/comment-replies/CommentProjects';
+import { createCommentVisualReader } from '../../services/bilibili/comment-replies/CommentVisual';
 
 export interface CommentCliOptions { config: string; mode: 'check' | 'dry-run' | 'live' | 'status' | 'resume' }
 export function parseCommentArgs(args: string[]): CommentCliOptions {
@@ -72,11 +74,18 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     console.info('Comment reply configuration valid. No polling, model requests or publication performed.'); return;
   }
   const state = await store.open();
+  const feedback = new CommentFeedbackStore(path.join(root, 'data/runtime/comment-feedback', config.botUid));
   const worker = new CommentWorker(config, state, {
     now: Date.now, save: value => store.save(value),
     answer: options.mode === 'live' ? createCommentAnswerer(settings, undefined, knowledge,
       { config, hotComments: (event, signal) => api.hotComments(event, signal),
-        dynamic: (id, signal) => api.dynamic(id, signal) }) : async () => '鹿饼收到啦，这是一条本地预览回复。',
+        dynamic: (id, signal) => api.dynamic(id, signal),
+        feedbackVideo: (event, signal) => api.video(event.oid, signal, false) },
+      config.videoVision === false ? undefined : createCommentVisualReader({
+        target: async (aid, signal) => (await api.video(aid, signal, false)).visualTarget,
+        shots: (aid, cid, signal) => api.videoShots(aid, cid, signal)
+      })) : async () => '鹿饼收到啦，这是一条本地预览回复。',
+    collectFeedback: options.mode === 'live' ? (event, note) => feedback.collect(event, note) : undefined,
     audience: (uid, signal) => api.audience(uid, signal),
     like: options.mode === 'live' ? (event, signal) => api.like(event, signal) : undefined,
     send: options.mode === 'live' ? (event, answer, signal) => api.send(event, answer, signal) : async event => {

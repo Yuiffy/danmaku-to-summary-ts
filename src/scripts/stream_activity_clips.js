@@ -80,6 +80,15 @@ async function main(argv = process.argv.slice(2)) {
         console.log(JSON.stringify(result, null, 2)); return result;
     }
     const workflow = require('./clipping/stream_activity_clipper');
+    if (command === 'recut-song') {
+        if (!options.metadata || !options['activity-id'] || !options.start || !options.end || !options.note) throw new Error('recut-song requires --metadata --activity-id --start --end --note');
+        const row = JSON.parse(fs.readFileSync(path.resolve(options.metadata), 'utf8'));
+        if (row.kind !== 'songs' || row.type !== 'stream_activity_submission') throw new Error('recut-song requires a song submission');
+        const result = await workflow.generateStreamActivities({ ...row.source, kind: 'songs', context: { roomId: row.roomId },
+            summaryPath: JSON.parse(fs.readFileSync(row.planPath, 'utf8')).summary.path, retryBoundaries: true, revisionNote: options.note,
+            manualSongEdit: { activityId: options['activity-id'], start: Number(options.start), end: Number(options.end), note: options.note } });
+        console.log(`ACTIVITY_SONG_RECUT_RESULT ${JSON.stringify(result)}`); return result;
+    }
     if (command === 'review') {
         if (!options.metadata || !options.note) throw new Error('review requires --metadata and --note');
         const result = await workflow.reviewStreamActivity({ metadataPath: options.metadata, note: options.note });

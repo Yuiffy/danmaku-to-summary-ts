@@ -58,6 +58,16 @@ export class AdminJobs {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.updatedAt.localeCompare(b.updatedAt))
       .map(({ id, status, titleChoice }) => ({ id, status, titleChoice }));
   }
+  /** Only the latest feedback intent for this exact clip revision may supply a retry title. */
+  failedFeedbackTitle(target: string, revision: string, note: string): string | undefined {
+    const job = [...this.jobs.values()].reverse().filter(job => job.action === 'feedback-publish' && job.target === target
+      || job.action === 'campaign-feedback-publish' && job.plan?.clipId === target)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const savedRevision = job?.action === 'campaign-feedback-publish' ? job.plan?.feedbackRevision : job?.revision;
+    return job && ['failed', 'interrupted'].includes(job.status) && savedRevision === revision
+      && (job.note === note || /^(?:投|投稿)[。.!！]?$/u.test(note))
+      && typeof job.edits?.title === 'string' ? job.edits.title : undefined;
+  }
   submit(command: OperatorCommand, validate = () => {}, titleChoice?: AdminJob['titleChoice']): AdminJob {
     const noteFlag = command.args.findIndex(arg => ['--note', '--review-note'].includes(arg));
     return this.submitOperation(command.action, command.target, { note: noteFlag < 0 ? undefined : command.args[noteFlag + 1], titleChoice },
@@ -65,7 +75,7 @@ export class AdminJobs {
   }
   submitOperation(action: string, target: string, input: Pick<AdminJob, 'note' | 'revision' | 'edits' | 'titleChoice'>,
     execute: (output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void) => Promise<number>, validate = () => {}): AdminJob {
-    if (this.pending >= 20) throw new AdminError('管理操作队列已满', 429);
+    if (this.pending >= 200) throw new AdminError('管理操作队列已满', 429);
     const now = new Date().toISOString(), job: AdminJob = { id: randomUUID(), action, target, ...input,
       status: 'queued', createdAt: now, updatedAt: now, output: '' };
     this.jobs.set(job.id, job); this.persist(job); this.pending++;

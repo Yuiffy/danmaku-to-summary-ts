@@ -32,11 +32,12 @@ def format_progress(value):
 
 
 class UploadProgress:
-    def __init__(self, pages, media_path, *, sink=None, clock=time.monotonic):
+    def __init__(self, pages, media_path, *, sink=None, clock=time.monotonic, event_sink=None):
         self.pages = pages
         self.media_path = str(media_path)
         self.sink = sink or self.persist
         self.clock = clock
+        self.event_sink = event_sink
         self.last_emit = float('-inf')
         self.run_id = uuid.uuid4().hex
         self.chunks = [set() for _ in pages]
@@ -45,6 +46,8 @@ class UploadProgress:
         self.part = None
         self.phase = 'starting'
         self.terminal = False
+        self.last_event = None
+        self.failure_stage = None
 
     def persist(self, value):
         target = progress_path(self.media_path)
@@ -72,6 +75,7 @@ class UploadProgress:
                  'totalChunks': self.totals[self.part] if self.part is not None else 0,
                  'partPercent': 100 * fractions[self.part] if self.part is not None else 0,
                  'overallPercent': 100 * sum(fractions) / len(fractions),
+                 'lastEvent': self.last_event, 'failureStage': self.failure_stage,
                  'updatedAt': datetime.now(timezone.utc).isoformat()}
         self.sink(value)
         self.last_emit = now
@@ -82,10 +86,16 @@ class UploadProgress:
         data = data or {}
         page = data.get('page')
         index = next((i for i, p in enumerate(self.pages) if p is page), None)
-        if index is None and name not in ('PRE_COVER', 'AFTER_COVER', 'PRE_SUBMIT'):
+        if index is None and name not in ('PRE_COVER', 'AFTER_COVER', 'PRE_SUBMIT', 'COVER_FAILED', 'SUBMIT_FAILED'):
             return
         if index is not None:
             self.part = index
+        self.last_event = name
+        if name in ('PREUPLOAD_FAILED', 'PAGE_SUBMIT_FAILED', 'COVER_FAILED', 'SUBMIT_FAILED'):
+            self.failure_stage = {'PREUPLOAD_FAILED': 'preupload', 'PAGE_SUBMIT_FAILED': 'processing_part',
+                                  'COVER_FAILED': 'cover', 'SUBMIT_FAILED': 'submitting'}[name]
+        if self.event_sink and name in ('AFTER_PAGE', 'PRE_SUBMIT'):
+            self.event_sink(name, None if index is None else index+1)
         if name in ('PRE_CHUNK', 'AFTER_CHUNK', 'CHUNK_FAILED'):
             total, number = data.get('total_chunk_count'), data.get('chunk_number')
             if type(total) is not int or type(number) is not int or not 0 <= number < total:
@@ -109,13 +119,15 @@ class UploadProgress:
 
     async def run(self, uploader):
         for name in ('PREUPLOAD', 'PRE_PAGE', 'PRE_CHUNK', 'AFTER_CHUNK', 'CHUNK_FAILED', 'PRE_PAGE_SUBMIT',
-                     'AFTER_PAGE', 'PRE_COVER', 'AFTER_COVER', 'PRE_SUBMIT'):
+                     'AFTER_PAGE', 'PRE_COVER', 'AFTER_COVER', 'PRE_SUBMIT',
+                     'PREUPLOAD_FAILED', 'PAGE_SUBMIT_FAILED', 'COVER_FAILED', 'SUBMIT_FAILED'):
             uploader.add_event_listener(name, lambda data, event=name: self.event(event, data))
         self.emit(force=True)
         try:
             result = await uploader.start()
         except BaseException:
             self.terminal = True
+            self.failure_stage = self.failure_stage or self.phase
             self.phase = 'failed'
             self.emit(force=True)
             raise

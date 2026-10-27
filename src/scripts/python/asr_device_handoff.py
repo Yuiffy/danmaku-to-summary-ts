@@ -44,7 +44,7 @@ class ModelWorker:
                 self.responses.put(RuntimeError('ASR handoff worker disconnected; completed checkpoints retained'))
         threading.Thread(target=read, daemon=True).start()
         try:
-            self.request({'op': 'init', 'payload': {**copy.deepcopy(payload), 'device': device}})
+            self.ready = self.request({'op': 'init', 'payload': {**copy.deepcopy(payload), 'device': device}})
         except BaseException:
             self.close()
             raise
@@ -97,11 +97,14 @@ class ModelWorker:
                 pass  # A broken pipe must not mask the original model failure.
 
 
-def transcribe_handoff(payload, *, worker_factory=ModelWorker, monitor_factory=ResourceMonitor,
+def transcribe_handoff(payload, *, worker_factory=None, monitor_factory=ResourceMonitor,
                        probe=probe_duration, pcm_factory=aligned_pcm, clock=time.monotonic,
                        sleep=time.sleep, initial_device=None):
     if not supported(payload):
         raise ValueError('Device handoff supports only standard CUDA Paraformer; original route must handle this request')
+    if worker_factory is None:
+        from asr_handoff_pool_client import create_model_worker
+        worker_factory = create_model_worker
     config = settings(payload)
     duration = probe(payload['audio_path'])
     source = (payload.get('live_asr') or {}).get('source_path') or payload['audio_path']
@@ -123,7 +126,7 @@ def transcribe_handoff(payload, *, worker_factory=ModelWorker, monitor_factory=R
                 def report(state, remaining, low_impact=None):
                     low_impact = policy.low_impact if low_impact is None else low_impact
                     log_progress('[[ASR_HANDOFF_STATUS]] ' + json.dumps({
-                        'policy_version': 6,
+                        'policy_version': 8,
                         'cpu_fallback_enabled': config['cpu_fallback_enabled'],
                         'shared_gpu_enabled': config['allow_shared_gpu'],
                         'device_cooldown_s': config['device_cooldown_s'],
@@ -161,6 +164,12 @@ def transcribe_handoff(payload, *, worker_factory=ModelWorker, monitor_factory=R
                         if worker is None:
                             report('loading', remaining)
                             worker = worker_factory(payload, current, config['worker_timeout_s'])
+                            ready = getattr(worker, 'ready', {})
+                            if ready.get('model_cache_hit'):
+                                timings['handoff_cross_job_cache_hits'] = timings.get('handoff_cross_job_cache_hits', 0) + 1
+                            log_progress('ASR 接力模型复用: ' + json.dumps({
+                                'pid': getattr(getattr(worker, 'process', None), 'pid', None),
+                                'cross_job_cache_hit': bool(ready.get('model_cache_hit'))}, ensure_ascii=False))
                             monitor.owner_pid = getattr(getattr(worker, 'process', None), 'pid', None) if current == 'cuda' else None
                             if current == 'cuda':
                                 policy.gpu_suspended = False
@@ -213,6 +222,9 @@ def transcribe_handoff(payload, *, worker_factory=ModelWorker, monitor_factory=R
                                     key = f'handoff_{tier}_window_s'
                                     timings[key] = timings.get(key, 0) + response.get('window_s', 0)
                                 timings['handoff_model_load_s'] = timings.get('handoff_model_load_s', 0) + response.get('model_load_s', 0)
+                                for name in ('vad_s', 'generation_s', 'vad_reused', 'empty_decoding', 'model_restore_s'):
+                                    key = f'handoff_{name}'
+                                    timings[key] = timings.get(key, 0) + response.get(name, 0)
                                 if response['chunk'] is not None:
                                     break
                                 if size >= min(120, end-start) - 0.001:
@@ -248,6 +260,9 @@ def transcribe_handoff(payload, *, worker_factory=ModelWorker, monitor_factory=R
                 result = active.request({'op': 'finish', 'chunks': checkpoint.chunks, 'timings': timings,
                                          'speaker_processing_policy': finish_policy})
                 checkpoint.assert_source_unchanged(payload)
+                result['timings']['model_load_s'] = timings.get('handoff_model_load_s', 0)
+                result['timings']['model_cache_hit'] = int(timings.get('handoff_cross_job_cache_hits', 0) > 0
+                    and timings.get('handoff_model_load_s', 0) == 0)
                 result['timings']['backend_total_s'] = clock() - began
                 return result
         finally:

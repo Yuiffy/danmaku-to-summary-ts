@@ -14,6 +14,31 @@
 
 `src/app/main.ts` currently applies only explicit `--port` / `--host` command-line options. `ecosystem.config.js` still declares `PORT` / `HOST` environment variables, but those variables are not the port authority for this CLI; use `config/production.json`, `WEBHOOK_PORT` / `WEBHOOK_HOST`, or explicit CLI flags.
 
+## 直播后处理失败提醒
+
+中央总结队列在媒体输入缺失、子进程无法启动、处理超时或自动重试耗尽后，
+通过现有 `ProcessingAlertService` 发送“直播后处理已停止”企微提醒。
+发送前核对队列持久状态为 `failed`；正常重试、游戏/GPU 等待和已完成任务不触发。
+提醒不追溯扫描历史失败，也不改变恢复、投稿或切片的授权。
+
+消息包含直播间、录播标题与开始时间、录播时长、失败阶段、最后捕获的异常、
+失败次数（如有）和原任务 ID。标题/开始时间来自匹配房间的录播文件名，
+房间名称来自录播目录；时长复用子进程现有媒体时长输出或 ASR handoff 状态，
+获取失败时明确显示“未获取”，不以排队时间或处理耗时冒充直播时长，也不额外扫描媒体。
+异常输出只在内存保留有界尾部，提取到的原因随异常重试记录保存。
+
+字幕完成哨兵出现前，提醒说明依赖本次字幕的摘要、晚安文案/漫画及自动切片无法继续；
+出现后则说明字幕已完成、后处理未确认全部完成，已独立入队的切片仍可能继续。
+这不是所有产物或投稿状态的核验；只指该房间已启用且依赖本任务的流程。
+本提醒只覆盖中央总结子进程的终止失败；退出码为零时的单个下游步骤失败，
+以及独立切片/上传队列的失败，仍由各自流程的诊断和通知负责。
+
+提醒沿用 `monitoring.processingAlerts.enabled` 和 `wechatWork.webhookUrl`。
+按任务 ID 与显式恢复次数分别去重，同一房间的不同失败录播互不抑制；
+去重状态只在进程内保留，至少保留 24 小时，不保证重启后的恰好一次投递。
+发送最多尝试两次，失败不阻塞媒体队列，也不触发媒体重试。
+编译服务的改动需按部署流程更新并重载 `danmaku-webhook` 后才生效。
+
 ## Commands
 
 ```powershell

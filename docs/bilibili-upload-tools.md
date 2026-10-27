@@ -33,7 +33,7 @@ python src\scripts\batch_upload.py `
   --tags "小岁,虚拟主播,直播切片,岁AI切片" `
   --prefix "【小岁】" `
   --tid 21 `
-  --delay 60 `
+  --delay 0 `
   --state "D:\files\videos\DDTV录播\25788785_岁己SUI\2026_06_26\own_stream_fun_clips\upload_state.json"
 ```
 
@@ -60,12 +60,15 @@ To auto-attach uploads to a Bilibili合集/series after success, set:
   add each successful upload to. (`collectionSeriesId` remains supported only
   for legacy configurations.)
 
-Current production routing sends all keyword/topic clips to 环岁圈AI自动切片,
+Current production routing first sends 芙娅之魂 gameplay clips to
+VR主播玩芙娅之魂合集, season `8956269` (section `9991476`), using configured
+`collectionRouting.fuyasoul.sourceKeywords` in the source description or archive
+title. This content route applies across streamers and to keyword clips; streamer
+identity and tags alone do not match it. Other keyword/topic clips go to 环岁圈AI自动切片,
 season `8941979` (section `9974272`), before matching the source streamer.
 Ordinary Sui clips stay in season `8513688` (section `9482593`, with rollover),
 and all other ordinary streamer clips go to 虚拟主播AI自动切片,
-season `8977005` (section `10015117`). 芙娅之魂 no longer receives automatic
-uploads. `collectionRouting.keyword` selects the keyword destination using
+season `8977005` (section `10015117`). `collectionRouting.keyword` selects the keyword destination using
 `publicationKind: keyword_topic`; legacy clips use the exact `topic_clips`
 output directory component. Titles, tags, and merely mentioning Sui do not
 classify an ordinary clip as a keyword clip. Explicit section overrides and
@@ -157,14 +160,70 @@ review indices. Each group is split into at most four clips by default
 (`enqueue --batch-size` can override it), and each uploader subprocess has a
 30-minute timeout by default (`enqueue --timeout-seconds` can override it).
 This bounds the impact of a hung upload while preserving order. Existing
-duplicate checks, upload state, 406 recovery, and preupload rate-limit waiting
-stay inside `batch_upload.py`.
+duplicate checks, upload state and ambiguous submission reconciliation stay inside
+`batch_upload.py`; actual SDK initialization is admitted by `clip_upload_pacing.py`.
 
-New queue jobs use `--delay 60` by default, so clips handled by the same
-uploader subprocess are submitted at least 60 seconds apart. The persistent
-worker checks for the next runnable job every 30 seconds. These are local
-scheduling values, not a guarantee that Bilibili has cleared an account-level
-posting limit.
+Uploads can run consecutively while the same account has fewer than five actual
+per-P initializations in the preceding 300 seconds. The sixth waits until the
+oldest slot expires, with a one-second scheduling buffer. Failed initializations
+consume slots, and each P consumes one. The atomic SQLite ledger at
+`data/runtime/clip_upload_pacing.sqlite3` shares slots across batches, processes
+and restarts. Queue jobs always pass `--delay 0`, including legacy jobs with a
+stored 60-second delay; the standalone CLI retains an optional extra delay.
+The persistent worker checks for runnable jobs every 30 seconds.
+
+Extra preupload availability probes are disabled. Each HTTP 406 stops later
+uploads in the batch and starts a fixed ten-minute account cooldown. The queue
+then retries actual work through its existing duplicate/intent checks. A known
+SDK initialization rejection can clear its submission intent; an ambiguous
+failure at a later stage retains reconciliation before any resubmission.
+The legacy `probe_upload_available`/`wait_for_upload_available` exports are
+no-op compatibility functions, and old `--rate-limit-wait`/`--rate-limit-retries`
+arguments remain accepted without controlling this policy. These are experimental
+local limits, not documented platform quotas or a promise of recovery.
+
+Sustained HTTP 406 protection is account-wide and persists in the same SQLite
+ledger. Consecutive actual 406 failures whose first-to-last span reaches three
+hours trigger one WeChat Work alert and 24 hours of slow mode. A successful
+archive, another terminal outcome, or more than 30 minutes without another 406
+breaks the consecutive-failure episode; idle time alone never triggers it.
+An archive confirmed by the existing ambiguous-submission reconciliation also
+breaks the episode. Chunk HTTP 406 escapes the SDK's internal chunk retry loop
+and goes through the same cooldown/protection policy.
+Slow mode admits at most one new archive every ten minutes, including failed
+starts, while multipart archives keep the existing five-per-P-initializations
+per 300 seconds guard. Queue groups contain one archive in slow mode and yield
+between archives, so waiting does not consume the uploader subprocess timeout.
+Existing 137022 and rolling-24-hour guards remain independently authoritative.
+
+Any further actual HTTP 406 during slow mode latches a manual account pause and
+sends another WeChat Work alert. New/queued jobs, compatibility uploads and worker
+restarts cannot release this pause, even after the slow-mode expiry. Notifications
+use a durable outbox with delivery leases; failures retry after five minutes and
+never release protection. Queue status and pacing statistics expose the pause,
+slow-mode deadline and next allowed archive start. No availability probes are sent.
+After investigation, stop the worker and use the existing `resume --note "..."`
+command; it releases paused jobs and starts another 24 hours of slow mode.
+As before, this explicit recovery command also clears the 137022 cooldown.
+
+For a confirmed historical long-406 episode that predates the ledger, an operator
+can activate protection from the current time without fabricating upload events:
+
+```powershell
+python src/scripts/clip_upload_pacing.py --account ACCOUNT_ID --activate-slow --note "confirmed long-406 incident"
+```
+
+This command queues the same alert for the worker to deliver. Repeating it during
+active slow mode does not extend the deadline or create another alert, and it
+cannot release a manual pause.
+
+`[UPLOAD_REQUEST]` records actual starts, failures, part completion and final
+submission, with 60/300/900/3600-second start counts and no credentials or SDK
+payloads. Read recent counts and events without platform requests:
+
+```powershell
+python src/scripts/clip_upload_pacing.py --hours 24
+```
 
 The persistent queue treats the per-clip upload state as authoritative when a
 subprocess exits. A job with partial success is retried with only unfinished

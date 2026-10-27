@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import traceback
+from asr_handoff_pool import HandoffPool
 
 from sensevoice_transcribe import (
     GpuThrottle,
@@ -112,10 +113,12 @@ def main():
     args = parser.parse_args()
 
     runtime_cache = {}
+    handoff_pool = HandoffPool()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("127.0.0.1", args.port))
     server.listen(4)
+    server.settimeout(1)
     port = server.getsockname()[1]
     print(
         "[ASR_WORKER_READY] " + json.dumps({"port": port, "pid": os.getpid()}),
@@ -124,7 +127,11 @@ def main():
 
     running = True
     while running:
-        connection, _address = server.accept()
+        handoff_pool.reap_idle()
+        try:
+            connection, _address = server.accept()
+        except socket.timeout:
+            continue
         with connection:
             try:
                 request = receive_json(connection)
@@ -140,22 +147,31 @@ def main():
                         "emotion_model_loaded": bool(runtime_cache.get("emotion_model")),
                     })
                 elif request_type == "shutdown":
+                    handoff_pool.close()
                     release_cache(runtime_cache)
                     send_json(connection, {"ok": True, "released": True})
                     running = False
                 elif request_type == "transcribe":
+                    handoff_pool.close()
                     result = transcribe(request.get("payload") or {}, runtime_cache)
                     send_json(connection, {"ok": True, "result": result})
+                elif request_type == "handoff":
+                    release_cache(runtime_cache)
+                    handoff_pool.serve(connection, request, receive_json, send_json)
                 else:
                     send_json(connection, {"ok": False, "error": f"未知请求类型: {request_type}"})
             except Exception as exc:
-                send_json(connection, {
-                    "ok": False,
-                    "error": str(exc),
-                    "detail": traceback.format_exc(),
-                })
+                try:
+                    send_json(connection, {
+                        "ok": False,
+                        "error": str(exc),
+                        "detail": traceback.format_exc(),
+                    })
+                except OSError:
+                    pass  # Cancellation has already closed the client connection.
 
     server.close()
+    handoff_pool.close()
     release_cache(runtime_cache)
 
 

@@ -5,6 +5,7 @@ import { AdminError, atomicJson, digest, readJson, readText, redact } from './Ad
 import { sourceWindowSubtitles, subtitleRows, timeSeconds, formatSubtitleTime } from '../../core/admin/subtitles';
 import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons, ClipIntent } from '../../core/clipping/ClipIntent';
 import { uploadQueueStatus } from './AdminUploadStatus';
+import { readUploadTelemetry } from './AdminUploadTelemetry';
 
 export type AssetKind = 'media' | 'preview' | 'cover' | 'subtitles' | 'preview-subtitles' | 'media-subtitles' | 'source';
 export class AdminClipStore {
@@ -191,7 +192,9 @@ export class AdminClipStore {
       && job.clipIds?.includes(Number(id)));
   }
   uploadStatus() {
-    return uploadQueueStatus(readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] }), this.records());
+    const now = Date.now();
+    return uploadQueueStatus(readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] }), this.records(), now,
+      readUploadTelemetry(path.join(this.root, 'data/runtime/clip_upload_pacing.sqlite3'), now));
   }
   queues(): any {
     const uploads = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });

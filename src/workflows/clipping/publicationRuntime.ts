@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { topicMemeAudienceContext } from './topicMemeRecall';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -202,12 +203,13 @@ export async function reviewOwnPublications(artifacts: Artifact[], context: Publ
                 const sourceEvidenceSha256 = evidence.sourceSha256;
                 const retained = adapters.parse(artifact.output.srtPath);
                 const start = artifact.window.start, end = artifact.window.end;
+                const memeAudience = new Set(topicMemeAudienceContext(artifact.aiReview?.keyword?.hits || [], audience).map(row => row.id));
                 result = await reviewPublication(artifact, {
                     config: context.config, roomId: context.roomId, streamerName: context.streamerName,
                     excludedCategories: context.excludedCategories,
                     speech: speech.filter(row => row.end > start - 30 && row.start < end + 60),
                     retainedSubtitles: retained,
-                    audience: audience.filter(row => row.time >= start - 30 && row.time <= end + 60),
+                    audience: audience.filter(row => row.time >= start - 30 && row.time <= end + 60 || memeAudience.has(row.id)),
                     evidence: { subtitleDiagnostic: subtitleDiagnosticEvidence(artifact, initial.source)?.windows || null,
                         configuredPeople: context.configuredPeople || [], cues: evidence.cues?.filter(row => row.end > start - 30 && row.start < end + 60)
                         .map(cue => ({ ...cue })) || [] },

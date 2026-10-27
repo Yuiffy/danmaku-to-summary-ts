@@ -162,6 +162,34 @@ it('counts accepted operation intent separately from failure and never changes t
   expect(f.titles.view('1').selection).toBeNull();
 });
 
+it('restores only the latest failed feedback title for unchanged evidence after restart', async () => {
+  const f = fixture();
+  f.jobs.submitOperation('feedback-publish', '1', { revision: 'r1', edits: { title: '失败时已保存的标题' } }, async () => 1);
+  await f.jobs.flush();
+  const jobs = new AdminJobs(path.join(f.root, 'jobs'), f.run);
+  const titles = new AdminTitles(f.directory, f.clips, jobs, f.model);
+  expect(titles.prepare('1', { action: 'feedback-publish', note: '投' }).body.title).toBe('失败时已保存的标题');
+  expect(titles.prepare('1', { action: 'feedback-publish', note: '换个标题，写成反向工商' }).body.title).toBeUndefined();
+  expect(titles.prepare('1', { action: 'feedback-publish', note: '投', title: '新提交的标题' }).body.title).toBe('新提交的标题');
+  expect(titles.prepare('1', { action: 'cut' }).body.title).toBeUndefined();
+  f.detail.revision = 'r2';
+  expect(titles.prepare('1', { action: 'feedback-publish', note: '投' }).body.title).toBeUndefined();
+  f.detail.revision = 'r1';
+  jobs.submitOperation('feedback-publish', '1', { revision: 'r1', edits: {} }, async () => 1); await jobs.flush();
+  expect(titles.prepare('1', { action: 'feedback-publish', note: '投' }).body.title).toBeUndefined();
+});
+
+it('honors an explicit current choice, default selection and reset over a failed title', async () => {
+  const f = fixture();
+  f.jobs.submitOperation('feedback-publish', '1', { revision: 'r1', edits: { title: '失败旧标题' } }, async () => 1); await f.jobs.flush();
+  for (const selection of [{ title: '现在的手写标题' }, { optionId: 'default' }, { reset: true }]) {
+    const view = f.titles.select('1', { ...f.ref(), ...selection });
+    const result = f.titles.prepare('1', { action: 'feedback-publish', note: '投', titleSetId: view.id, titleRevision: view.revision });
+    expect(result.body.title).toBe(view.selection?.title);
+    expect(result.decision?.title).toBe(view.selection?.title || f.detail.title);
+  }
+});
+
 it('routes authenticated choices into a real saved feedback job without touching registry/media or enqueueing', async () => {
   const f = fixture(), assets = path.join(f.root, 'assets'); fs.mkdirSync(assets);
   const srtPath = path.join(assets, 'clip.srt'); fs.writeFileSync(srtPath, f.detail.subtitles);

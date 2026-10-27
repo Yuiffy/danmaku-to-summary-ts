@@ -3,6 +3,7 @@ import { parseModelJson } from '../text/json';
 import { EDITORIAL_REVIEW_RULE } from './editorialEvidence';
 import type { Artifact } from './enhancement';
 import type { Subtitle } from './editPlan';
+import { MEME_REFERENCE_RULES, topicMemeIdentityIssues } from './topicMemeRecall';
 import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD, NARRATIVE_HOOK_STANDARD, KEYWORD_REFERENCE_STANDARD, SOURCE_SETTING_STANDARD, SPOKEN_QUOTE_STANDARD } from './reviewStandards';
 export { PUBLIC_COPY_MATERIALITY_STANDARD, SUBTITLE_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD, NARRATIVE_HOOK_STANDARD, KEYWORD_REFERENCE_STANDARD, SOURCE_SETTING_STANDARD, SPOKEN_QUOTE_STANDARD } from './reviewStandards';
 
@@ -209,6 +210,10 @@ function topicPreflightIssues(artifact: Artifact, input: PublicationInput): stri
         && typeof hit.start === 'number' && Number.isFinite(hit.start) && typeof hit.end === 'number' && Number.isFinite(hit.end)
         && window && hit.start >= window.start && hit.end <= window.end && hit.end > hit.start
         && strings(hit.keywords) && hit.keywords.some(keyword => keywords.has(keyword.trim())))) issues.push('topic_keyword_not_confirmed');
+    if (Array.isArray(hits) && hits.some(hit => hit.recall?.kind === 'meme_reference')) {
+        issues.push(...topicMemeIdentityIssues(hits, (input.evidence?.cues || []) as any, window,
+            (input.audience || []) as any));
+    }
     const editorial = artifact.editorial, grounding = editorial?.copyGrounding;
     if (editorial?.status !== 'planned' || editorial.copyStatus !== 'prepared'
         || !['live_speech', 'recount', 'playback', 'audience'].includes(editorial.sourceKind)
@@ -345,7 +350,8 @@ function reviewPrompt(artifact: Artifact, input: PublicationInput, inspection: P
         ...(topic ? [
             'Judge attribution against the claims actually made. Missing diarization or an unknown speaker row alone is not a publication defect when copy only describes an exchange without assigning it to a named person. An omitted subject in a Chinese title, or a faithful quoted line on the cover, does not by itself identify the source host as speaker or creator; the source prefix is provenance, not an implicit action claim. For example, “聊某人相关二创：前几天做了一个，今天又做了一个” does not say who made it. Still block a named unsupported subject, reversed roles, or first-person copy that actually assigns an ambiguous experience to a person. Identify the exact unsupported assignment rather than requiring every voice to be named.',
             'Separate speaker identity from source kind: recognizable live discussion can be live_speech even if the individual voice is unnamed. Unknown diarization alone does not turn live discussion into uncertain playback or an uncertain event. An incidental third-party name in a retelling need not be fully identified when neither the hook nor public copy depends on who that person is and the event remains clear. Still block ambiguity that changes the central actor, target, relationship, quoted meaning or configured keyword referent; explain that concrete change, not merely that a name looks unusual.',
-            'The configured target keywords identify the subject of the clip, not necessarily the source host or speaker. Confirm an actual in-clip mention of the configured target from the original source and keyword assessment; a matching ASR spelling, alias replacement or audience username alone is not identity proof.',
+            'The configured target keywords identify the subject of the clip, not necessarily the source host or speaker. Confirm an actual in-clip mention or an independently supported meme_reference to the configured target from the original source and keyword assessment; a matching ASR spelling, alias replacement, catalogue entry or audience username alone is not identity proof.',
+            ...(artifact.aiReview?.keyword?.hits?.some((hit: any) => hit.recall?.kind === 'meme_reference') ? MEME_REFERENCE_RULES : []),
             'Read visible competition rosters/scoreboards before treating commentary as a target mention. A player actually named 小碎 (such as 上海EDGM·小碎) is contrary identity evidence for ASR/alias text 小岁; match commentary about that player must not confirm SUI. Recheck any recorded competitionContext and competitionSuppression against source evidence and the current frames.',
             'Resolve a mentioned person separately from the identity of whoever speaks the line. A referenced person need not speak or have verified voice rows in this clip. Inspect the actual linked question, response and repeated references: a nearby audience question explicitly naming a person, an in-clip spoken response that adopts that question, and continuous subsequent references can together resolve a homophonic ASR name. SourceAudience includes the same bounded surrounding context as speech; comments outside sourceWindow may explain a referent, but cannot establish an event absent from retained speech. Audience remarks remain audience evidence, never host statements.',
             'Do not require original-audio name verification solely because raw ASR and the contextual name differ (for example 小c/小岁 or c级/岁己) when the linked exchange resolves the referent without contrary evidence. Recheck the cited original cues and audience text, not only the preflight conclusion. Repetition of the same ambiguous spelling alone is insufficient. Ordinary C级 grades, a distinct person named 小C, unconnected chat, usernames and a configured alias alone do not resolve identity. If ambiguity remains material, cite the conflicting or missing link and the affected public claim; do not merely say the name is unconfirmed or the speaker row is unknown.',

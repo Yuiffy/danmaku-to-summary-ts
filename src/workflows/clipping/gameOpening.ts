@@ -173,6 +173,13 @@ type Runtime = EvidenceIO & { extract(args: string[], settings: Data): Promise<v
   request(prompt: string, frames: Data[], root: Data, settings: Data): Promise<Data>;
   cache(options: Data, run: () => Promise<Data>): Promise<Data> };
 
+/** A failed spoken binding cannot approve a cut; the visual/context branch must prove it independently. */
+export function unresolvedSpokenOpening(response: Data, message: string): Data | null {
+  if (!response.meta?.localAudioEvidence || !/phrase is absent or ambiguous|disagree about the boundary time/u.test(message)) return null;
+  return { ...response, text: JSON.stringify({ decision: 'uncertain', observed: false,
+    reason: `Independent spoken opening cannot be bound: ${message}` }) };
+}
+
 export async function verifyVisualOpening(options: Data, io: Runtime): Promise<Data> {
   const { audio, localAudioEvidence, source, directory, root, settings, gameName, host } = options;
   const known = options.frames.map((f: Data) => ({ ...f,
@@ -182,17 +189,19 @@ export async function verifyVisualOpening(options: Data, io: Runtime): Promise<D
   // Sparse chapter frames locate a search interval, not a reason to abandon review.
   // Probe only this gap; the existing dense pixel/context review independently
   // checks the resulting bracket again before it can select an accepted boundary.
-  if (first > 0 && known[first - 1].activity === 'other'
+  const missingLeadIn = first === 0 && known[0].time > audio.start + .001;
+  if (missingLeadIn || first > 0 && known[first - 1].activity === 'other'
     && known.slice(0, first).every((f: Data) => f.activity === 'other')) {
-    const left = known[first - 1].time, right = known[first].time;
-    if (right - left > 30) {
+    const left = missingLeadIn ? audio.start : known[first - 1].time, right = known[first].time;
+    if (missingLeadIn || right - left > 30) {
       const count = Math.ceil((right - left) / 30);
       if (count > 25) throw new Error('Opening search gap exceeds the bounded probe budget');
       const probes: Data[] = [], observations: Data[] = [];
       // The boundary frame subset still uses the whole-session observation IDs.
       const maxIndex = Math.max(...options.frames.map((f: Data) => f.index),
         ...options.frameObservations.map((f: Data) => f.index));
-      for (let i = 1; i < count; i++) probes.push({ index: maxIndex + i, time: left + (right - left) * i / count,
+      for (let i = missingLeadIn ? 0 : 1; i < count; i++) probes.push({ index: maxIndex + probes.length + 1,
+        time: left + (right - left) * i / count,
         path: path.join(directory, `opening-probe-${i}.jpg`), mimeType: 'image/jpeg' });
       for (const frame of probes) {
         await io.extract(['-y', '-ss', String(frame.time), '-i', source.mediaPath, '-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3', frame.path],

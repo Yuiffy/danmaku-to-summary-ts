@@ -10,6 +10,7 @@ import { AdminFeedback } from './AdminFeedback';
 import { AdminJobs, CommandRunner } from './AdminJobs';
 import { atomicJson, readJson } from './AdminFiles';
 import { AdminConfigStore } from './AdminConfigStore';
+import { AdminTitles } from './AdminTitles';
 import { createAdminServer } from './AdminServer';
 import { prepareCampaignCandidate } from '../../tools/clipping/promoteCampaignCandidate';
 import { campaignCandidatePath } from '../../workflows/clipping/campaignCandidate';
@@ -31,7 +32,7 @@ function fixture() {
   atomicJson(statePath, { type: 'own_stream_review_state', metadata });
   const clips = new AdminClipStore(root, () => [recordings]), registryPath = path.join(root, 'data/runtime/clip_upload_registry.json');
   const candidates = new AdminCampaignCandidates(clips, () => [recordings], () => [{ requiredGames: ['芙娅之魂'], roomIds: ['100'], startsAt: '2026-10-22', endsAt: '2026-11-06' }]);
-  const id = candidates.list({}).candidates[0].id, metadataPath = campaignCandidatePath(media, id);
+  const id = candidates.list({ view: 'all' }).candidates[0].id, metadataPath = campaignCandidatePath(media, id);
   const run = jest.fn<ReturnType<CommandRunner>, Parameters<CommandRunner>>(async (command, output) => {
     output(command.action);
     const arg = (key: string) => command.args[command.args.indexOf(key) + 1];
@@ -67,7 +68,8 @@ function fixture() {
   const ordinary = new AdminFeedback(clips, jobs, run, planner);
   const feedback = new AdminCampaignFeedback(candidates, clips, jobs, run, ordinary);
   const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
-  const app = createAdminServer({ clips, jobs, campaignCandidates: candidates, campaignFeedback: feedback, configs: new AdminConfigStore(root) }, token);
+  const titles = new AdminTitles(path.join(root, 'titles'), clips, jobs, async () => '[]');
+  const app = createAdminServer({ clips, jobs, titles, feedback: ordinary, campaignCandidates: candidates, campaignFeedback: feedback, configs: new AdminConfigStore(root) }, token);
   const input = (extra = {}) => ({ revision: candidates.detail(id).revision, publishApproved: true, ...extra });
   return { clips, candidates, id, metadataPath, registryPath, statePath, metadata, srt, media, run, jobs, planner, feedback, app, headers, input };
 }
@@ -80,7 +82,7 @@ it('registers only the selected recall and executes ordinary feedback in the sam
   expect(f.jobs.list()[0]).toMatchObject({ id: response.body.id, status: 'succeeded', edits: { title: '我手写的标题' }, plan: { clipId: '51', title: '我手写的标题' } });
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['register-campaign-candidate', 'import-campaign-candidate', 'rebuild', 'cut', 'enqueue']);
   expect(f.clips.record('51')).toMatchObject({ title: '我手写的标题', prefix: '【主播甲】', status: 'queued' });
-  expect(Object.keys(f.clips.records())).toEqual(['51']); expect(f.candidates.list({}).total).toBe(2);
+  expect(Object.keys(f.clips.records())).toEqual(['51']); expect(f.candidates.list({ view: 'all' }).total).toBe(2);
   expect(f.feedback.view(f.id).clip).toMatchObject({ id: 51, status: 'queued' });
   expect(() => f.feedback.submit(f.id, f.input({ title: '再次投稿' }))).toThrow('已投稿');
 });
@@ -88,6 +90,21 @@ it('accepts title-only publication and retains the exact requested title over ge
   const f = fixture(); f.feedback.submit(f.id, f.input({ title: '直接输入的标题' })); await f.jobs.flush();
   expect(f.jobs.list()[0]).toMatchObject({ note: '投', status: 'succeeded' });
   expect(f.clips.record('51').title).toBe('直接输入的标题');
+});
+it('keeps the submitted campaign title when registration succeeds but planning fails and the user retries on the numeric clip', async () => {
+  const f = fixture();
+  f.planner.mockRejectedValueOnce(new Error('provider unavailable'));
+  f.feedback.submit(f.id, f.input({ title: '失败后仍保留的手写标题' })); await f.jobs.flush();
+  expect(f.jobs.latest('campaign-feedback-publish', f.id)?.status).toBe('failed');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['register-campaign-candidate', 'import-campaign-candidate']);
+  const response = await request(f.app).post('/clips/51/actions').set(f.headers).send({ action: 'feedback-publish', note: '投',
+    publishApproved: true, revision: f.clips.detail('51').revision }).expect(202);
+  expect(response.body.edits.title).toBe('失败后仍保留的手写标题');
+  expect(response.body.titleChoice).toMatchObject({ mode: 'explicit', strategy: 'custom', title: '失败后仍保留的手写标题' });
+  await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '51')?.status).toBe('succeeded');
+  expect(f.clips.record('51').title).toBe('失败后仍保留的手写标题');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['register-campaign-candidate', 'import-campaign-candidate', 'rebuild', 'cut', 'enqueue']);
 });
 it('deduplicates identical double submits and rejects conflicting concurrent opinions', async () => {
   const f = fixture(), body = f.input({ title: '标题' });

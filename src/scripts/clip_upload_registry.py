@@ -26,20 +26,20 @@ import requests
 
 try:
     from .clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
-        terminal_upload_error_reason, format_upload_failure)
+        terminal_upload_error_reason, format_upload_failure, is_submission_recovery_pending)
     from .clip_review_parser import (normalize_path, parse_int_list, parse_tags, strip_internal_review_label,
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
-        terminal_upload_error_reason, format_upload_failure)
+        terminal_upload_error_reason, format_upload_failure, is_submission_recovery_pending)
     from clip_review_parser import (normalize_path, parse_int_list, parse_tags, strip_internal_review_label,
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -47,7 +47,7 @@ REGISTRY_PATH = RUNTIME_DIR / "clip_upload_registry.json"
 QUEUE_PATH = RUNTIME_DIR / "clip_upload_queue.json"
 LOCK_PATH = RUNTIME_DIR / "clip_upload_worker.lock"
 QUEUE_MUTATION_LOCK_WAIT_SECONDS = 30
-DEFAULT_DELAY = 60
+DEFAULT_DELAY = 0
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
 DEFAULT_BATCH_SIZE = 4
@@ -984,68 +984,12 @@ def cancel_job(args: argparse.Namespace) -> int:
 
 
 def resume_uploads(args: argparse.Namespace) -> int:
-    """Clear a confirmed-stale 137022 cooldown and resume its waiting jobs."""
-    if not acquire_lock():
-        print(
-            "[ERROR] upload worker is running; stop it before resuming uploads",
-            file=sys.stderr,
-        )
-        return 3
-
-    try:
-        queue = load_json(QUEUE_PATH, default_queue())
-        previous_cooldown = queue.get("submissionRateLimit")
-        resumed_at = now_iso()
-        resumed_jobs: List[str] = []
-        for job in queue.get("jobs", []):
-            is_rate_limit_wait = (
-                job.get("status") == "retry_wait"
-                and job.get("retryKind") == "bilibili_submission_rate_limit"
-            )
-            is_stale_resumed_pending = (
-                job.get("status") == "pending"
-                and is_bilibili_submission_rate_limit(job.get("lastOutput", ""))
-            )
-            if not (is_rate_limit_wait or is_stale_resumed_pending):
-                continue
-            previous_attempts = job.get("submissionRateLimitAttempts")
-            previous_output = str(job.pop("lastOutput", "") or "")
-            clear_job_retry_metadata(job)
-            extra: Dict[str, Any] = {
-                "resumedAt": resumed_at,
-                "resumeReason": str(args.note or "").strip(),
-            }
-            if previous_attempts is not None:
-                extra["previousSubmissionRateLimitAttempts"] = previous_attempts
-            if previous_output:
-                extra["previousRateLimitOutput"] = previous_output[-2000:]
-            mark_job(job, "pending", **extra)
-            resumed_jobs.append(str(job.get("id")))
-
-        clear_submission_rate_limit(queue)
-        queue["lastManualResume"] = {
-            "at": resumed_at,
-            "reason": str(args.note or "").strip(),
-            "previousCooldown": previous_cooldown,
-            "jobs": resumed_jobs,
-        }
-        commit_queue_snapshot(
-            queue,
-            job_ids=resumed_jobs,
-            queue_fields=("submissionRateLimit", "lastManualResume"),
-        )
-        print(
-            f"[OK] cleared Bilibili submission cooldown; resumed "
-            f"{len(resumed_jobs)} jobs: {','.join(resumed_jobs) or '-'}"
-        )
-        return 0
-    finally:
-        release_lock()
-
+    return clip_upload_retry.resume_uploads(args, sys.modules[__name__])
 
 def queue_status(args: argparse.Namespace) -> int:
     queue = load_json(QUEUE_PATH, default_queue())
     registry = load_json(REGISTRY_PATH, default_registry())
+    clip_upload_retry.show_protection(sys.modules[__name__])
     account_guard = queue.get("accountRollingUploadGuard")
     if isinstance(account_guard, dict):
         print(
@@ -1174,7 +1118,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             "--room-id",
             first.get("roomId") or "",
             "--delay",
-            str(int(job.get("delay") or DEFAULT_DELAY)),
+            "0",  # Queue pacing is account-wide; legacy per-clip delays no longer throttle bursts.
             "--only",
             only,
             "--state",
@@ -1208,7 +1152,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             output = cp.stdout or ""
             outputs.append(output)
             returncode = cp.returncode
-            submission_rate_limited = is_bilibili_submission_rate_limit(output)
+            submission_rate_limited = is_bilibili_submission_rate_limit(output) or '[RATE_LIMIT_406]' in output or '[UPLOAD_PAUSED]' in output
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or ""
             if isinstance(output, bytes):
@@ -1235,7 +1179,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             "--tid",
             str(int(first["tid"])),
             "--delay",
-            str(int(job.get("delay") or DEFAULT_DELAY)),
+            "0",
             "--only",
             only,
             "--state",
@@ -1263,7 +1207,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             output = cp.stdout or ""
             outputs.append(output)
             returncode = cp.returncode
-            submission_rate_limited = is_bilibili_submission_rate_limit(output)
+            submission_rate_limited = is_bilibili_submission_rate_limit(output) or '[RATE_LIMIT_406]' in output or '[UPLOAD_PAUSED]' in output
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or ""
             if isinstance(output, bytes):
@@ -1309,7 +1253,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 )
                 out2 = cp2.stdout or ""
                 outputs.append(out2)
-                if is_bilibili_submission_rate_limit(out2):
+                if is_bilibili_submission_rate_limit(out2) or '[RATE_LIMIT_406]' in out2 or '[UPLOAD_PAUSED]' in out2:
                     submission_rate_limited = True
                     break
                 if cp2.returncode != 0:
@@ -1487,43 +1431,10 @@ def set_unfinished_clip_statuses(
 
 
 def schedule_retry_or_block(
-    registry: Dict[str, Any],
-    job: Dict[str, Any],
-    ids: Iterable[int],
-    output: str,
-    reason: str,
+    registry: Dict[str, Any], job: Dict[str, Any], ids: Iterable[int], output: str, reason: str,
 ) -> str:
-    """Retry transient failures instead of losing partially completed jobs."""
-    attempt = int(job.get("attempts") or 0) + 1
-    last_output = str(output or "")[-12000:]
-    ids_list = [int(clip_id) for clip_id in ids]
-    if attempt >= MAX_AUTOMATIC_JOB_RETRIES:
-        set_unfinished_clip_statuses(registry, ids_list, "failed", reason)
-        clear_job_retry_metadata(job)
-        mark_job(
-            job,
-            "blocked",
-            attempts=attempt,
-            clipStatuses=clip_status_map(registry, ids_list),
-            lastOutput=last_output,
-            error=f"automatic retry limit reached: {reason}",
-        )
-        return "blocked"
-
-    set_unfinished_clip_statuses(registry, ids_list, "queued")
-    retry_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
-        seconds=retry_delay_seconds(attempt)
-    )
-    mark_job(
-        job,
-        "retry_wait",
-        attempts=attempt,
-        retryAt=retry_at.isoformat(),
-        clipStatuses=clip_status_map(registry, ids_list),
-        lastOutput=last_output,
-        error=reason,
-    )
-    return "retry_wait"
+    """Compatibility entry point for the injectable retry policy."""
+    return clip_upload_retry.schedule_retry_or_block(sys.modules[__name__], registry, job, ids, output, reason)
 
 
 def schedule_submission_rate_limit_retry(
@@ -1543,13 +1454,12 @@ def schedule_submission_rate_limit_retry(
             previous_streak = 0
     streak = previous_streak + 1
     retry_at, delay_seconds = set_submission_rate_limit_cooldown(
-        queue,
-        job.get("id"),
-        streak,
+        queue, job.get("id"), streak,
     )
     ids_list = [int(clip_id) for clip_id in ids]
     attempt = int(job.get("attempts") or 0) + 1
     submit_attempt = int(job.get("submissionRateLimitAttempts") or 0) + 1
+    clip_upload_retry.record_submission_rate_limit(queue, queue["submissionRateLimit"])
     reason = (
         f"Bilibili submission rate limited (code {BILIBILI_SUBMISSION_RATE_LIMIT_CODE}); "
         f"retry in {delay_seconds // 60} minutes"
@@ -2016,6 +1926,8 @@ def recover_interrupted_jobs() -> bool:
 
 def run_one_job() -> bool:
     registry, queue = clip_upload_state.load_worker_snapshot(sys.modules[__name__])
+    if clip_upload_retry.pacing_gate(sys.modules[__name__]):
+        return False
     account_guard, guard_changed = refresh_account_upload_guard(queue, registry)
     if guard_changed:
         queue = commit_queue_snapshot(
@@ -2023,8 +1935,7 @@ def run_one_job() -> bool:
         )
         account_guard = queue["accountRollingUploadGuard"]
 
-    # Keep the Bilibili 137022 cooldown authoritative.  Ignore only the local
-    # rolling guard here so its next waiting job can be annotated and notified.
+    # Keep 137022 authoritative; ignore the local rolling guard to annotate waiting jobs.
     job = next_pending_job(queue, ignore_account_upload_limit=True)
     if not job:
         return False
@@ -2098,14 +2009,19 @@ def run_one_job() -> bool:
 
     all_outputs: List[str] = []
     failed = False
+    pacing_waiting = False
     submission_rate_limited = False
     account_upload_limited = False
     made_upload_progress = False
     last_returncode = 0
     terminal_reason = ""
-    upload_groups = split_upload_groups(groups, batch_size_for_job(job))
+    batch_size = 1 if clip_upload_retry.protection_status(sys.modules[__name__])["slow"] else batch_size_for_job(job)
+    upload_groups = split_upload_groups(groups, batch_size)
     group_index = 0
     while group_index < len(upload_groups):
+        if clip_upload_retry.pacing_gate(sys.modules[__name__]):
+            pacing_waiting = True
+            break
         # Refresh before every subprocess so uploads made outside this queue
         # are included before another local slot is consumed.
         account_guard, guard_changed = refresh_account_upload_guard(
@@ -2169,9 +2085,11 @@ def run_one_job() -> bool:
         if is_bilibili_submission_rate_limit(output):
             submission_rate_limited = True
             break
+        if "[RATE_LIMIT_406]" in output:
+            break
         if cp.returncode != 0:
             failed = True
-            if terminal_upload_error_reason(output) != "deterministic uploader error: submission outcome unknown":
+            if not is_submission_recovery_pending(output):
                 break
         if account_upload_limited:
             break
@@ -2225,6 +2143,10 @@ def run_one_job() -> bool:
                 ids,
                 last_output,
             )
+        elif pacing_waiting or "[UPLOAD_PAUSED]" in last_output:
+            clip_upload_retry.schedule_protection_wait(sys.modules[__name__], registry, current, ids, last_output)
+        elif "[RATE_LIMIT_406]" in last_output:
+            clip_upload_retry.schedule_http_406_retry(sys.modules[__name__], registry, current, ids, last_output)
         elif failed:
             schedule_retry_or_block(
                 registry,
@@ -2398,7 +2320,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "resume",
-        help="Clear a manually confirmed-stale Bilibili submission cooldown",
+        help="Manually release upload protection and submission cooldown after investigation",
     )
     p.add_argument("--note", default="")
     p.set_defaults(func=resume_uploads)

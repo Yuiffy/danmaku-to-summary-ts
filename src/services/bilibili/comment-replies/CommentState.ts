@@ -2,11 +2,16 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CommentAudience, CommentEvent, LIMITS, positiveId, publishableAnswer, QUOTA_NOTICE, SAFETY_NOTICE } from './CommentPolicy';
 import { openCommentOwnerLock } from './CommentOwnerLock';
+import { CommentFeedbackNote } from '../../../core/admin/commentFeedback';
+import { validCommentFeedback } from './CommentFeedback';
 
 export interface CommentJob {
   event: CommentEvent;
   status: 'queued' | 'generating' | 'ready' | 'sending' | 'sent' | 'unknown' | 'failed' | 'expired' | 'skipped';
   answer?: string;
+  feedback?: CommentFeedbackNote;
+  feedbackSaved?: boolean;
+  feedbackRetryAt?: number;
   replyId?: string;
   admittedAt: number;
   notice?: boolean;
@@ -71,6 +76,9 @@ function validateState(state: CommentState, botUid: string): void {
         ![event.root, event.parent].every(id => id === '0' || positiveId(id)) || event.parent === '0' && event.root !== '0' ||
         event.parent !== '0' && event.root === '0' || typeof event.text !== 'string' || Array.from(event.text).length > LIMITS.inputChars ||
         !timestamp(event.createdAt) || !timestamp(job.admittedAt) ||
+        job.feedback !== undefined && !validCommentFeedback(job.feedback, event) ||
+        job.feedbackSaved !== undefined && (typeof job.feedbackSaved !== 'boolean' || !job.feedback) ||
+        job.feedbackRetryAt !== undefined && (!timestamp(job.feedbackRetryAt) || !job.feedback) ||
         event.authorName !== undefined && (typeof event.authorName !== 'string' || event.authorName.length > 80) ||
         job.quotaAt !== undefined && !timestamp(job.quotaAt) || job.noticeUntil !== undefined && !timestamp(job.noticeUntil) ||
         job.audience !== undefined && (!['available', 'unavailable'].includes(job.audience.status) ||

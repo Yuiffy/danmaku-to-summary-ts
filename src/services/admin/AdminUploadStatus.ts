@@ -1,4 +1,6 @@
 import { UploadQueueItem, UploadQueueStatus, UploadSubmission } from '../../core/admin/uploadStatus';
+import { uploadObservation } from './AdminUploadObservation';
+import { UploadTelemetry } from './AdminUploadTelemetry';
 
 type RecordValue = Record<string, any>;
 const object = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -25,14 +27,14 @@ function reason(job: RecordValue): string {
 }
 
 /** Read-only view of the full worker queue and registry, with an injected clock. */
-export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, now = Date.now()): UploadQueueStatus {
+export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, now = Date.now(), telemetry?: UploadTelemetry): UploadQueueStatus {
   const queue = object(queueValue), records = object(recordsValue), jobs = array(queue.jobs);
   const guard = object(queue.accountRollingUploadGuard), cooldown = object(queue.submissionRateLimit);
   const cutoff = now - WINDOW_SECONDS * 1000;
   const merged = new Map<string, UploadSubmission>();
   function addEvent(raw: RecordValue) {
     const at = time(raw.at);
-    if (at === undefined) return;
+    if (at === undefined || at > now) return;
     const key = raw.bvid ? `bvid:${raw.bvid}` : raw.aid ? `aid:${raw.aid}` : raw.clipId != null
       ? `clip:${raw.jobId || ''}:${raw.clipId}` : `at:${iso(at)}:${raw.title || ''}`;
     const previous = merged.get(key);
@@ -99,6 +101,7 @@ export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, no
   const output = completed ? `${text(completed.error)}\n${text(completed.lastOutput)}` : '';
   return {
     observedAt: iso(now)!, state,
+    observation: uploadObservation(allEvents, queue, now, telemetry),
     summary: { running: '正在执行投稿任务', waiting: '等待后自动尝试', ready: '已到可尝试时间，等待投稿进程处理', blocked: '需要核对队列', idle: '暂无排队投稿' }[state],
     reasons, queuedJobs: queuedRaw.length, queuedClips: waitingIds.size, activeJobs: running.length,
     blockedJobs: blocked.length, failedJobs: jobs.filter(job => job.status === 'failed').length,

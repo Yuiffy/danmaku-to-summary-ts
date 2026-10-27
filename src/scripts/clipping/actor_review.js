@@ -110,7 +110,7 @@ function actorReviewPrompt(packets, context, options = {}) {
             'automaticNormalizations是词表/SC锚点自动修字记录，不是人工听写真值或声纹身份凭据；其中SC是观众文本。结合原始识别和上下文判断，不能只因规范化后出现人名就断言该人物在场、发言或执行动作。'
         ] : []),
         '已知嘉宾做出标题动作时必须在标题正文用copyName，例如已确认Guest就写其昵称，不写连麦对象或他/她。已核实的被提及者、转述对象也应在涉及他们的公开字段中写明公开称呼，不一律写对方、有人或朋友；本人未出声不意味着故事对象无法具名。',
-        '先核验再命名：actor/target已确认就同步修订copy中的泛称，不能仅为规避姓名校验而丢弃已确认的角色或改成null。每个字段先交代姓名，再使用代词；抽象封面不必硬塞人名。泛指、假设、同音未消歧或多个可能对象仍保留未知，不机械替换代词，不用ASR猜名。',
+        '先核验再命名：actor/target已确认就同步修订copy中的泛称，不能仅为规避姓名校验而丢弃已确认的角色或改成null。需要区分的嘉宾或故事人物在每个字段先交代姓名，再使用代词；主播本人已由发布前缀或语境交代时，标题默认省略主语，不因claims实名而补主播名或“主播”；抽象封面不必硬塞人名。泛指、假设、同音未消歧或多个可能对象仍保留未知，不机械替换代词，不用ASR猜名。',
         '每段返回accept、repair或needs_review。accept/repair都给最终copy和claims；未能核实的命名动作不要批准。',
         'claims覆盖所有非空公开字段，每个独立动作单独一条；fields指这个动作出现在哪些字段。narrator/actor/target填人名或null；sourceKind填live_speech/recount/playback/audience/uncertain。',
         'identityBasis填voice/explicit_text/unresolved；speakerCueIds支持当前讲述者身份，cueIds支持具体动作。不要把未被识别的匿名人硬写实名。',

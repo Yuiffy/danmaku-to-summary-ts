@@ -1109,16 +1109,13 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
         const profile = String(options.model_profile || '').trim().toLowerCase();
-        // Release idle resident GPU weights before starting the standard-model handoff supervisor.
+        // The supervisor leases reusable weights from the queue-owned worker;
+        // keep that connection alive across standard-model handoff jobs.
         options.device_handoff = { ...config.asr?.device_handoff,
             cpu_fallback_enabled: config.asr?.cpu_fallback?.enabled !== false, min_available_memory_gb: config.asr?.cpu_fallback?.min_available_memory_gb ?? 10,
             enabled: config.asr?.device_handoff?.enabled === true && options.model === 'paraformer-zh'
                 && (!options.finetuned_model || profile === 'default') && profile !== 'finetuned'
                 && ['cuda', 'cuda:0'].includes(options.device || 'cuda') };
-        if (options.device_handoff.enabled) {
-            const release = runPersistentAsrWorker({ process_timeout_s: 30 }, 'ASR device handoff', 'shutdown');
-            if (release) await release;
-        }
         options.room_id = String(context.room_id || context.roomId || '').trim() || null;
         options.emotion_analysis = resolveEmotionAnalysisOptions(options.emotion_analysis, context);
         const source = context.sourceMediaPath || mediaPath;

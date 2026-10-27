@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { openingBoundary, validateVisualOpening, validateVisualOpeningEnvelope, verifyVisualOpening } from './gameOpening';
+import { openingBoundary, unresolvedSpokenOpening, validateVisualOpening, validateVisualOpeningEnvelope, verifyVisualOpening } from './gameOpening';
 
 type Data = Record<string, any>;
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -51,6 +51,30 @@ function harness(contextPatch: Data = {}, uncertainAt?: number) {
 }
 
 describe('independent silent visual game opening', () => {
+  test('only a failed spoken match with independent evidence can enter visual review; corrupt provenance still fails', () => {
+    const response = { text: 'original model reply', meta: { localAudioEvidence: { version: 1 } } };
+    expect(JSON.parse(unresolvedSpokenOpening(response, 'Game boundary phrase is absent or ambiguous in its original excerpt')!.text))
+      .toMatchObject({ decision: 'uncertain', observed: false });
+    expect(response.text).toBe('original model reply');
+    expect(unresolvedSpokenOpening(response, 'Independent original audio source changed')).toBeNull();
+    expect(unresolvedSpokenOpening({ text: 'no independent evidence' }, 'Game boundary phrase is absent or ambiguous')).toBeNull();
+  });
+  test.each([false, true])('missing pre-game chapter frames trigger bounded original lead-in probes (%s)', async uncertain => {
+    const { options, io } = harness({}, uncertain ? 100 : undefined);
+    options.frames = [{ index: 8, time: 130 }];
+    options.frameObservations = [{ index: 8, activity: 'gameplay' }];
+    if (uncertain) await expect(verifyVisualOpening(options, io)).rejects.toThrow(/No bounded earliest/);
+    else {
+      const review = await verifyVisualOpening(options, io);
+      expect(review.start).toBeLessThan(117.1);
+      expect(review.start).toBeGreaterThanOrEqual(116.85);
+      expect(validateVisualOpening(review, source, options.audio, io)).toBe(review.start);
+      const probes = io.request.mock.calls.filter(([prompt]) => prompt.includes('search interval'));
+      expect(probes.length).toBeGreaterThan(0);
+      expect(probes[0][1].some((frame: Data) => frame.time === options.audio.start)).toBe(true);
+      expect(probes[0][1].every((frame: Data) => frame.index > 8)).toBe(true);
+    }
+  });
   test.each([false, true])('a 73-second sparse gap is probed without approving ambiguous pixels (%s)', async uncertain => {
     const { options, io } = harness({}, uncertain ? 110 + 73 / 3 : undefined);
     options.audio.end = 200; options.localAudioEvidence.primary.end = 200;

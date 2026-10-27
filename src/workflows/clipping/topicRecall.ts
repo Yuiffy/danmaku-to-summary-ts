@@ -1,4 +1,6 @@
 /** Pure recall hypotheses. Original subtitle words are never replaced here. */
+import { findTopicMemeMatches, topicMemeIdentityIssues } from './topicMemeRecall';
+import type { TopicMemeConfig, TopicMemeEvidence } from './topicMemeRecall';
 export interface TopicRecallSegment { start: number; end: number; text: string; [key: string]: unknown }
 export interface TopicRecallRule {
     id: string;
@@ -22,9 +24,10 @@ export interface TopicRecallHypothesis {
     endChar: number;
 }
 export interface TopicRecallEvidence {
-    kind: 'ambiguous_asr';
+    kind: 'ambiguous_asr' | 'meme_reference';
     requiresSemanticConfirmation: true;
     hypotheses: TopicRecallHypothesis[];
+    meme?: TopicMemeEvidence;
 }
 export interface TopicRecallMatch {
     index: number;
@@ -37,6 +40,7 @@ interface TopicConfig {
     ignoredRoomIds?: string[];
     review?: { enabled?: boolean; mode?: string };
     ambiguousRecall?: TopicRecallConfig;
+    memeRecall?: TopicMemeConfig;
 }
 const escaped = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 const lowSignal = /谢谢|谢|感谢|灯牌|粉丝团|人气票|礼物|舰长|上舰|提督|总督|\bID\b|昵称/iu;
@@ -97,29 +101,34 @@ export function findAmbiguousTopicMatches(segments: TopicRecallSegment[], config
 export function mergeTopicRecallMatches(segments: TopicRecallSegment[], literal: TopicRecallMatch[],
     config: TopicConfig, context: { roomId?: string | null } = {}): TopicRecallMatch[] {
     const literalIndices = new Set(literal.map(match => match.index));
-    return [...literal, ...findAmbiguousTopicMatches(segments, config, context)
-        .filter(match => !literalIndices.has(match.index))].sort((a, b) => a.index - b.index);
+    const names = [...literal, ...findAmbiguousTopicMatches(segments, config, context)
+        .filter(match => !literalIndices.has(match.index))];
+    const nameIndices = new Set(names.map(match => match.index));
+    return [...names, ...findTopicMemeMatches(segments, config, context)
+        .filter(match => !nameIndices.has(match.index))].sort((a, b) => a.index - b.index);
 }
 
 interface AssessedHit {
     cueId: string;
     verdict: string;
     evidenceCueIds: string[];
+    evidenceDanmakuIds?: string[];
     recall?: TopicRecallEvidence;
 }
 interface SourceCue { id: string; start: number; end: number; text: string }
 
 /** A model label alone cannot authorize an ambiguous-name clip. */
 export function topicRecallIdentityIssues(hits: AssessedHit[], subtitles: SourceCue[],
-    bounds: { start: number; end: number }): string[] {
+    bounds: { start: number; end: number }, audience: Array<{ id: string; time: number; text: string }> = []): string[] {
     const inside = new Set(subtitles.filter(cue => cue.start >= bounds.start && cue.end <= bounds.end).map(cue => cue.id));
-    return hits.filter(hit => hit.recall?.requiresSemanticConfirmation && hit.verdict !== 'false_match').flatMap(hit => {
+    return [...topicMemeIdentityIssues(hits, subtitles, bounds, audience), ...hits.filter(hit =>
+        hit.recall?.requiresSemanticConfirmation && hit.recall.kind !== 'meme_reference' && hit.verdict !== 'false_match').flatMap(hit => {
         if (hit.verdict !== 'mention') return [`疑似人名 ${hit.cueId} 的语义尚未确认`];
         if (!hit.evidenceCueIds.some(id => id !== hit.cueId && inside.has(id))) {
             return [`疑似人名 ${hit.cueId} 缺少片内独立语义依据`];
         }
         return [];
-    });
+    })];
 }
 
 interface PendingRecallHit extends AssessedHit { id: string; start: number; end: number }
@@ -140,7 +149,8 @@ export function holdUnresolvedTopicRecall(plan: RecallPlan, windows: RecallWindo
     const clips = windows.flatMap(window => {
         const hits = unresolved.filter(hit => hit.start >= window.start && hit.end <= window.end);
         if (!hits.length) return [];
-        const reason = '疑似人名语义未确认，模型未给出事件选窗';
+        const reason = hits.some(hit => hit.recall?.kind === 'meme_reference')
+            ? '梗句与目标人物关联未确认，模型未给出事件选窗' : '疑似人名语义未确认，模型未给出事件选窗';
         return [{ ...window, status: 'needs_review', event: '', reason, score: 0, sourceKind: 'uncertain',
             issues: [reason], warnings: [], subtitleEdits: [], rejectedSubtitleEdits: [], subtitleSegments: [],
             copy: null, hits, hitIds: hits.map(hit => hit.id), sourceSha256: plan.sourceSha256 }];
@@ -152,7 +162,10 @@ export function holdUnresolvedTopicRecall(plan: RecallPlan, windows: RecallWindo
 export function topicRecallSubtitleEditSupport(edit: { original: string; replacement: string; evidenceCueIds: string[] },
     cue: SourceCue, input: { hits: Array<{ recall?: TopicRecallEvidence }>; target: { names: string[] } },
     inside: Set<string>, hits: AssessedHit[]): boolean | null {
-    const forms = input.hits.flatMap(hit => hit.recall?.hypotheses.map(hypothesis => hypothesis.form) || []);
+    if (input.target.names.some(name => edit.replacement.includes(name)) && input.hits.some(hit => hit.recall?.kind === 'meme_reference'
+        && hit.recall.meme?.cues.some(row => row.start === cue.start && row.end === cue.end))) return false;
+    const forms = input.hits.filter(hit => hit.recall?.kind !== 'meme_reference')
+        .flatMap(hit => hit.recall?.hypotheses.map(hypothesis => hypothesis.form) || []);
     if (!forms.some(form => form.toLowerCase() === edit.original.toLowerCase())
         || !input.target.names.includes(edit.replacement)) return null;
     return hits.some(hit => hit.cueId === cue.id && hit.verdict === 'mention'

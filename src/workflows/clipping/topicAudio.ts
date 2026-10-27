@@ -22,7 +22,8 @@ export function topicAudioSettings(raw: Data = {}, names: string[] = []): TopicA
 }
 
 export function planTopicAudio(input: Data, settings: TopicAudioSettings, budget: TopicAudioBudget): Data {
-    const targets = input.hits.filter((h: Data) => h.recall?.requiresSemanticConfirmation === true);
+    const targets = input.hits.filter((h: Data) => h.recall?.requiresSemanticConfirmation === true
+        && h.recall.kind !== 'meme_reference');
     const windows: Data[] = [], skipped: Data[] = [];
     if (!settings.enabled || !targets.length) return { windows, skipped };
     for (const hit of targets) {
@@ -84,7 +85,7 @@ export function validateTopicAudio(value: Data, request: Data): void {
 }
 
 export function topicAudioHitIssue(hit: Data, checks?: Data): string | null {
-    if (!hit.recall?.requiresSemanticConfirmation || !checks) return null;
+    if (!hit.recall?.requiresSemanticConfirmation || hit.recall.kind === 'meme_reference' || !checks) return null;
     const rows = [...(checks.windows || []), ...(checks.skipped || [])].filter(r => r.hitIds.includes(hit.id));
     if (rows.length && rows.every(r => r.status === 'aligned')) return null;
     return `局部音频待核: ${hit.id} ${rows.map(r => r.status + (r.reason ? ` (${r.reason})` : '')).join('; ') || 'missing_audio_check'}`;

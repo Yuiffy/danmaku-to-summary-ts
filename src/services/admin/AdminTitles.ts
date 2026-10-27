@@ -113,6 +113,9 @@ export class AdminTitles {
     if (!applies && !publishes) return { body };
     if (body.titleSetId !== undefined && (body.titleSetId !== set.id || body.titleRevision !== this.revision(set))) throw new AdminError('标题选择已变化，请刷新后再提交', 409);
     if (set.selection && body.titleSetId === undefined) throw new AdminError('已有保存的标题选择，请刷新审核页后再提交', 409);
+    if (body.action === 'feedback-publish' && body.title === undefined && !set.selection && !set.history.length) {
+      body.title = this.jobs.failedFeedbackTitle(id, detail.revision, typeof body.note === 'string' ? body.note.trim() : '');
+    }
     const title = typeof body.title === 'string' && body.title.trim() ? body.title : set.selection?.title || detail.title;
     if (publishes && title !== detail.title) throw new AdminError('选定标题尚未应用，请使用“按意见修改并投稿”', 409);
     if (applies && set.selection && body.title === undefined) body.title = set.selection.title;

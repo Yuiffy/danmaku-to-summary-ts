@@ -5,7 +5,7 @@ const localRequire = createRequire(path.resolve('package.json'));
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
     if (args.includes('--help')) {
-        console.log('campaign:early [--room ID --date YYYY_MM_DD] [--trigger | --loop]\nDefault: preview completed title-switch batches. --trigger enqueues; --loop watches enabled campaign rooms every 30s.');
+        console.log('campaign:early [--room ID --date YYYY_MM_DD] [--trigger | --loop]\nManual live snapshot: --room ID --date YYYY_MM_DD --snapshot --note "game segment ended" --trigger\nDefault: preview completed title-switch batches. --trigger enqueues; --loop watches enabled campaign rooms every 30s.');
         return;
     }
     const room = args.includes('--room') ? args[args.indexOf('--room') + 1] : undefined;
@@ -13,6 +13,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const date = args.includes('--date') ? args[args.indexOf('--date') + 1] : undefined;
     if (date && !/^\d{4}_\d{2}_\d{2}$/u.test(date)) throw new Error('Expected --date YYYY_MM_DD');
     if (args.includes('--trigger') && !room) throw new Error('Manual trigger requires --room');
+    if (args.includes('--snapshot')) {
+        const note = args.includes('--note') ? args[args.indexOf('--note') + 1] : '';
+        if (!room || !date || !note?.trim() || !args.includes('--trigger') || args.includes('--loop')) throw new Error('Manual snapshot requires --room, --date, --note and --trigger; no --loop');
+        const config = localRequire('./src/scripts/config-loader').getConfig();
+        const result = await localRequire('./src/scripts/campaign_snapshot.ts').triggerCampaignSnapshot(config, room, date, note);
+        console.log(JSON.stringify(result));
+        return;
+    }
     const runtime = localRequire('./src/scripts/campaign_early.ts');
     const policy = localRequire('./src/core/media/CampaignEarlyPolicy.ts');
     const loader = localRequire('./src/scripts/config-loader');

@@ -87,8 +87,12 @@ def build_clip_time_range(source_desc, start_sec, end_sec):
     return offset_to_clock(start_sec), offset_to_clock(end_sec)
 
 
-def build_desc(clip_title, source_desc, start_str, dur_str, generated_description=''):
+def build_desc(clip_title, source_desc, start_str, dur_str, generated_description='', *, source_kind=''):
     """用预生成内容和统一的来源/时间字段构建视频简介。"""
+    if source_kind == 'social_post':
+        if not str(generated_description or '').strip():
+            raise ValueError('social post requires a reviewed source-dated description')
+        return generated_description.strip()
     parts = dur_str.split(':')
     dur_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
     sparts = start_str.split(':')

@@ -149,7 +149,9 @@ function buildPreflightPrompt(input, phase = 'single', lockedClip = null, extraR
         require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').SPEAKER_IDENTITY_RULE,
         'The source host identifies the recording, not the speaker of every sentence. Distinguish host, guests, recount, quoted dialogue and playback. Never turn a retold incident into something happening now, reverse roles, invent gender/relationships or treat every first-person sentence as the host.',
         'Decide EACH hit as mention / false_match / uncertain, with a reason and supplied evidenceCueIds. Include every hit exactly once. Every selected clip needs an in-clip hit and in-clip speech evidence. Keep uncertain but worthwhile candidates as needs_review; choose ready only when the event, identity and copy are supportable.',
-        ...(input.hits.some(hit => hit.recall?.requiresSemanticConfirmation) ? [
+        ...(input.hits.some(hit => hit.recall?.kind === 'meme_reference')
+            ? require('../workflow-runtime').loadWorkflow('clipping/topicRecovery').MEME_REFERENCE_RULES : []),
+        ...(input.hits.some(hit => hit.recall?.requiresSemanticConfirmation && hit.recall.kind !== 'meme_reference') ? [
             'A hit with recall.kind=ambiguous_asr is ONLY a name hypothesis. Its keywords are possible targets, not literal words in the subtitle. The supplied original text is unchanged. Do not assume the target was mentioned or replace words merely because a recall rule matched.',
             'Assess the grammatical and conversational meaning: 随机 can mean random selection, 随即 an adverb, 自己 a reflexive pronoun, 这一集 an episode, and 最急 an urgency description. Explicit ordinary usage is false_match. If the word could refer to a person but the referent is unresolved, choose uncertain and preserve the original words.',
             'Read the full sentence across neighboring subtitle rows before choosing an ordinary meaning. 被/对/和/跟 followed by a suspected name can mark an agent, object or companion; do not silently drop these words to force an adverb or reflexive reading. A plausible person reference without enough target evidence remains uncertain.',
@@ -182,7 +184,7 @@ function buildPreflightPrompt(input, phase = 'single', lockedClip = null, extraR
         ...extraRules,
         'Return JSON only. Write reasons, event and warnings in Chinese.',
         finishing ? 'Return {"clips":[<one finalized clip using the locked id/startCueId/endCueId and hitIds>]}. The keyword decisions are already supplied and cannot be replaced.'
-            : 'Return {"hits":[{"id":"K1","verdict":"mention|false_match|uncertain","reason":"...","evidenceCueIds":["G1"]}],"clips":[...]}. An empty clips array is valid; still return all hit decisions.',
+            : 'Return {"hits":[{"id":"K1","verdict":"mention|false_match|uncertain","reason":"...","evidenceCueIds":["G1"],"evidenceDanmakuIds":[]}],"clips":[...]}. An empty clips array is valid; still return all hit decisions.',
         'Each clip: {"id":"E1-1","status":"ready|needs_review","startCueId":"G1","endCueId":"G20","hitIds":["K1"],"event":"...","reason":"...","score":80,"extensionReason":"... or empty","sourceKind":"recount","evidenceCueIds":["G1"],"evidenceDanmakuIds":[],"warnings":[]'
             + (single || finishing ? ',"title":"...","description":"...","coverText":"...\\n..."' : '')
             + (finishing ? ',"subtitleEdits":[]}'

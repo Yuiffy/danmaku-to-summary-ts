@@ -83,6 +83,27 @@ function topicFixture() {
 }
 
 describe('keyword/topic automatic publication final review', () => {
+    test('revalidates the retained meme and independently cited audience context before final review', async () => {
+        const { artifact, input } = topicFixture(), io = makeIO();
+        const cue = { id: 'G1', start: 150, end: 152, text: '陪你这个猪过周五' };
+        artifact.aiReview.keyword.hits = [{ ...cue, id: 'K1', cueId: 'G1', keywords: ['岁己'], verdict: 'mention',
+            reason: '弹幕明确指向该标题梗', evidenceCueIds: ['G1'], evidenceDanmakuIds: ['D1'],
+            recall: { kind: 'meme_reference', requiresSemanticConfirmation: true, hypotheses: [], meme: {
+                ruleId: 'sui-pig-title', keyword: '岁己', targetNames: ['岁己'], phrase: '陪你这个猪', contextSeconds: 60,
+                cues: [{ start: cue.start, end: cue.end, text: cue.text }] } } }];
+        input.evidence = { cues: [cue] };
+        input.audience = [{ id: 'D1', time: 170, text: '岁己前辈先用的' }];
+        const result = await reviewPublication(artifact, input, io);
+        expect(result.publicationDecision.action).toBe('auto_queue');
+        expect((io.request as jest.Mock).mock.calls[0][0]).toContain('NEVER replace a meme phrase');
+        (io.request as jest.Mock).mockClear();
+        input.audience[0].text = '岁己晚上好';
+        const unsupported = await reviewPublication(artifact, input, io);
+        expect(unsupported.publicationDecision.action).toBe('needs_human');
+        expect(unsupported.publicationReview.issues.join(' ')).toContain('解释梗关联');
+        expect(io.request).not.toHaveBeenCalled();
+    });
+
     test('explicit user word corrections reach final review only for the matching current rendered cue', async () => {
         const { artifact, input } = topicFixture(), io = makeIO();
         input.retainedSubtitles = [{ start: 0, end: 2, text: '小栞今天给我送礼物了' }];

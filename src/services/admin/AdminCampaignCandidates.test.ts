@@ -42,14 +42,14 @@ it('discovers zero-ID sessions and early batches, isolates repeated R labels and
   const f = fixture();
   f.session('100', '2026_10_23'); f.session('200', '2026_10_24', true);
   f.session('999', '2026_10_24'); f.session('100', '2026_10_01');
-  const all = f.candidates.list({});
+  const all = f.candidates.list({ view: 'all' });
   expect(all.total).toBe(6);
   expect(all.candidates.map(row => row.label)).toEqual(['R1', 'R2', 'R10', 'R1', 'R2', 'R10']);
   expect(new Set(all.candidates.map(row => row.id)).size).toBe(6);
   expect(all.rooms.map(row => row.name).sort()).toEqual(['主播100', '主播200']);
-  expect(f.candidates.list({ room: '100' }).total).toBe(3);
-  expect(f.candidates.list({ session: all.candidates[0].session }).total).toBe(3);
-  expect(f.candidates.list({ search: 'r2' }).total).toBe(2);
+  expect(f.candidates.list({ room: '100', view: 'all' }).total).toBe(3);
+  expect(f.candidates.list({ session: all.candidates[0].session, view: 'all' }).total).toBe(3);
+  expect(f.candidates.list({ search: 'r2', view: 'all' }).total).toBe(2);
   expect(f.clips.list({}).total).toBe(0);
   expect(fs.existsSync(path.join(root, 'data/runtime/clip_upload_registry.json'))).toBe(false);
 });
@@ -59,7 +59,7 @@ it('merges saved selection history without duplicating the same candidate across
   atomicJson(s.statePath, { type: 'own_stream_review_state', metadata: { ...s.metadata, deferredSelectionHistory: { rows: [history] },
     publication: { policy: { mode: 'enforce' }, decisions: [{ index: 4, selected: false, title: '发布备选', start: 10, end: 20 }] } } });
   atomicJson(s.statePath.replace('REVIEW_STATE', 'REVIEW_OLD_STATE'), { type: 'own_stream_review_state', metadata: s.metadata });
-  const rows = f.candidates.list({}).candidates;
+  const rows = f.candidates.list({ view: 'all' }).candidates;
   expect(rows.map(row => row.label)).toEqual(['P4', 'R1', 'R2', 'R10', 'R20']);
   expect(rows.find(row => row.label === 'R20')?.title).toBe('保留旧备选');
 });
@@ -70,15 +70,15 @@ it('sorts by score or natural candidate number across sessions with stable ties 
       aiStatus: { ranking: { ...session.metadata.aiStatus.ranking,
         skipped: session.metadata.aiStatus.ranking.skipped.map((row, index) => ({ ...row, score: scores[index] })) } } } });
   }
-  const identities = (sort?: string) => f.candidates.list({ sort }).candidates.map(row => `${row.roomId}:${row.label}`);
+  const identities = (sort?: string) => f.candidates.list({ sort, view: 'all' }).candidates.map(row => `${row.roomId}:${row.label}`);
   expect(identities('score-desc')).toEqual(['200:R2', '100:R1', '200:R1', '200:R10', '100:R2', '100:R10']);
   expect(identities('score-asc')).toEqual(['100:R2', '200:R10', '200:R1', '200:R2', '100:R1', '100:R10']);
   expect(identities('number-asc')).toEqual(['200:R1', '100:R1', '200:R2', '100:R2', '200:R10', '100:R10']);
   expect(identities('number-desc')).toEqual(['200:R10', '100:R10', '200:R2', '100:R2', '200:R1', '100:R1']);
   expect(identities('invalid-sort')).toEqual(identities());
   expect(f.candidates.list({ sort: 'invalid-sort' }).sort).toBe('session');
-  const selectedSession = f.candidates.list({ room: '100' }).candidates[0].session;
-  expect(f.candidates.list({ room: '100', session: selectedSession, search: '话题', sort: 'score-asc' }).candidates.map(row => row.label)).toEqual(['R2', 'R1', 'R10']);
+  const selectedSession = f.candidates.list({ room: '100', view: 'all' }).candidates[0].session;
+  expect(f.candidates.list({ room: '100', session: selectedSession, search: '话题', sort: 'score-asc', view: 'all' }).candidates.map(row => row.label)).toEqual(['R2', 'R1', 'R10']);
 });
 it('forwards sorting through the API and sorts all matching candidates before pagination', async () => {
   const f = fixture(), s = f.session('100', '2026_10_23');
@@ -86,7 +86,7 @@ it('forwards sorting through the API and sorts all matching candidates before pa
     aiStatus: { ranking: { ...s.metadata.aiStatus.ranking, skipped: Array.from({ length: 85 }, (_, index) => ({
       candidateIndex: index + 1, title: `话题${index + 1}`, start: 10, end: 20, score: index
     })) } } } });
-  const get = async (sort: string, page: number) => (await request(f.app).get(`/campaign-candidates?room=100&sort=${sort}&page=${page}`).set(headers).expect(200)).body;
+  const get = async (sort: string, page: number) => (await request(f.app).get(`/campaign-candidates?room=100&sort=${sort}&page=${page}&view=all`).set(headers).expect(200)).body;
   const pages = await Promise.all([1, 2, 3].map(page => get('score-desc', page)));
   expect(pages.map(page => page.candidates.length)).toEqual([40, 40, 5]);
   expect(pages.every(page => page.total === 85 && page.sort === 'score-desc')).toBe(true);
@@ -96,6 +96,30 @@ it('forwards sorting through the API and sorts all matching candidates before pa
   expect((await get('number-desc', 1)).candidates[0].label).toBe('R85');
   expect((await get('score-asc', 1)).candidates[0].score).toBe(0);
 });
+it('defaults to twenty deduplicated candidates per session and retains full-list access and original IDs', async () => {
+  const f = fixture(), s = f.session('100', '2026_10_23');
+  const skipped = Array.from({ length: 85 }, (_, index) => ({ candidateIndex: index + 1,
+    title: `话题${index + 1}`, start: index * 100, end: index * 100 + 80, score: 99 - index }));
+  skipped.push({ candidateIndex: 86, title: '同事件重叠备选', start: 1, end: 79, score: 100 });
+  atomicJson(s.statePath, { type: 'own_stream_review_state', metadata: { ...s.metadata,
+    aiStatus: { ranking: { ...s.metadata.aiStatus.ranking, skipped } } } });
+  const before = fs.readFileSync(s.statePath, 'utf8');
+  const get = async (query = '') => (await request(f.app).get(`/campaign-candidates${query}`).set(headers).expect(200)).body;
+  const curated = await get();
+  expect(curated).toMatchObject({ view: 'curated', total: 20, unfilteredTotal: 86, shortlistPolicy: { maxPerSession: 20 } });
+  expect(curated.candidates.map((row: any) => row.label)).toEqual([...Array.from({ length: 19 }, (_, i) => `R${i + 2}`), 'R86']);
+  expect((await get('?view=unknown')).candidates).toEqual(curated.candidates);
+  expect((await get('?sort=score-asc')).candidates[0].label).toBe('R20');
+  expect(await get(`?${new URLSearchParams({ search: '同事件' })}`)).toMatchObject({ total: 1, unfilteredTotal: 1 });
+  expect(await get('?search=R85')).toMatchObject({ total: 0, unfilteredTotal: 1 });
+  const all = await get('?view=all');
+  expect(all).toMatchObject({ view: 'all', total: 86, unfilteredTotal: 86 });
+  expect(all.candidates.find((row: any) => row.label === 'R2').id).toBe(curated.candidates[0].id);
+  const suppressed = all.candidates.find((row: any) => row.label === 'R1');
+  await request(f.app).get(`/campaign-candidates/${suppressed.id}`).set(headers).expect(200);
+  expect(fs.readFileSync(s.statePath, 'utf8')).toBe(before);
+  expect(f.run).not.toHaveBeenCalled();
+});
 it('ignores unrelated streams and malformed states while admitting explicitly bound campaign plans', () => {
   const f = fixture(), s = f.session('100', '2026_10_23'), other = f.session('200', '2026_10_24');
   s.metadata.streamTitle = '唱歌'; atomicJson(s.statePath, { type: 'own_stream_review_state', metadata: s.metadata });
@@ -103,12 +127,12 @@ it('ignores unrelated streams and malformed states while admitting explicitly bo
   atomicJson(planPath, { config: { campaignContentGate: { id: 'fuya' } } });
   atomicJson(other.statePath, { type: 'own_stream_review_state', metadata: { ...other.metadata, streamTitle: '我魂测试', planPath } });
   fs.writeFileSync(s.statePath.replace('REVIEW_STATE', 'REVIEW_CORRUPT_STATE'), '{broken');
-  expect(f.candidates.list({}).candidates.map(row => row.roomId)).toEqual(['200', '200', '200']);
+  expect(f.candidates.list({ view: 'all' }).candidates.map(row => row.roomId)).toEqual(['200', '200', '200']);
 });
 it('returns only window subtitles, streams byte ranges and leaves all workflow files untouched', async () => {
   const f = fixture(), s = f.session('100', '2026_10_23'), before = fs.readFileSync(s.statePath, 'utf8');
   await request(f.app).get('/campaign-candidates').expect(403);
-  const list = (await request(f.app).get('/campaign-candidates?search=R1').set(headers).expect(200)).body;
+  const list = (await request(f.app).get('/campaign-candidates?search=R1&view=all').set(headers).expect(200)).body;
   const id = list.candidates[0].id;
   const detail = (await request(f.app).get(`/campaign-candidates/${id}`).set(headers).expect(200)).body;
   expect(detail.subtitles).toContain('候选原话'); expect(detail.subtitles).not.toContain('窗外');

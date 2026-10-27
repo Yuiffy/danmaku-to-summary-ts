@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -110,12 +111,55 @@ def aligned_pcm(audio, duration):
     with tempfile.TemporaryDirectory(prefix='.asr-pcm-', dir=parent) as directory:
         target = Path(directory) / 'audio.f32'
         subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-threads', '1', '-i', str(audio),
-                        '-vn', '-af', 'aresample=async=1:first_pts=0', '-ac', '1', '-ar', '16000',
+                        '-map', '0:a:0', '-vn', '-af', 'aresample=async=1:first_pts=0', '-ac', '1', '-ar', '16000',
                         '-f', 'f32le', str(target)], check=True, capture_output=True, timeout=600,
                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        if target.stat().st_size < round(duration * 16000) * 4 - 12800:
-            raise ValueError('Aligned audio ended early; checkpoint not advanced')
+        size = target.stat().st_size
+        audio_end = None
+        if size > 0 and size % 4 == 0 and round(duration * 16000) - size // 4 > 8000:
+            audio_end = probe_audio_end(audio, size / 64000)
+        align_pcm_tail(target, duration, audio_end=audio_end)
         yield str(target)
+
+
+def probe_audio_end(audio, decoded_end):
+    """Read the selected track through EOF, starting near the decoded PCM tail."""
+    result = subprocess.run([
+        'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+        '-read_intervals', f'{max(0, decoded_end - 5):.6f}%',
+        '-show_packets', '-show_entries', 'packet=pts_time,duration_time', '-of', 'json', str(audio)
+    ], check=True, capture_output=True, text=True, timeout=30,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    ends = []
+    for packet in json.loads(result.stdout).get('packets', []):
+        pts, length = float(packet['pts_time']), float(packet['duration_time'])
+        if not math.isfinite(pts) or not math.isfinite(length) or length <= 0:
+            raise ValueError('Invalid audio packet tail; checkpoint not advanced')
+        ends.append(pts + length)
+    if not ends:
+        raise ValueError('Missing audio packet tail; checkpoint not advanced')
+    return max(ends)
+
+
+def align_pcm_tail(path, duration, *, audio_end=None):
+    """Longer video-only tails require independent evidence that audio reached EOF."""
+    size = Path(path).stat().st_size
+    missing = round(duration * 16000) - size // 4
+    verified = (audio_end is not None and math.isfinite(audio_end) and audio_end > 0
+                and abs(audio_end - size / 64000) <= 0.5 and audio_end <= duration + 0.5)
+    if not size or size % 4 or missing > 8000 and not verified:
+        raise ValueError(f'Aligned audio ended early; checkpoint not advanced '
+                         f'(expected={duration:.5f}s, decoded={size / 64000:.5f}s, audio_end={audio_end})')
+    if missing > 0:
+        from sensevoice_runtime import log_progress
+        evidence = f'音频包已到 EOF={audio_end:.5f}s' if missing > 8000 else '上限 0.5s'
+        log_progress(f'ASR 对齐容器音频尾差: 补齐 {missing / 16000:.5f}s 静音（{evidence}）')
+        with open(path, 'ab') as stream:
+            remaining = missing * 4
+            while remaining:
+                count = min(remaining, 1024 ** 2)
+                stream.write(b'\0' * count)
+                remaining -= count
 
 
 def read_pcm(path, start, duration):

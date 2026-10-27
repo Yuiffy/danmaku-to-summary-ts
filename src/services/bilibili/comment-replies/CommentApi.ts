@@ -33,7 +33,7 @@ export class CommentApi {
     if (signal.aborted) throw new Error('Comment context cancelled');
     const response = await this.transport(url, { headers: { ...this.credentials().headers, 'User-Agent': BILIBILI_WEB_UA },
       signal: signal as any, redirect: 'error', timeout: 3000, size: 1024 * 1024 });
-    if ([403, 412, 429].includes(response.status)) throw new CommentPlatformBlocked('Comment context blocked');
+    if ([401, 403, 412, 429].includes(response.status)) throw new CommentPlatformBlocked('Comment context blocked');
     const body = parseBilibiliJson(await response.text());
     if ([-101, -111, -352, -403, -412].includes(body?.code)) throw new CommentPlatformBlocked('Comment context blocked');
     if (!response.ok || body?.code !== 0 || !body.data) throw new Error('Comment context unavailable');
@@ -92,7 +92,7 @@ export class CommentApi {
     }).sort((a, b) => b.likes - a.likes).slice(0, 3);
   }
 
-  async video(aid: string, signal: AbortSignal): Promise<CommentVideo> {
+  async video(aid: string, signal: AbortSignal, subtitles = true): Promise<CommentVideo> {
     if (!positiveId(aid) || signal.aborted) throw new Error('Invalid video context target');
     const response = await this.transport(`https://api.bilibili.com/x/web-interface/view?aid=${aid}`, {
       // View responses can include the video's entire season. Retain only bounded metadata below.
@@ -109,11 +109,17 @@ export class CommentApi {
     let transcript: CommentVideo['transcript'];
     const cid = positiveId(data.cid);
     const duration = data.pages?.[0]?.duration || data.duration;
-    if (cid) try { transcript = await readVideoTranscript(aid, cid, this.credentials().headers, signal, this.transport,
+    if (cid && subtitles) try { transcript = await readVideoTranscript(aid, cid, this.credentials().headers, signal, this.transport,
       Number.isFinite(duration) && duration > 0 ? duration : undefined); }
     catch (error) { if (error instanceof CommentPlatformBlocked || signal.aborted) throw error; }
     return { title: data.title.slice(0, 200), description: data.desc.slice(0, 2000), publishedAt: data.pubdate * 1000,
-      pages: Array.isArray(data.pages) ? data.pages.length : 1, ...(transcript ? { transcript } : {}) };
+      ...(cid && Number.isFinite(duration) && duration > 0 && duration <= 86400 ? { visualTarget: { cid, duration } } : {}),
+      pages: Array.isArray(data.pages) ? data.pages.length : 1, ownerUid: positiveId(data.owner?.mid), ...(transcript ? { transcript } : {}) };
+  }
+
+  async videoShots(aid: string, cid: string, signal: AbortSignal): Promise<unknown> {
+    if (!positiveId(aid) || !positiveId(cid)) throw new Error('Invalid preview target');
+    return this.socialGet(`https://api.bilibili.com/x/player/videoshot?aid=${aid}&cid=${cid}&index=1`, signal);
   }
 
   async feed(kind: 'reply' | 'at', cursor?: { id: string; time: number }): Promise<FeedPage> {

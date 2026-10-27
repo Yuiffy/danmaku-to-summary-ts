@@ -153,7 +153,7 @@ async function renderGames(plan, options, config, files) {
             && !options.reviewEventIds?.includes(event.id)) continue;
         await restoreFrameNamedChapters(event, plan, options, config, files, mediaSettings(root, config, 'frames'));
         event.verification = await (options.verify || verifyGame)(event, plan, options, config, files);
-        if (event.verification.decision === 'uncertain' && (event.verification.frameObservations || []).some(f => f.activity === 'gameplay')
+        while (event.verification.decision === 'uncertain' && (event.verification.frameObservations || []).some(f => f.activity === 'gameplay')
             && await repairUnsupportedChapters(event, plan, event.verification, options, files, mediaSettings(root, config, 'frames'))) {
             // A proposal never clears the gate: rerun original media review with the revised copy.
             writeJsonAtomic(files.plan, plan);

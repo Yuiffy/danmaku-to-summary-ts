@@ -90,6 +90,10 @@ Return ONLY JSON {"reason":"specific visible transition evidence","frames":[{"in
     }
     const times = [];
     for (let t = spokenEnd; t < scanEnd - .001; t += SAMPLE_SECONDS) times.push(t);
+    // Coalescing a near-end sample can leave a 2.001s gap whose binary value
+    // exceeds the coverage limit. Inspect an actual midpoint, keeping the
+    // original coverage validator and the exact excerpt endpoint unchanged.
+    if (scanEnd - times.at(-1) > SAMPLE_SECONDS) times.push((times.at(-1) + scanEnd) / 2);
     times.push(scanEnd);
     for (let i = 0; i < times.length; i += 8) await inspect(times.slice(i, i + 8));
     async function inspectUncertainContext() {

@@ -1,6 +1,7 @@
 'use client';
 import { UploadQueueStatus } from '../../core/admin/uploadStatus';
 import { dateText, statusText, useResource } from './client';
+import { UploadObservation } from './UploadObservation';
 
 function waitText(at: string | undefined, observedAt: string) {
   if (!at) return '时间待定';
@@ -57,6 +58,7 @@ export function UploadQueue() {
       <div><dt>下一次预计尝试</dt><dd>{next}</dd><small>{status.activeJobs ? '当前有任务执行，无法估算结束时间' : status.nextAttemptAt ? waitText(status.nextAttemptAt, status.observedAt) : '等待入队或人工核对'}</small></div>
       <div><dt>滚动 24 小时</dt><dd><strong>{status.rolling.count}</strong> / {status.rolling.limit} 条</dd><small>已知剩余 {status.rolling.remaining} 条{status.rolling.syncFailed || !status.rolling.syncedAt ? ' · 同步数据待确认' : ''}</small></div>
     </dl>
+    {status.observation && <p className="muted">当前滚动 3h：{status.observation.windows[0].count} 条 · 48h：{status.observation.windows[2].count} 条 · 近 48h 已记录 406：{status.observation.incidents.filter(row => row.kind === 'http406').length} 次 · 大频控：{status.observation.incidents.filter(row => row.kind === 'submission137022').length} 次（展开可看时间点）</p>}
     {status.reasons.length > 0 && <p className="upload-wait-reason">{status.reasons.join('；')}</p>}
     <details className="upload-expanded"><summary>查看排队列表、频控与额度释放时间</summary>
       <div className="upload-diagnostics">
@@ -66,6 +68,7 @@ export function UploadQueue() {
         <p className="muted">预计时间按账号冷却、滚动额度及各任务重试时间共同计算。实际开始时间还取决于当前任务耗时和投稿进程调度；此处仅展示队列记录，未检测进程是否在线。读取于 {dateText(status.observedAt)}，每 5 秒刷新。</p>
       </div>
       <RollingWindow status={status} />
+      {status.observation && <UploadObservation data={status.observation} />}
       <div className="section-heading"><h3>待处理队列（{status.queue.length} 个任务）</h3><span>历史失败 {status.failedJobs} 个 · 历史与取消操作见「任务与队列」</span></div>
       <p className="muted">执行中优先展示，其余按当前可尝试时间推算顺序。处理时会跳过未到重试时间的任务；一项任务可含多个视频。</p>
       <div className="table-scroll upload-queue-table"><table><thead><tr><th>顺序 / 任务</th><th>视频</th><th>状态 / 原因</th><th>最早可尝试</th></tr></thead><tbody>{status.queue.map((entry, index) => <tr key={entry.id}>

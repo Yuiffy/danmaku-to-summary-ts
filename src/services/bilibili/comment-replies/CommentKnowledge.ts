@@ -3,7 +3,8 @@ import { QuestionCorpus } from '../../live-vote/questions/QuestionCorpus';
 import { configuredQuestionRooms } from '../../live-vote/questions/QuestionScope';
 import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig } from './CommentPolicy';
 import { collaborationQuestion, historicalCollaborationQuestion, CommentClue, CommentContext, commentDates, commentSearchTerms,
-  CommentVideo, CommentProject, needsCommentEvidence, safeEvidenceText, videoOnlyQuestion, videoExcerpts, projectComparisonQuestion } from './CommentContext';
+  CommentVideo, CommentProject, needsCommentEvidence, safeEvidenceText, videoOnlyQuestion, videoExcerpts, projectComparisonQuestion,
+  quotedCommentTerms } from './CommentContext';
 import { evidenceScorer } from '../../live-vote/questions/EvidenceRanking';
 
 type Options = NonNullable<CommentReplyConfig['knowledge']>;
@@ -44,10 +45,12 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
     try {
       const result = await corpus.search({ terms, kind, date, collection });
       const topicScore = evidenceScorer(terms, question);
+      const quoted = quotedCommentTerms(question);
       const score = (text: string) => {
         const relevance = topicScore(text);
         if (historicalCollaborationQuestion(question) && !relevance) return 0;
-        return relevance * 5 + (collaborationQuestion(question) ? aliases.filter(alias => text.includes(alias)).length * 8 +
+        return relevance * 5 + quoted.filter(term => text.includes(term)).length * 40 +
+          (collaborationQuestion(question) ? aliases.filter(alias => text.includes(alias)).length * 8 +
           (/明天|明晚|八点|取消|延期|改期/u.test(text) ? 4 : 0) : 0);
       };
       // A historical list needs candidates from different dates before repeated nearby mentions.
@@ -72,7 +75,8 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
           selected.add(i); chars += cues[i].text.length + 1;
         }
         const quote = [...selected].sort((a, b) => a - b).map(i => cues[i].text).join('；');
-        return { roomId, room: hit.roomName || roomId, date: hit.date || date || '', time: hit.time, quote, kind: hit.kind || 'subtitle',
+        return { roomId, room: hit.roomName || roomId, date: hit.date || date || '',
+          time: cues[ranked[0]?.index]?.time || hit.time, quote, kind: hit.kind || 'subtitle',
           score: Math.max(0, ...ranked.map(cue => cue.score)) };
       }).filter(clue => clue.quote && clue.score > 0);
       const value = { clues, partial: result.limited || corpus.coverage.get(roomId)?.lexicalStatus !== 'ready' };
@@ -82,7 +86,7 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
   }
 
   return async (event: CommentEvent, signal: AbortSignal): Promise<CommentContext | undefined> => {
-    if (!needsCommentEvidence(event.text)) return undefined;
+    if (!needsCommentEvidence(event.text, event.type)) return undefined;
     const controller = new AbortController(), abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) controller.abort();
@@ -116,7 +120,8 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
       const question = Array.from(event.text.replace(/@\S+/gu, '').trim()).slice(0, 120).join('') || '直播资料';
       // Video-based praise/support also needs the target, never a different recording.
       const videoOnly = event.type === 1 && videoOnlyQuestion(event.text);
-      const datesToSearch: Array<string | null> = videoOnly ? [] : historical ? [dates.anchorDay.slice(0, 7),
+      const locateQuote = quotedCommentTerms(event.text).length > 0 && /时间点|时间戳|几分|原话|出处|定位|哪句/u.test(event.text);
+      const datesToSearch: Array<string | null> = videoOnly ? [] : locateQuote ? [dates.targetDay || null] : historical ? [dates.anchorDay.slice(0, 7),
         new Date(Date.UTC(Number(dates.anchorDay.slice(0, 4)), Number(dates.anchorDay.slice(5, 7)) - 2, 1)).toISOString().slice(0, 7), null] : collaborationQuestion(topic) ?
         Array.from({ length: 3 }, (_, offset) => new Date(Date.parse(dates.anchorDay) - offset * 86400000).toISOString().slice(0, 10)) :
         [dates.targetDay || null];
@@ -157,6 +162,8 @@ export function createCommentKnowledge(runtime: QuestionRuntime, options: Option
     const excerpts = videoExcerpts(video?.transcript?.cues || [], `${event.text} ${video?.title || ''}`);
     const sampled = !!video?.transcript && (video.transcript.partial || excerpts.length < video.transcript.cues.length || (video.pages || 1) > 1);
     return { ...commentDates(event.text, event.createdAt, video, event.type === 1),
+      ...(video?.ownerUid ? { videoOwnerUid: video.ownerUid } : {}),
+      ...(video?.visualTarget ? { visualTarget: video.visualTarget } : {}),
       ...(projects?.length ? { projects } : {}),
       ...(video ? { video: { title: safeEvidenceText(video.title, 120),
         description: video.description.split(/\r?\n/u).map(line => safeEvidenceText(line, 180)).filter(Boolean).join(' ').slice(0, 400),

@@ -12,6 +12,7 @@ export { competitionGuardEnabled, competitionPromptRules, normalizeCompetitionCo
 export { prepareCompetitionEvidence } from './topicCompetitionRuntime';
 export { mergeTopicRecallMatches, findAmbiguousTopicMatches, topicRecallIdentityIssues,
     topicRecallSubtitleEditSupport, holdUnresolvedTopicRecall } from './topicRecall';
+export { findTopicMemeMatches, MEME_REFERENCE_RULES } from './topicMemeRecall';
 
 /** A semantic boundary repair is distinct from transport retries and keeps the editor's route. */
 export function isBoundaryFailure(reason: string): boolean {

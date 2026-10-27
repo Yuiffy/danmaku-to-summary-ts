@@ -81,6 +81,25 @@ class MediaReplacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different'):
             edit_payload(self.detail, {'filename': 'old-file', 'cid': 42}, 'cover', self.metadata)
 
+    def test_social_replacement_preserves_online_description_without_a_live_clock(self):
+        payload = edit_payload(self.detail, self.uploaded, 'cover', {'type': 'social_post_video'})
+        self.assertEqual(payload['desc'], self.detail['archive']['desc'])
+        self.assertEqual(payload['title'], self.detail['archive']['title'])
+        self.assertEqual(payload['is_only_self'], 1)
+
+    def test_social_confirmation_updates_same_id_manifest_and_duration_only_when_confirmed(self):
+        clip = {'id': 7, 'metadataPath': 'old.json', 'uploadState': {'bvid': 'BVoriginal', 'cid': 42}}
+        metadata = {'output': {'mediaPath': 'fast.mp4', 'coverPath': 'cover.jpg'}, 'window': {'duration': 32}}
+        result = {'bvid': 'BVoriginal', 'cid': 43, 'filename': 'new-file', 'status': 'confirmed', 'isOnlySelf': 0}
+        updated, _ = record_replacement(clip, metadata, result, {}, '用户要求提速', 'now', Path('fast.json'))
+        self.assertEqual(updated['id'], 7)
+        self.assertEqual(updated['metadataPath'], 'fast.json')
+        self.assertEqual(updated['duration'], '00:00:32')
+        self.assertEqual(updated['mediaReplacement']['previousMetadataPath'], 'old.json')
+        pending, _ = record_replacement(clip, metadata, {**result, 'status': 'submitted'}, {}, '提速', 'now', Path('fast.json'))
+        self.assertEqual(pending['metadataPath'], 'old.json')
+        self.assertEqual(pending['uploadState']['cid'], 42)
+
     def test_confirmation_updates_both_registry_and_authoritative_state_without_losing_original_receipt(self):
         clip = {'id': 7, 'uploadState': {'bvid': 'BVoriginal', 'cid': 42, 'mediaPath': 'old.mp4', 'submittedAt': 'original-time'},
                 'automaticPublicationAuthorization': {'old': True}, 'reviewPending': True, 'reviewIssues': ['old identity changed']}
@@ -99,6 +118,12 @@ class MediaReplacementTests(unittest.TestCase):
 
 class ReplacementAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_uploads_file_and_edits_original_bv_without_starting_a_new_archive(self):
+        await self.exercise_replacement(False)
+
+    async def test_social_speed_revision_rechecks_its_own_review_before_original_bv_edit(self):
+        await self.exercise_replacement(True)
+
+    async def exercise_replacement(self, social):
         from src.scripts.clip_media_replace import replace_existing
         fixture = MediaReplacementTests(); fixture.setUp()
         before = fixture.detail
@@ -106,6 +131,8 @@ class ReplacementAdapterTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             metadata = {**fixture.metadata, 'output': {'mediaPath': 'rebuilt.mp4', 'coverPath': 'new.jpg'}}
+            if social:
+                metadata = {'type': 'social_post_video', 'output': metadata['output']}
             file = directory / 'clip.json'; file.write_text(json.dumps(metadata), encoding='utf-8')
             clip = {'metadataPath': str(file), 'uploadState': {'bvid': 'BVoriginal'}}
             instances, edits = [], []
@@ -136,8 +163,11 @@ class ReplacementAdapterTests(unittest.IsolatedAsyncioTestCase):
                   patch('bilibili_api.utils.picture.Picture.from_file', return_value=object()),
                   patch('src.scripts.update_cover.load_auth', return_value=('cookie', None)),
                   patch('src.scripts.update_cover.fetch_archive', side_effect=[before, copy.deepcopy(before), after]),
-                  patch('src.scripts.clip_auto_publication.validate_publication_review')):
+                  patch('src.scripts.clip_auto_publication.validate_publication_review') as live_review,
+                  patch('src.scripts.social_post_review.validate_social_post_review') as social_review):
                 result = await replace_existing(clip, metadata, directory, 'auth.json')
+            self.assertEqual(social_review.call_count, int(social))
+            self.assertEqual(live_review.call_count, int(not social))
             self.assertEqual(len(instances), 1); self.assertEqual(edits[0][0], 'BVoriginal')
             self.assertEqual(edits[0][1]['is_only_self'], 1)
             self.assertEqual(result['status'], 'confirmed')

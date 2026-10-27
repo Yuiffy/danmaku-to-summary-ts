@@ -4,6 +4,7 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { getLogger } from '../../core/logging/LogManager';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import type { RecorderStallDiagnosticSnapshot } from './RecorderStallDiagnostics';
+import { summaryTaskFailureLines, SummaryTaskFailureDetails } from './SummaryTaskFailure';
 
 interface CpuTimes {
   idle: number;
@@ -156,6 +157,14 @@ export class ProcessingAlertService {
         ...Object.entries(details).map(([key, value]) => `**${key}**: ${String(value)}`)
       ]
     );
+  }
+
+  static async notifySummaryTaskFailed(details: SummaryTaskFailureDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+    // Distinct failed recordings must not suppress one another through a room cooldown.
+    const incidentKey = `summary-failed:${details.taskId}:${details.recoveryEpisode}`;
+    await this.notifyOnce(incidentKey, '直播后处理已停止', summaryTaskFailureLines(details),
+      incidentKey, LIFECYCLE_ALERT_RETRY_OPTIONS);
   }
 
   static async notifyMissingFileCloseAfterStreamEnd(details: MissingFileCloseAlertDetails): Promise<void> {

@@ -35,7 +35,7 @@ describe('asr_backends', () => {
       } });
       expect(result).toMatchObject({ cuda: '0', cpu, handoff: { enabled: true, idle_s: 45,
         cpu_fallback_enabled: enabled !== false, min_available_memory_gb: 12 } });
-      expect(requests).toEqual(['shutdown']);
+      expect(requests).toEqual([]); // The Python supervisor leases the existing worker.
     } finally {
       keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i]; });
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -203,10 +203,13 @@ describe('asr_backends', () => {
       room_id: '26966466',
       filename: '录制-26966466-20260715-000007-测试.m4a'
     };
-    const resolved = asr.resolveAsrBackend(productionConfig, context);
+    // This contract checks the full reference library, independently of the
+    // operator's live queue/backlog and its auto speaker load policy.
+    const config = { ...productionConfig, asr: { ...productionConfig.asr, speaker_processing: { mode: 'on' } } };
+    const resolved = asr.resolveAsrBackend(config, context);
 
     try {
-      await asr.transcribeParaformer('smoke.wav', productionConfig, {
+      await asr.transcribeParaformer('smoke.wav', config, {
         routingContext: context,
         resolvedBackend: resolved
       });

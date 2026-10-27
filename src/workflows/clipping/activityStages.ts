@@ -175,3 +175,4 @@ export function mergeManifestClips(existing: ManifestClip[], metadataPaths: stri
   }
   return clips;
 }
+export { selectSongExcerpt } from './activitySongEdit';

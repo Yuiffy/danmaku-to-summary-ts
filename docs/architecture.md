@@ -52,10 +52,25 @@ no authorization or queue writes. `clip_upload_status.py` joins this observed
 progress into `show`/`queue` output without persisting it into registry records.
 Media transfer reaching 100% is separate from the successful submission receipt.
 
-The batch uploader pins the SDK's official BDA2 line, matching its preupload
-availability probe. This avoids the SDK's automatic speed test selecting an
+The uploaders pin the SDK's official BDA2 line. This avoids automatic speed tests selecting an
 unhealthy alternate CDN. TLS verification stays enabled, and failures still
 pass through the existing durable submission-intent reconciliation before retry.
+`scripts/clip_upload_pacing.py` wraps actual SDK per-P initialization and owns the
+account-scoped SQLite admission/history ledger in `data/runtime/clip_upload_pacing.sqlite3`.
+Queue batches and the compatibility upload CLI share five initializations per rolling
+300 seconds, including failed attempts. Extra availability probes are disabled.
+HTTP 406 sets a separate fixed 600-second account cooldown; `clip_upload_retry.py`
+supplies queue retry decisions without changing the independent 137022 policy.
+`clip_upload_safety.py` owns pure sustained-406 transitions: three hours of
+consecutive observed failures enters 24-hour slow mode (one archive start per
+600 seconds), and a further 406 latches a manual pause. The pacing SQLite owner
+atomically persists these transitions and a leased WeChat alert outbox; the queue
+retry adapter delivers notifications, yields between slow archives, and gates
+all work while paused. A successful archive/other terminal failure or an
+unobserved gap over 30 minutes breaks the failure episode. Pauses survive restart
+and expiry; explicit operator resume releases them into a new 24-hour slow mode.
+The existing per-P rolling admission and 137022 cooldown continue independently.
+Progress sidecars retain version 1 with additive `lastEvent`/`failureStage` fields.
 
 The Next.js task API forwards to `WEBHOOK_BASE_URL` (default
 `http://127.0.0.1:12523`). It must never initialize its own scheduler or modify
@@ -82,9 +97,10 @@ must be updated before using the new task-list/cancellation adapter.
 | `questions/RecordingFtsIndex`, `RecordingFtsMaintenance`, `tools/live-vote/recordingIndex` | shared read-only SQLite FTS5 recall, atomic source replacement, independent incremental polling of trusted SRT/XML roots; source hashes verified by `RecordingEvidence` before citation | answer generation, recorder mutation, publication, embedding dependencies, agent-controlled paths |
 | `live-vote/question-lab`, `questions/EvidenceQuery`, `tools/live-vote/recordingQuery` | loopback question/evidence UI, read-only CLI retrieval, independent local test admission | Bilibili sending, comment publication, bot authorization changes, index mutation |
 | `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
-| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded text agent, target-video subtitles through fixed API/credential-free allowlisted CDN with asset/timeline checks, source-dated read-only room FTS/clip evidence, durable fair queue, quotas, token/send gates and explicit live CLI | desktop agent tools, arbitrary URLs/paths, media download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
+| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded single-call text/preview-image agent, target-video subtitles and contact sheets through fixed APIs/credential-free allowlisted CDN with asset/timeline checks, source-dated read-only room FTS/clip evidence, durable fair queue, quotas, token/send gates and explicit live CLI | desktop agent tools, arbitrary URLs/paths, full-video download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
 | `comment-replies/CommentVisibility`, `tools/bilibili/inspectComment` | bounded read-only anonymous/account comparison of exact reply IDs through fixed comment-list GETs; upstream selection is documented in `docs/bilibili-api-upstreams.md` | publication, model calls, state/queue writes, automatic retries or interpreting absence as permission to repost |
 | `comment-replies/CommentAudience`, `CommentProjects` | fixed signed UID-bound profile/medal catalogue reads; bounded operator-approved public project file excerpts with revisions | inferring badges from names/ownership, arbitrary model-selected paths, private configuration, model tools or publication |
+| `comment-replies/CommentFeedback`, `CommentFeedbackStore`, `admin/AdminCommentFeedback` | verified own-video mention feedback extracted in the existing answer call, immutable independent archive and read-only admin listing | scanning ordinary comments, additional classification calls, media queue writes or automatic editing |
 | `handlers/mikufans` | resource admission, durable summary execution, reply coordination | publishing policy |
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
@@ -305,6 +321,11 @@ restarts only `danmaku-webhook`, migrates history while the old process is stopp
 and verifies health and historical identities. Failure restores the prior `dist`.
 This single fork-mode PM2 process has a brief restart window. The script is scoped
 to this repository's service on port 12523 and does not deploy other PM2 apps.
+The independently deployed `dist/comment-replies` and `dist/qqbot` partitions are
+copied unchanged into the verified service candidate before switching directories.
+Their file hashes are checked against the running runtime; conflicts with emitted
+service output, links or concurrent changes abort the deployment. Their processes
+and credentials remain under their own deployment owners.
 
 ## Verification
 

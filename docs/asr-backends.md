@@ -422,6 +422,21 @@ node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend p
 
 中央 Mikufans 队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。连续任务复用主模型、标点和独立 CAM++ cache；队列清空或父队列检测到 GPU 繁忙时终止 worker并释放显存。单独运行 `enhanced_auto_summary.js` 时会先尝试 worker，连接不可用则回退到一次性 Python 进程。
 
+启用 `asr.device_handoff` 的接力路线也通过同一个常驻 worker 管理独立模型进程，
+每次只允许一个协调器租用。协调器仍独立持有断点、资源采样和进度输出；中断窗口、
+客户端断开或推理失败会终止所租进程，已提交断点保留，不重用不完整状态。
+成功转写后，只在只读队列快照仍有另一场 pending/processing 任务时保留主模型/VAD/标点权重；
+后处理前把权重移到 RAM，为说话人/情绪阶段腾出显存。下一场通过 GPU 准入后移回，
+只复用配置兼容的模型，重新初始化该场 payload、字幕与资源租约。说话人策略不变。
+队列清空、内存/显存压力、快照/采样失败或空闲超过 120 秒会释放；没有队列连接的
+独立运行仍使用一次性进程。空闲回收不负责入队、调度或队列状态变更。
+
+`[[ASR_HANDOFF_STATUS]].policy_version=8` 标记此版本；日志 `ASR 接力模型复用`
+包含模型 PID 与跨任务命中。`timings.handoff_cross_job_cache_hits` 是跨任务命中次数，
+`handoff_model_load_s` 记录冷加载，`handoff_model_restore_s` 记录 RAM→GPU 恢复，
+`handoff_model_park_s` 记录后处理前的权重卸载，`handoff_model_retained` 表示该场
+进入后处理时是否保留权重。恢复搬运不能当成零开销，也不能用缓存命中宣称 ASR 达到 100×。
+
 常驻 worker 现在也复用参考声纹 prototypes，`timings.reference_cache_hit=1` 表示本次命中。缓存只保留最近一组，绑定实际 speaker 模型实例、device、参考配置、所有参考文件的 SHA-256 内容摘要和提取/prototype 参数。修改参考内容（即使大小与 mtime 未变）、名字、state、截取区间或相关参数后会重建；失败、不完整嵌入或提取过程中被替换的参考不会缓存。匹配阈值变化不需要重新提取声纹。worker 释放时一并清空，不写持久化 embedding 文件。
 
 ### Adaptive speaker 状态机
@@ -868,16 +883,36 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 
 ### 空语音窗口与显式失败恢复
 
-Paraformer 接力和实时 CPU 缓存使用同一 `asr_window_result` 校验：只有本窗口
-VAD 返回结构有效、区间为空时，FunASR 的空列表才代表无语音，保存空文本及
-已观察覆盖范围。检测到语音、VAD 缺失/越界或识别结构无效时仍失败，不前移检查点，
-不以空字幕掩盖丢词。源 Python 变更在下一子进程加载；常驻实时 worker 需空闲刷新。
+Paraformer 接力和实时 CPU 缓存使用同一 `asr_window_result` 校验。VAD 返回结构有效、
+区间为空时，空列表代表无语音。`asr_vad_reuse` 将按配置检测的一次 VAD 投影到已提交
+音频前缀，在 FunASR 原有批处理、标点与时间戳流程中复用；不再另跑一次 VAD，也不把
+未提交部分的语音作为当前前缀的识别要求。适配器仅作用于当前隔离模型的一次请求，
+成功或异常均恢复原方法，不改安装的 FunASR。
+
+FunASR 会过滤底层 ASR 的空词结果；只有逐段实际调用过 ASR、返回数量覆盖所有 VAD
+区间、且每段明确返回空 `text` 和空 `timestamp` 时，聚合空列表才允许保存已观察的
+覆盖范围。这表示模型完成了识别但无可输出词，不声称 VAD 未检测到声音。缺少结果、
+结构无效、部分区间未返回或非空原话被上层丢弃仍失败，不前移检查点。
+
+接力 metadata 新增 `handoff_vad_s`、`handoff_generation_s`、`handoff_vad_reused` 和
+`handoff_empty_decoding`，分别累计首次 VAD 耗时、复用 VAD 的生成流程耗时、复用窗口数
+和上述有效空词窗口数；生成流程仍包含标点，不是纯 ASR 内核计时。
+对齐 PCM 默认允许最多 0.5 秒的容器/视频音频尾差，明确记录日志并补零。
+更大的尾差须从已解码末尾附近读取同一首条音轨的音频包直到 EOF，独立核对最后音频包
+结束时间与 PCM 末尾相差不超过 0.5 秒，且不超出容器时长的原有容差；证据一致时才把
+剩余视频尾段补为静音并记录实际尾差与音频 EOF。解码和核对均固定 `0:a:0`，
+不裁剪或改写已有样本，不以增大全局容差放过缺音频。音频包缺失、探测失败、实际音频
+覆盖不符、空文件或不完整 PCM 样本仍拒绝，不前移检查点。
+源 Python 变更在下一子进程加载；常驻实时 worker 需空闲刷新。
 
 查看中央字幕失败项使用 `node src/scripts/asr_queue_recovery.ts list`。
 确认修复后使用 `node src/scripts/asr_queue_recovery.ts retry --ids <原任务ID,...> --note '修复及核验依据'`。
 该入口只恢复 failed，同源已有活动/完成任务或原素材缺失时拒绝；保留任务 ID、
 原参数、加入时间和失败历史，只重置本轮有界重试及旧进程所有权。由现有中央 worker
 调度并复用检查点，不建立并行 ASR worker；入队不等于字幕或切片已完成。
+恢复命令只写队列，不会唤醒已经因空队列退出的中央 worker。若恢复后持续 pending，
+先检查 `/processing-files`、字幕队列和延迟回复任务；确认无正在执行或临近到期的其他
+任务后，可重启现有 `danmaku-webhook` 让其在启动时读取原队列，再核对实际处理进度。
 
 同一段媒体同时跑多个 backend：
 

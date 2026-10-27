@@ -18,6 +18,7 @@ import { coverSelection } from '../../core/admin/cover';
 import { AdminTitles } from './AdminTitles';
 import { AdminBilibiliLogin } from './AdminBilibiliLogin';
 import { AdminCommentReplies } from './AdminCommentReplies';
+import { AdminCommentFeedback } from './AdminCommentFeedback';
 import { AdminCampaignCandidates } from './AdminCampaignCandidates';
 import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 import { AdminAsrStatus } from './AdminAsrStatus';
@@ -33,6 +34,7 @@ export interface AdminAdapters {
   titles?: AdminTitles;
   bilibiliLogin?: AdminBilibiliLogin;
   commentReplies?: AdminCommentReplies;
+  commentFeedback?: AdminCommentFeedback;
   campaignCandidates?: AdminCampaignCandidates;
   campaignFeedback?: AdminCampaignFeedback;
   asr?: AdminAsrStatus;
@@ -52,7 +54,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   const candidates = () => { if (!adapters.campaignCandidates) throw new AdminError('活动候选未配置', 503); return adapters.campaignCandidates; };
   app.get('/campaign-candidates', (req, res) => res.json(candidates().list({
-    room: String(req.query.room || ''), session: String(req.query.session || ''), search: String(req.query.search || ''), page: String(req.query.page || '1'), sort: String(req.query.sort || '')
+    room: String(req.query.room || ''), session: String(req.query.session || ''), search: String(req.query.search || ''), page: String(req.query.page || '1'), sort: String(req.query.sort || ''), view: String(req.query.view || '')
   })));
   app.get('/campaign-candidates/:id', (req, res) => res.json(candidates().detail(req.params.id)));
   const campaignFeedback = () => { if (!adapters.campaignFeedback) throw new AdminError('活动候选投稿未配置', 503); return adapters.campaignFeedback; };
@@ -73,6 +75,10 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.get('/comment-replies', (req, res) => {
     if (!adapters.commentReplies) throw new AdminError('评论记录未配置', 503);
     res.json(adapters.commentReplies.view(req.query));
+  });
+  app.get('/comment-feedback', (req, res) => {
+    if (!adapters.commentFeedback) throw new AdminError('视频反馈未配置', 503);
+    res.json(adapters.commentFeedback.view(req.query));
   });
   app.route('/bilibili/login').get(loginRoute).post(loginRoute);
   async function loginRoute(req: express.Request, res: express.Response) {

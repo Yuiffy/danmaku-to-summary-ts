@@ -32,6 +32,28 @@ describe('human review of rendered own-stream clips', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test('approves an own-stream speaker SRT using the exact evidence serialization saved during selection', async () => {
+    const asr = require('./asr/asr_backends'), sidecar = require('./asr/evidence_sidecar');
+    metadata.source.srtPath = path.join(directory, 'source.speaker.srt');
+    const content = '1\n00:00:01,000 --> 00:00:10,000\n[UNKNOWN] Host said hello.\n';
+    fs.writeFileSync(metadata.source.srtPath, content);
+    sidecar.writeAsrEvidence(metadata.source.srtPath, content, [{ start: 1, end: 10, text: '[UNKNOWN] Host said hello.',
+      asr: { recognizedText: 'Host said hello.' }, speaker: { version: 1, status: 'unknown', observations: [] } }], 'fixture');
+    const parsed = asr.parseSrt(metadata.source.srtPath);
+    const hash = buildSubtitleEvidence(sidecar.loadAsrEvidence(metadata.source.srtPath, parsed.segments).segments).sourceSha256;
+    metadata.grounding.sourceSha256 = hash; metadata.attributionReview.sourceSha256 = hash;
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '投', feedbackAuthorized: true }, {});
+    expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).grounding.sourceSha256).toBe(hash);
+    expect(cover).toHaveBeenCalledTimes(1);
+    metadata.publicationKind = 'keyword_topic';
+    metadata.aiReview = { sourceSha256: hash };
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    await expect(approveRenderedClip(metadataPath, { id: 88, reviewNote: '投', feedbackAuthorized: true }, {}))
+      .rejects.toThrow('Original subtitle evidence changed');
+    expect(cover).toHaveBeenCalledTimes(1);
+  });
+
   test('saves an explicit bound human review but never upload authorization', async () => {
     const result = await approveRenderedClip(metadataPath, { id: 88, reviewNote: 'Watched and checked the source' }, {});
     expect(result.uploadAuthorized).toBe(false);

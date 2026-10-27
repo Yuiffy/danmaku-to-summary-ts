@@ -284,6 +284,7 @@ def load_upload_manifest(
                    if metadata.get("type") == "stream_activity_submission" or output.get("parts") else {}),
                 "selectionSource": selection_source,
                 "publicationKind": metadata.get("publicationKind") or "",
+                "socialReviewRequired": metadata.get("type") == "social_post_video",
                 "metadataPath": metadata_path,
                 "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),
                 "sourceMediaPath": _resolve_optional_path((metadata.get("source") or {}).get("mediaPath"), path.parent)

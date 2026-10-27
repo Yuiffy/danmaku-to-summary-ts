@@ -16,6 +16,9 @@ def _seconds(value):
 
 
 def _source_keys(clip, metadata):
+    if (clip.get('publicationKind') or metadata.get('publicationKind')) == 'social_post':
+        url = (metadata.get('source') or {}).get('url') or clip.get('source')
+        return {('social_post', str(url).split('?')[0].split('#')[0].rstrip('/'))} if url else set()
     source = clip.get('sourceMediaPath') or (metadata.get('source') or {}).get('mediaPath')
     keys = set()
     if source:
@@ -36,6 +39,8 @@ def _source_keys(clip, metadata):
 def _purpose(clip, metadata):
     kind = metadata.get('type')
     prefix = str(clip.get('prefix') or '')
+    if (clip.get('publicationKind') or metadata.get('publicationKind')) == 'social_post':
+        return ('social_post',)
     if (clip.get('publicationKind') or metadata.get('publicationKind')) == 'game_highlight_compilation':
         return ('compilation',)
     if (clip.get('activityReviewRequired') or kind == 'stream_activity_submission'
@@ -50,6 +55,9 @@ def _purpose(clip, metadata):
 
 
 def _ranges(clip, metadata):
+    # A social post has one source identity, independent of rendered hold times.
+    if _purpose(clip, metadata) == ('social_post',):
+        return [(0, 1)]
     # A multi-recording compilation's output clock is not a source interval.
     if _purpose(clip, metadata) == ('compilation',):
         return []

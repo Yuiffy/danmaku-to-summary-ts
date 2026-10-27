@@ -64,10 +64,11 @@ export class AdminCampaignFeedback {
         clipId = this.clipId(registration.metadataPath);
         if (!clipId) throw new AdminError('候选登记未返回可用编号，未继续投稿');
       }
-      update({ plan: { clipId } });
+      const feedbackRevision = this.clips.detail(clipId).revision;
+      update({ plan: { clipId, feedbackRevision } });
       validate();
-      return this.feedback.execute(clipId, note.trim(), this.clips.detail(clipId).revision, edits, output,
-        value => update({ ...value, ...(value.plan ? { plan: { ...value.plan, clipId } } : {}) }));
+      return this.feedback.execute(clipId, note.trim(), feedbackRevision, edits, output,
+        value => update({ ...value, ...(value.plan ? { plan: { ...value.plan, clipId, feedbackRevision } } : {}) }));
     }, validate);
   }
 }

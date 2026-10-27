@@ -10,6 +10,7 @@ import { isUnchangedReview, parseFeedbackPlan } from './AdminFeedbackPolicy';
 import { AdminConfigStore } from './AdminConfigStore';
 import { createAdminServer } from './AdminServer';
 import { createFeedbackAgent, FeedbackCompletion, FeedbackToolCall } from './AdminFeedbackAgent';
+import { createFeedbackCompletion } from './AdminFeedbackClient';
 
 const roots: string[] = [];
 function fixture(plan: any = {}, complete?: FeedbackCompletion, directFeedback = false) {
@@ -105,6 +106,26 @@ it('returns the persisted boundary recovery failure to the editor after a failed
 
 const agentCall = (name: string, args: unknown = {}) => ({ content: null, tool_calls: [{ id: `call_${name}`,
   type: 'function', function: { name, arguments: JSON.stringify(args) } } as FeedbackToolCall] });
+
+it('continues after provider failure following a completed modification without repeating the modification or enqueue', async () => {
+  const response = (name: string, args = {}) => ({ ok: true, json: async () => ({ status: 'completed', output: [
+    { type: 'function_call', call_id: `call_${name}`, name, arguments: JSON.stringify(args) }
+  ] }) });
+  const transport = jest.fn().mockResolvedValueOnce(response('inspect_clip'))
+    .mockResolvedValueOnce(response('revise_and_review', { plan: { title: '保留手写标题' } }))
+    .mockResolvedValueOnce({ ok: false, status: 502 }).mockResolvedValueOnce({ ok: false, status: 502 })
+    .mockResolvedValueOnce(response('enqueue_submission'));
+  const complete = createFeedbackCompletion({ ai: { text: { retry: { baseDelayMs: 0, jitterRatio: 0 }, daiYu: {
+    apiKey: 'primary', baseUrl: 'https://primary.example', apiMode: 'responses', fallbackProvider: 'tuZi', fallbackProviderApiMode: 'responses'
+  }, tuZi: { apiKey: 'secondary', baseUrl: 'https://secondary.example' } } } }, transport as any);
+  const f = fixture({}, complete, true);
+  f.feedback.submit('3354', { ...f.input('改标题后投'), title: '保留手写标题' }); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  const history = JSON.parse(transport.mock.calls[4][1].body).input;
+  expect(history).toContainEqual(expect.objectContaining({ type: 'function_call_output', call_id: 'call_revise_and_review' }));
+  expect(transport.mock.calls[4][0]).toBe('https://secondary.example/v1/responses');
+});
 
 it('uses explicit feedback acceptance for an existing video without rerendering or asking AI to approve it', async () => {
   const f = fixture({}, undefined, true);

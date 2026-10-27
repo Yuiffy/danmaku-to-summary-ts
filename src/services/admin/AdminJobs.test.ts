@@ -1,8 +1,44 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createCommandRunner } from './AdminJobs';
+import { AdminJobs, createCommandRunner } from './AdminJobs';
 import { atomicJson, readJson } from './AdminFiles';
+
+it('accepts 200 unfinished operations in order, rejects overflow without saving it, and frees capacity after failure', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-capacity-'));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started: string[] = [];
+  const jobs = new AdminJobs(directory, async command => {
+    started.push(command.target);
+    await gate;
+    if (command.target === '0') throw new Error('fixture failure');
+    return 0;
+  });
+  const submit = (target: string) => jobs.submit({ executable: 'node', args: [], action: 'fixture', target });
+  try {
+    const first = submit('0');
+    await Promise.resolve();
+    expect(jobs.latest('fixture', '0')?.status).toBe('running');
+    for (let index = 1; index < 200; index++) submit(String(index));
+    expect(started).toEqual(['0']);
+    expect(() => submit('overflow')).toThrow('管理操作队列已满');
+    expect(jobs.latest('fixture', 'overflow')).toBeUndefined();
+    expect(fs.readdirSync(directory)).toHaveLength(200);
+    release();
+    await jobs.flush();
+    expect(started).toEqual(Array.from({ length: 200 }, (_, index) => String(index)));
+    expect(readJson(path.join(directory, `${first.id}.json`)).status).toBe('failed');
+    expect(jobs.latest('fixture', '199')?.status).toBe('succeeded');
+    submit('after-completion');
+    await jobs.flush();
+    expect(jobs.latest('fixture', 'after-completion')?.status).toBe('succeeded');
+  } finally {
+    release();
+    await jobs.flush();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 it('applies manual publication and silent notifications only to the draft child, then removes its temporary config', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-command-'));

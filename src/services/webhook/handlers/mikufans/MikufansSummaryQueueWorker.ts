@@ -4,6 +4,7 @@ import { ChildProcess, spawn } from 'child_process';
 import { ConfigProvider } from '../../../../core/config/ConfigProvider';
 import { getLogger } from '../../../../core/logging/LogManager';
 import { ProcessingAlertService } from '../../../monitoring/ProcessingAlertService';
+import { SummaryFailureDiagnostics } from '../../../monitoring/SummaryTaskFailure';
 import type { LiveSession } from '../../LiveSessionManager';
 import { listRelevantProcesses, terminateProcessTree } from '../../../../utils/processCleanup';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../../utils/ffmpegResource';
@@ -24,6 +25,8 @@ export interface QueuedSummaryTask {
   screenshotPath?: string | null;
   enableSpeakerRecognition?: boolean;
   speakerRecognitionRequest?: Record<string, unknown> | null;
+  workerRetryCount?: number;
+  recoveryHistory?: unknown[];
 }
 
 export interface MikufansSummaryQueueManager {
@@ -230,9 +233,12 @@ export class MikufansSummaryQueueWorker {
       return;
     }
 
+    const diagnostics = new SummaryFailureDiagnostics();
     if (!fs.existsSync(task.mediaPath) || !fs.statSync(task.mediaPath).isFile()) {
       this.logger.warn(`队列任务媒体文件不存在，标记失败: ${task.mediaPath}`);
-      this.queueManager.markFailed(task.id, `媒体文件不存在: ${task.mediaPath}`);
+      const reason = `媒体文件不存在: ${task.mediaPath}`;
+      this.queueManager.markFailed(task.id, reason);
+      this.notifyTaskFailed(task, diagnostics, reason);
       return;
     }
 
@@ -283,28 +289,36 @@ export class MikufansSummaryQueueWorker {
     const asrWorkerConnection = this.asrResources.getConnection();
     this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
 
-    const ps: ChildProcess = spawn('node', args, {
-      cwd: process.cwd(),
-      windowsHide: true,
-      shell: false,
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        ROOM_ID: roomId,
-        AUTOMATION: 'true',
-        BYPASS_WHISPER_QUEUE: 'true',
-        SCREENSHOT_PATH: task.screenshotPath || '',
-        FFMPEG_THREADS: String(resourceConfig.threads),
-        FFMPEG_PRIORITY: resourceConfig.priority,
-        ASR_PERSISTENT_WORKER_PORT: asrWorkerConnection.port
-          ? String(asrWorkerConnection.port)
-          : '',
-        ASR_PERSISTENT_WORKER_TOKEN: asrWorkerConnection.token || '',
-        ASR_CPU_FALLBACK: useCpu ? '1' : '',
-        ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : '',
-        ASR_SPEAKER_REQUEST_JSON: encodedSpeakerRequest
-      }
-    });
+    let ps: ChildProcess;
+    try {
+      ps = spawn('node', args, {
+        cwd: process.cwd(),
+        windowsHide: true,
+        shell: false,
+        env: {
+          ...process.env,
+          NODE_ENV: 'production',
+          ROOM_ID: roomId,
+          AUTOMATION: 'true',
+          BYPASS_WHISPER_QUEUE: 'true',
+          SCREENSHOT_PATH: task.screenshotPath || '',
+          FFMPEG_THREADS: String(resourceConfig.threads),
+          FFMPEG_PRIORITY: resourceConfig.priority,
+          ASR_PERSISTENT_WORKER_PORT: asrWorkerConnection.port
+            ? String(asrWorkerConnection.port)
+            : '',
+          ASR_PERSISTENT_WORKER_TOKEN: asrWorkerConnection.token || '',
+          ASR_CPU_FALLBACK: useCpu ? '1' : '',
+          ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : '',
+          ASR_SPEAKER_REQUEST_JSON: encodedSpeakerRequest
+        }
+      });
+    } catch (error) {
+      const reason = `队列Worker启动失败: ${error instanceof Error ? error.message : String(error)}`;
+      this.queueManager.markFailed(task.id, reason);
+      this.notifyTaskFailed(task, diagnostics, reason, false);
+      return;
+    }
     applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);
 
     this.queueWorkerProcess = ps;
@@ -313,6 +327,7 @@ export class MikufansSummaryQueueWorker {
     const config = ConfigProvider.getConfig();
     const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000;
     let timedOut = false;
+    let startupFailed = false;
     let asrStartedAt: number | null = null;
     let asrTimingSummary: Record<string, any> | null = null;
     let stdoutLineBuffer = '';
@@ -335,7 +350,9 @@ export class MikufansSummaryQueueWorker {
           this.logger.error(`队列Worker超时清理失败: ${error?.message || String(error)}`);
         }
         try {
-          this.queueManager.markFailed(task.id, `队列Worker超时终止: ${path.basename(task.mediaPath)}`);
+          const reason = `任务超过 ${Math.round(processTimeout / 1000)} 秒处理上限，队列Worker超时终止`;
+          this.queueManager.markFailed(task.id, reason);
+          this.notifyTaskFailed(task, diagnostics, reason, false);
         } catch (error: any) {
           this.logger.error(`记录队列Worker超时失败状态时出错: ${error?.message || String(error)}`);
         }
@@ -365,6 +382,7 @@ export class MikufansSummaryQueueWorker {
           return;
         }
         this.logger.info(`[Mikufans队列Worker] ${line}`);
+        diagnostics.observeOutput(line);
         if (!asrStartedAt && line.includes('-> [ASR]')) {
           asrStartedAt = Date.now();
         }
@@ -425,7 +443,9 @@ export class MikufansSummaryQueueWorker {
         }
       };
 
-      ps.stdout?.on('data', (data: Buffer) => {
+      ps.stdout?.setEncoding('utf8');
+      ps.stderr?.setEncoding('utf8');
+      ps.stdout?.on('data', (data: string) => {
         stdoutLineBuffer += data.toString();
         const lines = stdoutLineBuffer.split(/\r?\n/);
         stdoutLineBuffer = lines.pop() || '';
@@ -441,7 +461,8 @@ export class MikufansSummaryQueueWorker {
         }
       });
 
-      ps.stderr?.on('data', (data: Buffer) => {
+      ps.stderr?.on('data', (data: string) => {
+        diagnostics.observeError(data.toString());
         const output = data.toString().trim();
         if (output) {
           this.logger.info(`[Mikufans队列Worker stderr] ${output}`);
@@ -449,11 +470,15 @@ export class MikufansSummaryQueueWorker {
       });
 
       ps.on('error', (error: Error) => {
+        if (startupFailed || timedOut) return;
+        startupFailed = true;
         clearTimeout(timeoutId);
         this.queueWorkerProcess = null;
         this.logger.error(`Mikufans队列Worker子进程错误: ${error.message}`);
         try {
-          this.queueManager.markFailed(task.id, `队列Worker启动失败: ${error.message}`);
+          const reason = `队列Worker启动失败: ${error.message}`;
+          this.queueManager.markFailed(task.id, reason);
+          this.notifyTaskFailed(task, diagnostics, reason, false);
         } catch (markFailedError: any) {
           this.logger.error(`记录队列Worker启动失败状态时出错: ${markFailedError?.message || String(markFailedError)}`);
         }
@@ -476,17 +501,18 @@ export class MikufansSummaryQueueWorker {
             }
           }
 
-          if (code === 0) {
+          if (code === 0 && !timedOut && !startupFailed) {
             const taskId = task.id;
             if (taskId && this.queueManager.getTaskById(taskId, { reload: true })?.status !== 'completed') {
               this.queueManager.markCompleted(taskId, { exitCode: code, reason: 'success' });
             }
-          } else if (!timedOut) {
-            const reason = `队列Worker异常退出: exitCode=${code ?? 'null'}, file=${path.basename(task.mediaPath)}`;
+          } else if (!timedOut && !startupFailed) {
+            const reason = diagnostics.failure(`队列Worker异常退出: exitCode=${code ?? 'null'}`, {
+              taskId: task.id, roomId, mediaPath: task.mediaPath, recoveryEpisode: task.recoveryHistory?.length || 0
+            }).reason;
             const requeued = this.queueManager.requeueAfterWorkerFailure(task.id, reason);
-            this.logger[requeued ? 'warn' : 'error'](
-              requeued ? `${reason}，已重新入队` : `${reason}，重试已耗尽`
-            );
+            if (requeued) this.logger.warn(`${reason}，已重新入队`);
+            else this.notifyTaskFailed(task, diagnostics, reason, false);
           }
 
           try {
@@ -506,6 +532,22 @@ export class MikufansSummaryQueueWorker {
           releaseWorkerSlot('process-close');
         }
       });
+    });
+  }
+
+  private notifyTaskFailed(task: QueuedSummaryTask, diagnostics: SummaryFailureDiagnostics, reason: string, useLastError = true): void {
+    // A false requeue result also means "already completed". Only alert on a
+    // persisted failure in this recovery episode, never on normal retry/wait.
+    const persisted = this.queueManager.getTaskById(task.id, { reload: true });
+    const recoveryEpisode = task.recoveryHistory?.length || 0;
+    if (persisted?.status !== 'failed' || (persisted.recoveryHistory?.length || 0) !== recoveryEpisode) return;
+    const details = diagnostics.failure(reason, {
+      taskId: task.id, roomId: task.roomId ? String(task.roomId) : 'unknown', mediaPath: task.mediaPath,
+      recoveryEpisode, retryCount: persisted.workerRetryCount
+    }, useLastError);
+    this.logger.error('直播后处理已停止', details);
+    void ProcessingAlertService.notifySummaryTaskFailed(details).catch(error => {
+      this.logger.warn('发送直播后处理失败提醒失败', { taskId: task.id, error: String(error) });
     });
   }
 

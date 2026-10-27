@@ -6,6 +6,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     aiModel: 'gpt-6-luna',
     aiVerify: true,  // AI 验证:过滤唱歌/ASR误识别的假命中
     ambiguousRecall: { enabled: false, contextSeconds: 45, rules: [] },
+    memeRecall: { enabled: false, contextSeconds: 60, rules: [] },
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
     minClipSeconds: 30,
@@ -65,6 +66,7 @@ function getClipTopicsConfig(config = {}) {
         },
         review: { ...DEFAULT_CLIP_TOPICS_CONFIG.review, ...(raw.review || {}) },
         ambiguousRecall: { ...DEFAULT_CLIP_TOPICS_CONFIG.ambiguousRecall, ...(raw.ambiguousRecall || {}) },
+        memeRecall: { ...DEFAULT_CLIP_TOPICS_CONFIG.memeRecall, ...(raw.memeRecall || {}) },
         autoUpload: {
             ...DEFAULT_CLIP_TOPICS_CONFIG.autoUpload,
             ...(raw.autoUpload || {})

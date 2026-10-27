@@ -12,13 +12,17 @@ function normalizePreflightHits(raw, input) {
     if (!Array.isArray(raw) || raw.length !== input.hits.length) throw new Error('Every keyword anchor needs an assessment');
     const pending = new Map(input.hits.map(hit => [hit.id, hit]));
     const allowed = new Set(input.subtitles.map(cue => cue.id));
+    const audience = new Set((input.audience || []).map(row => row.id));
     const assessed = raw.map(row => {
         const hit = pending.get(row?.id);
         if (!hit || !['mention', 'false_match', 'uncertain'].includes(row.verdict) || !nonempty(row.reason)
             || !Array.isArray(row.evidenceCueIds) || !row.evidenceCueIds.includes(hit.cueId)
-            || row.evidenceCueIds.some(id => !allowed.has(id))) throw new Error('Invalid keyword assessment or citations');
+            || row.evidenceCueIds.some(id => !allowed.has(id))
+            || row.evidenceDanmakuIds !== undefined && (!Array.isArray(row.evidenceDanmakuIds)
+                || row.evidenceDanmakuIds.some(id => !audience.has(id)))) throw new Error('Invalid keyword assessment or citations');
         pending.delete(row.id);
-        return { ...hit, verdict: row.verdict, reason: row.reason.trim(), evidenceCueIds: row.evidenceCueIds };
+        return { ...hit, verdict: row.verdict, reason: row.reason.trim(), evidenceCueIds: row.evidenceCueIds,
+            ...(row.evidenceDanmakuIds !== undefined ? { evidenceDanmakuIds: row.evidenceDanmakuIds } : {}) };
     });
     if (!input.audioChecks) return assessed;
     const gate = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery').gateTopicAudioHits;
@@ -167,7 +171,7 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
         const issues = [];
         if (selectedHits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
             const policy = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
-            issues.push(...(policy.topicRecallIdentityIssues?.(selectedHits, input.subtitles, bounds)
+            issues.push(...(policy.topicRecallIdentityIssues?.(selectedHits, input.subtitles, bounds, input.audience)
                 || ['疑似人名缺少已编译的语义校验规则']));
         }
         const boundary = reviewPreflightBoundaries(locked ? locked.boundaryReview : raw.boundaryReview,

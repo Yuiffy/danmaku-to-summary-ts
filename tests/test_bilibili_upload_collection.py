@@ -319,15 +319,25 @@ class CollectionRoutingTests(unittest.TestCase):
         for path in ('D:/clips/not_topic_clips/clip.mp4', 'D:/clips/own_stream_fun_clips/topic_clips.mp4'):
             self.assertEqual(get_collection_section_id(self.config, room_id='1727074031', media_path=path), 9991476)
 
-    def test_production_routes_all_keyword_clips_and_retires_fuyasoul(self):
+    def test_production_routes_game_content_independently_of_streamer(self):
         config = json.loads((Path(__file__).resolve().parents[1] / 'config/production.json').read_text(encoding='utf-8-sig'))
         routing = config['bilibili']['upload']['collectionRouting']
-        self.assertFalse(any(route.get('sectionId') == 9991476 for route in routing.values()))
+        self.assertEqual(routing['fuyasoul']['sectionId'], 9991476)
+        self.assertNotIn('roomIds', routing['fuyasoul'])
         for room in ('1820703922', '1713546334', '1727074031', '23771092', '22470216', '12345678'):
             with self.subTest(room=room):
                 self.assertEqual(get_collection_section_id(config, room_id=room), 10015117)
                 self.assertEqual(get_collection_section_id(config, room_id=room, publication_kind='keyword_topic'), 9974272)
         self.assertEqual(get_collection_section_id(config, room_id='25788785'), 9482593)
+        for room in ('1727071052', '25788785', '12345678'):
+            for name in ('芙娅之魂', '普雅之魂', '抚雅之魂', '我魂'):
+                with self.subTest(room=room, game=name):
+                    self.assertEqual(get_collection_section_id(config, room_id=room,
+                        source_desc=f'主播 直播《来玩{name}》2026-10-25',
+                        publication_kind='keyword_topic'), 9991476)
+        self.assertEqual(get_collection_section_id(config, title='【主播】芙娅之魂BOSS卡住了'), 9991476)
+        self.assertEqual(get_collection_section_id(config, room_id='1727071052',
+            source_desc='小松绿Viridis 直播《其他游戏》2026-10-25'), 10015117)
 
 
 if __name__ == "__main__":

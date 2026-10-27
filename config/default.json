@@ -1670,6 +1670,7 @@
     "fillerRegex": "^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+"
   },
   "clipTopics": {
+    "memeRecall": { "enabled": false, "contextSeconds": 60, "rules": [] },
     "editorialStyles": { "enabled": false, "mode": "auto", "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
     "enabled": false,
     "mode": "local_review",
@@ -1816,18 +1817,20 @@
           "1727074031"
         ],
         "settings": {
-          "maxClips": 2,
+          "maxClips": 5,
+          "maxCandidates": 25,
           "uploadTags": [
             "芙娅之魂",
             "芙娅之魂巡礼测试"
           ],
           "ai": {
+            "maxCandidateLines": 25,
             "fallbackToLocalRules": false
           },
           "publicationPolicy": {
             "mode": "curated",
             "minScore": 88,
-            "maxStandalone": 2,
+            "maxStandalone": 5,
             "standoutScore": 100,
             "bundles": {
               "enabled": false
@@ -1840,7 +1843,7 @@
             "experiment": {
               "enabled": true,
               "ratio": 1,
-              "maxClips": 2
+              "maxClips": 5
             }
           },
           "selectionPolicy": {

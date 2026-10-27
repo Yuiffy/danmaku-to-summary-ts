@@ -11,7 +11,7 @@ const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
 const { correctCandidateDraft, approveCandidateDraft, hasDraftApproval,
     writeJsonAtomic, digest } = require('./clipping/candidate_subtitles');
 const { acquireCandidateLock } = require('./render_topic_candidate');
-const { sourceSnapshot, fileDigest, RENDERED_CLIP_MODES, sourceEvidenceHash } = require('./review_rendered_clip');
+const { sourceSnapshot, fileDigest, RENDERED_CLIP_MODES, sourceEvidenceHash, readRenderedSourceEvidence } = require('./review_rendered_clip');
 
 const { adapter, checkedDraft, revisionEvidence } = require('./clipping/rendered_revision_evidence');
 
@@ -30,7 +30,7 @@ function checkedSource(metadata, options = {}) {
     if (!missingDetail && (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start)) {
         throw new Error('Invalid existing source window');
     }
-    const evidence = buildSubtitleEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+    const evidence = readRenderedSourceEvidence(metadata);
     const expected = sourceEvidenceHash(metadata);
     if (!expected || expected !== evidence.sourceSha256) throw new Error('Original source evidence changed; review the source first');
     const snapshot = sourceSnapshot(metadata);

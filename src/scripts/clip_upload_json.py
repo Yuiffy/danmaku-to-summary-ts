@@ -74,6 +74,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "coverPath": clip.get("coverPath") or clip.get("cover") or "",
             "selectionSource": clip.get("selectionSource") or "", "roomId": clip.get("roomId") or "",
             "publicationKind": clip.get("publicationKind") or "",
+            "socialReviewRequired": bool(clip.get("socialReviewRequired")),
             "streamerName": clip.get("streamerName") or "", "description": clip.get("description") or "",
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
@@ -110,7 +111,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
                 continue
             if not record_data["reviewPlanPath"]:
                 record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
-            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired", "gameReviewRequired", "automaticPublicationRequired"):
+            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired", "gameReviewRequired", "socialReviewRequired", "automaticPublicationRequired"):
                 if record.get(required) and not record_data.get(required):
                     record_data[required] = True
                     record_data["reviewPending"] = True

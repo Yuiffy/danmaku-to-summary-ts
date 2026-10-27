@@ -80,6 +80,7 @@
     "clips:eval": "node -r ts-node/register/transpile-only src/tools/clipping/evaluate.ts",
     "clips:style": "node -r ts-node/register src/tools/clipping/style.ts",
     "clips:collab": "node -r ts-node/register src/tools/clipping/collab.ts",
+    "clips:post": "node -r ts-node/register src/tools/clipping/socialPost.ts",
     "clips:publication": "node src/scripts/clipping/publication_cli.js",
     "topic:compile": "node src/scripts/clipping/topic_compilation.js",
     "clips:review": "node src/scripts/own_stream_review.js",

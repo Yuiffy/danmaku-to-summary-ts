@@ -330,6 +330,31 @@ async function unresolvedSongs(f) {
     }) });
 }
 
+test('manual song excerpt renders a pending fragment after AI budget exhaustion without requesting AI', async () => {
+    const f = fixture();
+    try {
+        const result = await unresolvedSongs(f);
+        const metadataPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath;
+        const old = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        const plan = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        plan.efficiency.boundaryRequests = 3;
+        fs.writeFileSync(result.planPath, JSON.stringify(plan));
+        const { calibrate, ...options } = f.options;
+        await workflow.generateStreamActivities({ ...options, kind: 'songs', retryBoundaries: true,
+            manualSongEdit: { activityId: old.activities[0].id, start: 200, end: 390, note: '只保留最后一次演唱' },
+            readRegistry: () => ({ clips: { '42': { id: 42, status: 'needs_review', metadataPath } } }) });
+        const after = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        expect(after.activities[0]).toMatchObject({ start: 200, end: 390, performance: 'fragment', verification: { decision: 'uncertain' } });
+        expect(after).toMatchObject({ uploadReady: false, activityReview: { status: 'pending' } });
+        expect(after.output.parts[0]).toMatchObject({ start: 198, end: 392 });
+        expect(fs.existsSync(old.output.mediaPath)).toBe(true);
+        expect(after.output.mediaPath).not.toBe(old.output.mediaPath);
+        expect(JSON.parse(fs.readFileSync(result.planPath, 'utf8')).efficiency.boundaryRequests).toBe(3);
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+        expect(calibrate).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('explicit boundary recovery retains IDs and originals, rebuilds changed media and leaves completed watch intact', async () => {
     const f = fixture();
     try {

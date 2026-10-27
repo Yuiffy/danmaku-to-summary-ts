@@ -761,6 +761,11 @@ export interface FusionConfig {
 }
 
 export interface ClipTopicsConfig {
+  memeRecall?: {
+    enabled?: boolean;
+    contextSeconds?: number;
+    rules?: Array<{ id: string; keyword: string; forms: string[]; targetNames?: string[]; roomIds?: string[] }>;
+  };
   editorialStyles?: { enabled?: boolean; mode?: 'auto' | 'ordinary' | 'highlight_first' | 'precision'; opManifest?: string; opManifests?: string[] };
   enabled: boolean;
   mode: 'local_review' | string;

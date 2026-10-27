@@ -2,6 +2,22 @@ const closing = require('./stream_game_closing');
 const fs = require('fs'), path = require('path'), os = require('os');
 
 describe('silent game exit handling', () => {
+  test.each([[100.079, 160.08], [13634.079, 13694.08], [100.08, 160.079]])(
+    'fractional closing endpoints retain continuous original-frame coverage (%s to %s)', async (spokenEnd, scanEnd) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-closing-fractional-'));
+      try {
+        const result = await closing.verifyClosingFrames({ spokenEnd, scanEnd, gameName: 'Game', host: 'Host',
+          source: { mediaPath: 'original.flv', mediaBytes: '100', mediaMtimeNs: '1' }, mediaPath: 'original.flv', directory,
+          root: {}, settings: {}, extract: async (args: string[]) => fs.writeFileSync(args.at(-1), Buffer.alloc(1280)),
+          request: async (_prompt: string, inputs: any[]) => ({ text: JSON.stringify({ reason: 'Exit menu gives way to a clear talking scene',
+            frames: inputs.map(i => ({ index: i.index, activity: i.time < spokenEnd + 16.5 ? 'game' : 'other',
+              description: 'Actual original menu or talking scene' })) }) }) });
+        expect(result.end).toBeCloseTo(spokenEnd + 16.5, 6);
+        expect(result.samples.at(-1).time).toBe(scanEnd);
+        expect(result.samples.every((sample: any, i: number) => !i || sample.time - result.samples[i - 1].time <= 2.001)).toBe(true);
+        expect(closing.validateClosingReview(result, result.end)).toBe(result.end);
+      } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+    });
   test('the spoken exit must retain later menus and fades, with a confirmed transition', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-closing-'));
     try {

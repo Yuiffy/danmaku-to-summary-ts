@@ -3,7 +3,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,6 +12,50 @@ from src.scripts.clip_upload_errors import has_terminal_upload_error
 
 
 class AutomaticUploadRecoveryTests(unittest.TestCase):
+    def test_real_pacing_boundary_stops_manual_pause_and_records_406_only_once(self):
+        from bilibili_api.exceptions import NetworkException
+        for already_paused in (False, True):
+            with self.subTest(already_paused=already_paused), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                root = Path(directory)
+                media = root / 'test.mp4'
+                media.write_bytes(b'media fixture')
+                pacer = upload.UploadPacing('test', root / 'pacing.sqlite3', emit=lambda _: None)
+                pacer.activate_slow('confirmed incident')
+                if already_paused:
+                    pacer.record('preupload_failed', 'preupload', 406, 1)
+                network = AsyncMock(side_effect=NetworkException(406, ''))
+                class SDK:
+                    def __init__(self, pages, **kwargs):
+                        self.pages = pages
+                    def add_event_listener(self, *args):
+                        pass
+                    async def _preupload(self, page):
+                        return await network(page)
+                    async def start(self):
+                        return await self._preupload(self.pages[0])
+                stack.enter_context(patch.object(upload.video_uploader, 'VideoUploader', SDK))
+                stack.enter_context(patch.object(upload.video_uploader, 'VideoMeta', return_value=Mock()))
+                stack.enter_context(patch.object(upload, 'validate_video_stream', return_value=(True, '')))
+                stack.enter_context(patch.object(upload, 'find_existing_cover', return_value=str(root / 'cover.jpg')))
+                stack.enter_context(patch.object(upload.Picture, 'from_file', return_value=Mock()))
+                authorize = Mock()
+                clip = {'idx': 1, 'title': 'Title', 'path': str(media), 'start': '00:00:00', 'duration': '00:00:30'}
+                with redirect_stdout(io.StringIO()) as output:
+                    result = asyncio.run(upload.upload_one(clip, object(), '', [], 21, '',
+                                                           pacing=pacer, before_submit=authorize))
+                self.assertEqual(result['status'], 'rate_limited')
+                self.assertEqual(result['errorCode'], 'manual_pause' if already_paused else 406)
+                self.assertEqual(network.await_count, 0 if already_paused else 1)
+                self.assertEqual(authorize.call_count, 0 if already_paused else 1)
+                with closing(pacer._connect()) as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM upload_events WHERE http_status=406').fetchone()[0], 1)
+                self.assertIn('[UPLOAD_PAUSED]' if already_paused else '[RATE_LIMIT_406]', output.getvalue())
+
+    def test_disabled_probe_exports_never_send_network_requests(self):
+        with patch.object(upload, 'get_client', side_effect=AssertionError('unexpected probe')):
+            self.assertEqual(asyncio.run(upload.probe_upload_available(object())), (True, ''))
+            self.assertEqual(asyncio.run(upload.wait_for_upload_available(object(), 30, 3)), (True, ''))
+
     def test_collection_routing_attaches_each_clip_once_without_resubmission(self):
         config = {'bilibili': {'upload': {'collectionRouting': {
             'keyword': {'sectionId': 42}, 'other': {'sectionId': 43},
@@ -93,7 +137,7 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
             saved = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(upload.find_intent(saved, clip)[1]["mediaPath"], clip["path"])
             self.assertNotIn("1", saved.get("done", {}))
-            self.assertTrue(has_terminal_upload_error(output.getvalue()))
+            self.assertFalse(has_terminal_upload_error(output.getvalue()))
 
             # A definitive rejection is safe to retry through the existing account cooldown.
             state_path.unlink()
@@ -111,6 +155,21 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
             self.assertNotIn("1", json.loads(state_path.read_text(encoding="utf-8")).get("submission_intents", {}))
             self.assertNotIn("automatic submission outcome unknown", output.getvalue())
 
+            # A rejection of the actual initialization is also safe to retry.
+            state_path.unlink()
+            uploader.reset_mock()
+            async def reject_initialization(*args, before_submit=None, **kwargs):
+                before_submit()
+                print('[RATE_LIMIT_406] stage=preupload')
+                return {'idx': 1, 'title': 'Title', 'status': 'rate_limited',
+                        'errorCode': 406, 'errorStage': 'preupload'}
+            uploader.side_effect = reject_initialization
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(asyncio.run(upload.main()), 75)
+                self.assertEqual(asyncio.run(upload.main()), 75)
+            self.assertEqual(uploader.await_count, 2)
+            self.assertNotIn('1', json.loads(state_path.read_text(encoding='utf-8')).get('submission_intents', {}))
+
     def test_known_pre_submit_failure_does_not_persist_submission_intent(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             callback = Mock()
@@ -123,12 +182,27 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
         for authority in ({"automaticPublicationRequired": True}, {"queueJobId": "manual-job"}):
             clip = {"idx": 1, "title": "Title", **authority}
             with self.subTest(authority=authority), patch.object(upload, "fetch_member_archives", return_value={}), \
-                    patch.object(upload, "wait_for_upload_available", AsyncMock(return_value=(True, "ok"))), \
+                    patch.object(upload, "wait_for_upload_available", AsyncMock(side_effect=AssertionError('unexpected probe'))), \
                     patch.object(upload, "upload_one", AsyncMock(return_value={"idx": 1, "title": "Title", "status": "got_406"})) as submit, \
                     patch.object(upload.asyncio, "sleep", AsyncMock()), redirect_stdout(io.StringIO()):
                 result = asyncio.run(upload.upload_one_guarded(clip, object(), "", [], 21, "", "", 30, 3))
             self.assertEqual(result["status"], "got_406")
             self.assertEqual(submit.await_count, 1)
+
+    def test_confirmed_reconciliation_breaks_failure_episode_without_another_upload(self):
+        pacer = Mock()
+        clip = {'idx': 1, 'title': 'Title', 'queueJobId': 'manual-job'}
+        with patch.object(upload, 'fetch_member_archives', side_effect=[{}, {'Title': 'BVconfirmed'}]), \
+                patch.object(upload, 'enrich_upload_result', side_effect=lambda result, _: result), \
+                patch.object(upload, 'attach_video_to_collection', AsyncMock()), \
+                patch.object(upload, 'upload_one', AsyncMock(return_value={
+                    'idx': 1, 'title': 'Title', 'status': 'got_406'})) as submit, \
+                patch.object(upload.asyncio, 'sleep', AsyncMock()), redirect_stdout(io.StringIO()):
+            result = asyncio.run(upload.upload_one_guarded(clip, object(), '', [], 21, '', '', 30, 3,
+                                                           collection_section_id=42, pacing=pacer))
+        self.assertEqual(result['bvid'], 'BVconfirmed')
+        self.assertEqual(submit.await_count, 1)
+        pacer.record.assert_called_once_with('archive_complete', 'reconciliation', 200)
 
 
 if __name__ == "__main__":

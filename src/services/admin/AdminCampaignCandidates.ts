@@ -5,6 +5,7 @@ import { deferredSelectionRows } from '../../workflows/clipping/reviewSelectionH
 import { AdminClipStore } from './AdminClipStore';
 import { AdminError, digest, readJson, readText } from './AdminFiles';
 import { sourceWindowSubtitles } from '../../core/admin/subtitles';
+import { campaignShortlistPolicy, shortlistCampaignCandidates } from '../../core/admin/campaignCandidates';
 import { campaignCandidatePath } from '../../workflows/clipping/campaignCandidate';
 
 type Data = Record<string, any>;
@@ -85,8 +86,10 @@ export class AdminCampaignCandidates {
     }
     this.cached = { at: Date.now(), entries }; return entries;
   }
-  list(query: { room?: string; session?: string; search?: string; page?: string; sort?: string }) {
+  list(query: { room?: string; session?: string; search?: string; page?: string; sort?: string; view?: string }) {
     const all = [...this.entries().values()].map(entry => entry.summary);
+    const view = query.view === 'all' ? 'all' : 'curated';
+    const visible = view === 'all' ? all : shortlistCampaignCandidates(all);
     const rooms = [...new Map(all.map(row => [row.roomId, { id: row.roomId, name: row.streamerName || row.roomId }])).values()];
     const sessions = [...new Map(all.filter(row => !query.room || query.room === row.roomId).map(row => [row.session,
       { id: row.session, title: `${row.recordedAt} · ${row.streamerName} · ${row.streamTitle}` }])).values()];
@@ -94,8 +97,9 @@ export class AdminCampaignCandidates {
     const byNumber = (a: CampaignCandidate, b: CampaignCandidate) => a.label.localeCompare(b.label, 'en', { numeric: true });
     const bySession = (a: CampaignCandidate, b: CampaignCandidate) => b.recordedAt.localeCompare(a.recordedAt)
       || a.streamerName.localeCompare(b.streamerName) || a.session.localeCompare(b.session) || byNumber(a, b) || a.id.localeCompare(b.id);
-    const filtered = all.filter(row => (!query.room || row.roomId === query.room) && (!query.session || row.session === query.session)
-      && (!query.search || `${row.label} ${row.title} ${row.streamerName} ${row.recordedAt}`.toLowerCase().includes(query.search.toLowerCase())))
+    const matches = (row: CampaignCandidate) => (!query.room || row.roomId === query.room) && (!query.session || row.session === query.session)
+      && (!query.search || `${row.label} ${row.title} ${row.streamerName} ${row.recordedAt}`.toLowerCase().includes(query.search.toLowerCase()));
+    const filtered = visible.filter(matches)
       .sort((a, b) => {
         if (sort === 'number-asc' || sort === 'number-desc') return (sort === 'number-asc' ? 1 : -1) * byNumber(a, b) || bySession(a, b);
         if (sort === 'score-asc' || sort === 'score-desc') {
@@ -106,7 +110,8 @@ export class AdminCampaignCandidates {
         return bySession(a, b);
       });
     const page = Math.max(1, Math.min(10000, Math.floor(Number(query.page) || 1)));
-    return { candidates: filtered.slice((page - 1) * 40, page * 40), total: filtered.length, page, sort, rooms, sessions };
+    return { candidates: filtered.slice((page - 1) * 40, page * 40), total: filtered.length,
+      unfilteredTotal: all.filter(matches).length, view, shortlistPolicy: campaignShortlistPolicy, page, sort, rooms, sessions };
   }
   private entry(id: string): Entry {
     if (!/^[a-f0-9]{64}$/u.test(id)) throw new AdminError('候选 ID 无效');

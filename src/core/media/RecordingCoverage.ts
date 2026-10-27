@@ -2,6 +2,39 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
+export interface RecordingPrefix {
+    originalPath: string; bytes: number; sha256: string; duration: number;
+    metadataRanges?: Array<{ start: number; length: number }>;
+}
+
+/** Hash only the captured prefix: an append must not change its identity. */
+export function recordingPrefixHash(file: string, bytes: number, metadataRanges: Array<{ start: number; length: number }> = []): string {
+    if (!Number.isSafeInteger(bytes) || bytes <= 0) throw new Error('Invalid recording prefix length');
+    const fd = fs.openSync(file, 'r'), buffer = Buffer.alloc(1024 * 1024);
+    try {
+        if (fs.fstatSync(fd).size < bytes) throw new Error('Recording prefix was truncated');
+        const hash = createHash('sha256');
+        if (metadataRanges.length) hash.update(`flv-script-payload-excluded-v1:${JSON.stringify(metadataRanges)}:`);
+        let offset = 0;
+        for (const range of [...metadataRanges, { start: bytes, length: 0 }]) {
+            if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.length) || range.start < offset
+                || range.length < 0 || range.start + range.length > bytes) throw new Error('Invalid FLV metadata range');
+            if (range.length) {
+                const tag = Buffer.alloc(11);
+                if (range.start < 11 || fs.readSync(fd, tag, 0, 11, range.start - 11) !== 11
+                    || tag[0] !== 18 || tag.readUIntBE(1, 3) !== range.length) throw new Error('Excluded range is not FLV script metadata');
+            }
+            while (offset < range.start) {
+                const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, range.start - offset), offset);
+                if (!count) throw new Error('Recording prefix ended during read');
+                hash.update(buffer.subarray(0, count)); offset += count;
+            }
+            offset += range.length;
+        }
+        return hash.digest('hex');
+    } finally { fs.closeSync(fd); }
+}
+
 export interface SourceSpan { identity: string; start: number; duration: number; day?: string }
 export interface RecordingMap { version: number; outputIdentity: string; spans: SourceSpan[] }
 
@@ -72,6 +105,15 @@ export function excludeCovered<T extends { start: number; end: number }>(clips: 
     return clips.filter(clip => !covered.some(span => Math.min(clip.end, span.start + span.duration) - Math.max(clip.start, span.start) > 0));
 }
 
+/** Resolve an append-only snapshot against the final source, including its move into bak/. */
+export function resolveRecordingPrefix(prefix: RecordingPrefix): { file: string; identity: string } {
+    if (!(prefix.duration > 0 && Number.isFinite(prefix.duration)) || !/^[a-f0-9]{64}$/u.test(prefix.sha256)) throw new Error('Invalid snapshot coverage');
+    const file = [prefix.originalPath, path.join(path.dirname(prefix.originalPath), 'bak', path.basename(prefix.originalPath))]
+        .find(file => fs.existsSync(file));
+    if (!file || recordingPrefixHash(file, prefix.bytes, prefix.metadataRanges) !== prefix.sha256) throw new Error('Snapshot source prefix missing or changed');
+    return { file, identity: recordingIdentity(file) };
+}
+
 /** Normal finalization also reserves its uncovered sources before selecting/publishing. */
 export function reserveFinalCampaign(media: string, campaignId: string, ledger = path.resolve('data/runtime/campaign-early')): void {
     const match = path.basename(media).match(/^录制-(\d+)-(\d{8})-/u);
@@ -106,5 +148,15 @@ export function filterCampaignCoverage<T extends { start: number; end: number }>
     const map = readRecordingMap(media);
     // Old merged recordings have no reliable source offsets; never guess wall-clock offsets.
     if (!map && /_merged\./u.test(media)) throw new Error('提前切片去重缺少合并来源时间轴，保留任务供恢复');
-    return excludeCovered(clips, map?.spans || [{ identity: recordingIdentity(media), start: 0, duration: Number.MAX_SAFE_INTEGER }], identities);
+    const spans = map?.spans || [{ identity: recordingIdentity(media), start: 0, duration: Number.MAX_SAFE_INTEGER }];
+    const remaining = excludeCovered(clips, spans, identities);
+    const prefixes: RecordingPrefix[] = claims.flatMap(row => row.prefixReservations || []);
+    const covered = prefixes.flatMap(prefix => {
+        const source = resolveRecordingPrefix(prefix);
+        return spans.filter(span => span.identity === source.identity).map(span => {
+            if (prefix.duration > span.duration + 2) throw new Error('Snapshot coverage exceeds final source duration');
+            return { start: span.start, end: span.start + Math.min(span.duration, prefix.duration) };
+        });
+    });
+    return remaining.filter(clip => !covered.some(span => Math.min(clip.end, span.end) > Math.max(clip.start, span.start)));
 }

@@ -27,13 +27,17 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "submission recovery conflict",
     "submission recovery authorization invalid",
     "automatic publication authorization invalid",
-    "submission outcome unknown",
     "duplicate source content",
 )
 
 
 def has_terminal_upload_error(output: str) -> bool:
     return bool(terminal_upload_error_reason(output))
+
+
+def is_submission_recovery_pending(output: str) -> bool:
+    """An unknown receipt can wait; identity/authorization conflicts cannot."""
+    return "submission outcome unknown" in str(output or "").lower() and not has_terminal_upload_error(output)
 
 
 def terminal_upload_error_reason(output: str) -> str:

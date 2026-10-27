@@ -70,7 +70,9 @@ def serve():
             os._exit(1)
     threading.Thread(target=receive, daemon=True).start()
     output = sys.stdout
-    model, payload, guard = None, None, None
+    from asr_handoff_model import HandoffModelState
+    models = HandoffModelState()
+    payload, guard = None, None
     try:
         while True:
             request = requests.get()
@@ -78,6 +80,8 @@ def serve():
             with contextlib.redirect_stdout(sys.stderr):
                 operation = request['op']
                 if operation == 'init':
+                    if guard is not None:
+                        guard.close_claim()
                     payload = request['payload']
                     from asr_cpu_fallback import apply_cpu_fallback
                     apply_cpu_fallback(payload)
@@ -86,7 +90,8 @@ def serve():
                     runtime = {**payload, 'resource_guard': {**(payload.get('resource_guard') or {}),
                                'pause_when_game_running': False}}
                     guard = prepare_asr_runtime(runtime)
-                    response = {'ready': True, 'device': payload['device']}
+                    cache_hit = models.begin(payload)
+                    response = {'ready': True, 'device': payload['device'], 'model_cache_hit': cache_hit}
                 elif operation == 'window':
                     began = time.perf_counter()
                     load_s = 0
@@ -96,25 +101,28 @@ def serve():
                     from live_asr_cache import commit_boundary, model_spec, aggregate_chunks
                     from sensevoice_paraformer import configure_paraformer_devices
                     from sensevoice_text import resolve_cached_model_name
-                    from asr_window_result import transcription_result, vad_intervals
-                    if model is None:
-                        load_started = time.perf_counter()
-                        spec = model_spec(payload)
+                    from asr_window_result import vad_intervals
+                    from asr_vad_reuse import generate_with_vad
+                    def load_model(options):
+                        spec = model_spec(options)
                         kwargs = {k: v for k, v in spec.items() if k != 'audio_timeline'}
                         for key in ('model', 'vad_model', 'punc_model'):
                             if kwargs[key]:
                                 kwargs[key] = resolve_cached_model_name(kwargs[key])
-                        model = AutoModel(**kwargs, device=payload['device'],
-                                          ncpu=2 if payload['device'] == 'cpu' else 4,
+                        loaded = AutoModel(**kwargs, device=options['device'],
+                                          ncpu=2 if options['device'] == 'cpu' else 4,
                                           disable_update=True, disable_pbar=True)
-                        configure_paraformer_devices(model, payload['device'], payload.get('vad_device') or 'cpu')
-                        load_s = time.perf_counter() - load_started
+                        configure_paraformer_devices(loaded, options['device'], options.get('vad_device') or 'cpu')
+                        return loaded
+                    model, load_s, restore_s = models.get(payload, load_model)
                     audio = read_pcm(request['pcm'], request['start'], request['duration'])
+                    vad_started = time.perf_counter()
                     with torch.inference_mode():
                         vad = (model.inference(audio, model=model.vad_model,
-                            kwargs={**model.vad_kwargs, 'max_single_segment_time': 240000}, disable_pbar=True)
+                            kwargs={**model.vad_kwargs}, disable_pbar=True)
                             if getattr(model, 'vad_model', None) is not None else [])
                         intervals = vad_intervals(vad, len(audio) / 16000) if getattr(model, 'vad_model', None) is not None else None
+                        vad_s = time.perf_counter() - vad_started
                         end = commit_boundary(intervals or [], len(audio) / 16000,
                                               final=request['final'])
                         if end is None:
@@ -124,14 +132,19 @@ def serve():
                             from asr_handoff_policy import batch_settings
                             batch, threshold = batch_settings({**payload,
                                 **{key: request[key] for key in ('batch_size_s', 'batch_size_threshold_s') if key in request}}, payload['device'])
-                            result = model.generate(input=audio[:frames], cache={}, batch_size_s=batch,
+                            metrics = {}
+                            generate_started = time.perf_counter()
+                            result = generate_with_vad(model, audio[:frames], vad, metrics=metrics, cache={}, batch_size_s=batch,
                                 batch_size_threshold_s=threshold, sentence_timestamp=True, disable_pbar=True,
                                 language=payload.get('language', 'auto'), use_itn=payload.get('use_itn', True))
                             response = {'chunk': {'start': request['start'],
                                 'end': round(request['start'] + frames / 16000, 5),
-                                'result': transcription_result(result, intervals)}}
+                                'result': result}, 'vad_reused': metrics.get('vad_reused', 0),
+                                'empty_decoding': metrics.get('empty_decoding', 0),
+                                'generation_s': time.perf_counter() - generate_started}
                             aggregate_chunks([response['chunk']])
-                    response.update(model_load_s=load_s, window_s=time.perf_counter()-began,
+                    response.update(model_load_s=load_s, vad_s=vad_s, window_s=time.perf_counter()-began,
+                        model_restore_s=restore_s,
                         gpu_reserved_mb=torch.cuda.memory_reserved() / 1024 ** 2
                             if payload['device'].startswith('cuda') else 0)
                 elif operation == 'finish':
@@ -140,16 +153,16 @@ def serve():
                         payload['speaker_processing_policy'] = speaker_policy
                         if speaker_policy.get('enabled') is False:
                             payload['enable_speaker'] = False
-                    # Avoid retaining the ASR weights alongside speaker/emotion models.
+                    # Drop the local reference before clearing/offloading reusable weights.
                     model = None
-                    gc.collect()
-                    import torch
-                    if payload['device'].startswith('cuda'):
-                        torch.cuda.empty_cache()
+                    park_started = time.perf_counter()
+                    models.before_finish(payload, request.get('retain_model') is True)
+                    park_s = time.perf_counter() - park_started
                     from live_asr_cache import aggregate_chunks
                     from paraformer_postprocess import postprocess_cached_paraformer
                     from sensevoice_runtime import GpuThrottle
-                    payload['_timings'] = request['timings']
+                    payload['_timings'] = {**request['timings'], 'handoff_model_park_s': park_s,
+                                           'handoff_model_retained': int(models.model is not None)}
                     payload['_resource_peaks'] = {}
                     began = time.perf_counter()
                     segments = postprocess_cached_paraformer(payload, payload['audio_path'], payload['device'],
@@ -164,6 +177,17 @@ def serve():
                     from sensevoice_text import _apply_hotword_correction
                     if (payload.get('phoneme_correction') or {}).get('enabled'):
                         _apply_hotword_correction(response, payload)
+                elif operation == 'release':
+                    if guard is not None:
+                        guard.close_claim()
+                        guard = None
+                    import torch
+                    gc.collect()
+                    if payload['device'].startswith('cuda'):
+                        torch.cuda.empty_cache()  # Drop allocator blocks from optional postprocessing.
+                    response = {'released': True, 'model_retained': models.model is not None,
+                        'gpu_reserved_mb': torch.cuda.memory_reserved() / 1024 ** 2
+                            if payload['device'].startswith('cuda') else 0}
                 elif operation == 'close':
                     return
                 else:

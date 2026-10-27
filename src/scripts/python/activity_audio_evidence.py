@@ -21,6 +21,18 @@ def windows(duration, seconds=8):
             for start in range(0, int(duration) + 1, seconds) if start < duration]
 
 
+def packet_windows(duration, seconds=8):
+    """Partition an already budget-checked packet without enlarging decoder blocks."""
+    windows(min(duration, 1200), seconds)
+    block_seconds = (1200 // seconds) * seconds
+    result = []
+    for offset in range(0, int(duration) + 1, block_seconds):
+        if offset < duration:
+            result.extend((offset + start, offset + end)
+                          for start, end in windows(min(duration - offset, block_seconds), seconds))
+    return result
+
+
 def language_hint(raw):
     match = re.search(r"<\|(zh|en|ja|ko|yue)\|>", raw)
     return match.group(1) if match else None
@@ -55,7 +67,7 @@ def analyze(payload):
     model = AutoModel(model=resolve_cached_model_name(settings["sensevoiceModel"]),
                       device=device, disable_update=True, disable_pbar=True, disable_log=True)
     for row, samples in zip(rows, arrays):
-        for index, (start, end) in enumerate(windows(row["end"] - row["start"], settings["chunkSeconds"]), 1):
+        for index, (start, end) in enumerate(packet_windows(row["end"] - row["start"], settings["chunkSeconds"]), 1):
             raw = model.generate(input=samples[int(start * 16000):int(end * 16000)],
                                  language="auto", use_itn=False, disable_pbar=True)[0]["text"]
             row["chunks"].append({"index": index, "start": start, "end": end,

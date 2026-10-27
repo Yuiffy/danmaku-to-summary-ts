@@ -61,7 +61,10 @@ it('exposes comment history as read-only and rejects writes and arbitrary subpat
   expect(fetchMock.mock.calls[0][0].pathname).toBe('/comment-replies');
   expect((await forwardAdmin(request('/comment-replies', { method: 'POST', body: '{}' }))).status).toBe(405);
   expect((await forwardAdmin(request('/comment-replies/resume'))).status).toBe(404);
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect((await forwardAdmin(request('/comment-feedback?category=subtitles'))).status).toBe(200);
+  expect((await forwardAdmin(request('/comment-feedback', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/comment-feedback/delete'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 it('blocks cross-site and arbitrary endpoints before reading credentials or contacting services', async () => {
   expect((await forwardAdmin(request('/configs', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);

@@ -1809,6 +1809,18 @@
         }
       ]
     },
+    "memeRecall": {
+      "enabled": true,
+      "contextSeconds": 60,
+      "rules": [
+        {
+          "id": "sui-accompany-pig-title",
+          "keyword": "岁己",
+          "targetNames": ["岁己", "小岁", "饼干岁", "SUI"],
+          "forms": ["陪你这个猪", "配你这个猪", "陪你这只猪", "配你这只猪"]
+        }
+      ]
+    },
     "prePaddingSeconds": 20,
     "postPaddingSeconds": 35,
     "contextPrePaddingSeconds": 180,
@@ -2021,18 +2033,20 @@
           "1727074031"
         ],
         "settings": {
-          "maxClips": 2,
+          "maxClips": 5,
+          "maxCandidates": 25,
           "uploadTags": [
             "芙娅之魂",
             "芙娅之魂巡礼测试"
           ],
           "ai": {
+            "maxCandidateLines": 25,
             "fallbackToLocalRules": false
           },
           "publicationPolicy": {
             "mode": "curated",
             "minScore": 88,
-            "maxStandalone": 2,
+            "maxStandalone": 5,
             "standoutScore": 100,
             "bundles": {
               "enabled": false
@@ -2045,7 +2059,7 @@
             "experiment": {
               "enabled": true,
               "ratio": 1,
-              "maxClips": 2
+              "maxClips": 5
             }
           },
           "selectionPolicy": {
@@ -2371,6 +2385,16 @@
         "sectionId": 9482593
       },
       "collectionRouting": {
+        "fuyasoul": {
+          "seasonId": 8956269,
+          "sectionId": 9991476,
+          "sourceKeywords": [
+            "芙娅之魂",
+            "普雅之魂",
+            "抚雅之魂",
+            "我魂"
+          ]
+        },
         "keyword": {
           "seasonId": 8941979,
           "sectionId": 9974272

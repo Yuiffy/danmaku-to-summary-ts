@@ -80,6 +80,17 @@ test('negative anchors can yield zero clips without a fallback render', () => {
   expect(() => normalize({ hits: [{ ...hit, verdict: 'false_match' }], clips: [clip] })).toThrow('eligible');
 });
 
+test('keyword assessments validate audience citations instead of accepting invented or malformed IDs', () => {
+  const packet = { ...input, audience: [{ id: 'D2', time: 12, text: 'SUI提过这个问题' }] };
+  for (const evidenceDanmakuIds of [['D99'], 'D2', [null]]) {
+    expect(() => normalizePreflightResponse(JSON.stringify({ hits: [{ ...hit, evidenceDanmakuIds }], clips: [] }),
+      packet, evidence, config)).toThrow('Invalid keyword assessment');
+  }
+  const plan = normalizePreflightResponse(JSON.stringify({ hits: [{ ...hit, evidenceDanmakuIds: ['D2'] }], clips: [] }),
+    packet, evidence, config);
+  expect(plan.hits[0].evidenceDanmakuIds).toEqual(['D2']);
+});
+
 test.each([
   { ...edit, original: 'stale phrase' },
   { ...edit, replacement: 'unsupported fact' },

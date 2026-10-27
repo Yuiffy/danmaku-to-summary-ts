@@ -57,6 +57,33 @@ function Wait-Healthy {
     throw 'Webhook did not become healthy after the runtime switch'
 }
 
+function Copy-IsolatedRuntimePartitions([string]$sourceRoot, [string]$destinationRoot) {
+    # These apps deploy independently below dist; the service compiler does not emit them.
+    # Copy only after candidate verification, without replacing any compiler output.
+    foreach ($name in @('comment-replies', 'qqbot')) {
+        $source = Join-Path $sourceRoot $name
+        $destination = Join-Path $destinationRoot $name
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        if (Test-Path -LiteralPath $destination) { throw "Isolated runtime conflicts with staged output: $name" }
+        $sourceItem = Get-Item -LiteralPath $source
+        $entries = @($sourceItem) + @(Get-ChildItem -LiteralPath $source -Recurse -Force)
+        if (-not $sourceItem.PSIsContainer -or @($entries | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint }).Count -gt 0) {
+            throw "Isolated runtime must be a regular directory without links: $name"
+        }
+        $inventory = @($entries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+            [ordered]@{ relative = [System.IO.Path]::GetRelativePath($source, $_.FullName); hash = (Get-FileHash -LiteralPath $_.FullName).Hash }
+        })
+        Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+        foreach ($file in $inventory) {
+            if ((Get-FileHash -LiteralPath (Join-Path $destination $file.relative)).Hash -ne $file.hash -or
+                (Get-FileHash -LiteralPath (Join-Path $source $file.relative)).Hash -ne $file.hash) {
+                throw "Isolated runtime changed while copying: $name"
+            }
+        }
+        [ordered]@{ name = $name; files = $inventory.Count; byteIdentical = $true }
+    }
+}
+
 $runtimePath = Assert-WorkspacePath $runtimePath
 $stagePath = Assert-WorkspacePath $stagePath
 $backupPath = Assert-WorkspacePath $backupPath
@@ -114,6 +141,8 @@ $oldMoved = $false
 $newMoved = $false
 $switchStarted = (Get-Date).ToUniversalTime()
 try {
+    $preservedPartitions = @(Copy-IsolatedRuntimePartitions $runtimePath $stagePath)
+    Assert-Idle
     Invoke-Pm2 'stop'
     $stopped = $true
     Move-Item -LiteralPath $runtimePath -Destination (Join-Path $backupPath 'dist')
@@ -164,6 +193,7 @@ try {
         healthy = $true
         switchSeconds = [Math]::Round(((Get-Date).ToUniversalTime() - $switchStarted).TotalSeconds, 2)
         verifiedRuntimeFiles = $stageFiles.Count
+        preservedRuntimePartitions = $preservedPartitions
         workflowVersion = $activeWorkflow.version
         legacyHistoryCount = $legacyHistory.Count
         canonicalHistoryCount = $canonicalHistory.Count

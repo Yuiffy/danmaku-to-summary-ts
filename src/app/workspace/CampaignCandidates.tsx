@@ -5,9 +5,10 @@ import { formatSubtitleTime, subtitleRows } from '../../core/admin/subtitles';
 import { useResource } from './client';
 import { SourcePlayer } from './SourcePlayer';
 import { CampaignFeedback } from './CampaignFeedback';
+import { campaignShortlistPolicy } from '../../core/admin/campaignCandidates';
 
 interface CandidateList {
-  candidates: CampaignCandidate[]; total: number; page: number;
+  candidates: CampaignCandidate[]; total: number; unfilteredTotal: number; page: number;
   rooms: { id: string; name: string }[]; sessions: { id: string; title: string }[];
 }
 const clock = (value?: number) => value === undefined ? '时间待确认' : formatSubtitleTime(value).split(',')[0];
@@ -17,7 +18,8 @@ export function CampaignCandidates() {
   const [room, setRoom] = useState(''), [session, setSession] = useState(''), [search, setSearch] = useState('');
   const [query, setQuery] = useState(''), [page, setPage] = useState(1), [selected, setSelected] = useState('');
   const [sort, setSort] = useState<CampaignCandidateSort>('session');
-  const list = useResource<CandidateList>(`/campaign-candidates?${new URLSearchParams({ room, session, search: query, page: String(page), sort })}`, 15000, true);
+  const [view, setView] = useState('curated');
+  const list = useResource<CandidateList>(`/campaign-candidates?${new URLSearchParams({ room, session, search: query, page: String(page), sort, view })}`, 15000, true);
   useEffect(() => {
     try {
       const saved = localStorage.getItem('campaign-candidate-sort-v1') as CampaignCandidateSort;
@@ -31,16 +33,17 @@ export function CampaignCandidates() {
     try { localStorage.setItem('campaign-candidate-sort-v1', value); } catch { /* Remembering the preference is optional. */ }
   }
   return <>
-    <div className="toolbar"><div className="summary-line"><strong>{list.data?.total ?? '—'}</strong> 个备选 <span>·</span> 按主播与场次预览</div><button onClick={list.refresh}>刷新备选</button></div>
-    <p className="muted">R 为重排备选，P 为发布备选；编号仅在对应场次内使用。这里展示召回范围，正式裁切边界仍需核对。</p>
+    <div className="toolbar"><div className="summary-line"><strong>{list.data?.total ?? '—'}</strong> 个{view === 'curated' ? '精选' : ''}备选 <span>·</span> 原始备选 {list.data?.unfilteredTotal ?? '—'} 条</div><button onClick={list.refresh}>刷新备选</button></div>
+    <p className="muted">默认按评分精选，每场最多 {campaignShortlistPolicy.maxPerSession} 条备选；重叠达到较短片段一半时保留高分项，不凑数。可切换全部备选查漏。R 为重排备选，P 为发布备选；原编号保留，正式裁切边界仍需核对。</p>
     <div className="review-layout"><section className="clip-browser">
       <div className="clip-filters"><input aria-label="搜索芙娅之魂备选" placeholder="搜索 R 编号、话题、主播或日期" value={search} onChange={event => setSearch(event.target.value)} />
+        <label>备选范围<select aria-label="芙娅之魂备选范围" value={view} onChange={event => changeFilter(() => setView(event.target.value))}><option value="curated">精选备选（去重）</option><option value="all">全部备选（含低分及重叠）</option></select></label>
         <div className="filter-row"><select aria-label="备选主播" value={room} onChange={event => changeFilter(() => { setRoom(event.target.value); setSession(''); })}><option value="">全部主播</option>{list.data?.rooms.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
           <select aria-label="直播场次" value={session} onChange={event => changeFilter(() => setSession(event.target.value))}><option value="">全部场次</option>{list.data?.sessions.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>
         <label>排序方式<select aria-label="芙娅之魂备选排序" value={sort} onChange={event => changeSort(event.target.value as CampaignCandidateSort)}>{campaignCandidateSorts.map(value => <option key={value} value={value}>{sortLabels[value]}</option>)}</select></label>
       </div>
       {list.error && <div className="notice error" role="alert">{list.error}</div>}
-      {list.loading && !list.data ? <div className="empty">读取活动备选…</div> : !list.data?.candidates.length ? <div className="empty">没有匹配的备选。已保存审核记录的活动场次会在这里出现。</div> : <div className="clip-list">{list.data.candidates.map(row => <button key={row.id} className={selected === row.id ? 'selected' : ''} onClick={() => setSelected(row.id)}>
+      {list.loading && !list.data ? <div className="empty">读取活动备选…</div> : !list.data?.candidates.length ? <div className="empty">没有匹配的{view === 'curated' ? '精选' : ''}备选。{view === 'curated' ? '可切换“全部备选”查看低分、未评分或重叠项。' : '已保存审核记录的活动场次会在这里出现。'}</div> : <div className="clip-list">{list.data.candidates.map(row => <button key={row.id} className={selected === row.id ? 'selected' : ''} onClick={() => setSelected(row.id)}>
         <div className="clip-row-meta"><span className="mono">{row.label}</span><span>{row.streamerName || row.roomId}</span></div>
         <strong>{row.title}</strong><small>{row.recordedAt} · {row.streamTitle}</small><small>{clock(row.start)} — {clock(row.end)}{row.score !== undefined && ` · 评分 ${row.score}`}</small>
         {row.reason && <span className="issue-preview">备选原因：{row.reason}</span>}

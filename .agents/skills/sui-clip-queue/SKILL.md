@@ -301,7 +301,7 @@ The normal state path is:
 
 `pending_cut` -> `pending_review` -> `upload_queued`
 
-`--auto-upload` changes the post-cut path to `upload_queued`; use it only when the user explicitly says no review is needed. Otherwise inspect the video, subtitle timing, title, description, and cover, then approve:
+`--auto-upload` changes the post-cut path to `upload_queued`; use it only when the user explicitly says no review is needed. For interactive/manual work, inspect the video, subtitle timing, title, description and cover, show the current preview to the user, and wait for their explicit final approval before uploading or replacing online media. An agent's own QA/review does not replace that approval; a general request to make a video for posting does not waive preview review. Further feedback leaves the new revision local and pending. After user approval:
 
 ```powershell
 npm run manual:clips -- approve mcq-00001

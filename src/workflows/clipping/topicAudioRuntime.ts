@@ -19,7 +19,8 @@ export interface TopicAudioIO { run(request: Data, inputPath: string, outputPath
 export async function prepareTopicAudio(input: Data, config: Data, source: Data, diagnostics: Data,
     runtime: Data, injected?: TopicAudioIO): Promise<Data | null> {
     const settings = topicAudioSettings(config.review?.audioChecks, input.target.names);
-    if (!settings.enabled || !input.hits.some((h: Data) => h.recall?.requiresSemanticConfirmation)) return null;
+    if (!settings.enabled || !input.hits.some((h: Data) => h.recall?.requiresSemanticConfirmation
+        && h.recall.kind !== 'meme_reference')) return null;
     const budget: TopicAudioBudget = diagnostics.topicAudioBudget ||= { windows: 0, audioSeconds: 0, elapsedMs: 0 };
     const plan = planTopicAudio(input, settings, budget);
     const io = injected || { now: Date.now, run: async (_request: Data, inputPath: string, outputPath: string, timeoutMs: number) => {

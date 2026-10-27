@@ -7,9 +7,11 @@ export interface CommentReplyConfig {
   maxQueue: number;
   maxUserQueue: number;
   pollIntervalMs: number;
+  videoVision?: boolean;
   knowledge?: { runtimeConfigPath: string; roomId: string; collaborationRooms: string[] };
   projectSources?: Array<{ id: string; label: string; path: string; keywords: string[]; section?: string; kind: 'code' | 'skill' | 'guide' }>;
   speakerNames?: Record<string, string>;
+  feedbackOwnerUids?: string[];
   fanQuota?: {
     suiUid: string; relatedUids: string[];
     hourly: Record<FanTier, number>; daily: Record<FanTier, number>;
@@ -52,6 +54,9 @@ export function validateCommentConfig(config: CommentReplyConfig): void {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid comment replies ${key}`);
   }
   const knowledge = config.knowledge;
+  if (config.videoVision !== undefined && typeof config.videoVision !== 'boolean') throw new Error('Invalid comment video vision flag');
+  if (config.feedbackOwnerUids !== undefined && (!Array.isArray(config.feedbackOwnerUids) || config.feedbackOwnerUids.length > 20 ||
+    config.feedbackOwnerUids.some(uid => typeof uid !== 'string' || !positiveId(uid)))) throw new Error('Invalid feedback video owners');
   if (config.projectSources && (!Array.isArray(config.projectSources) || config.projectSources.length > 8 ||
     config.projectSources.some(source => !source || !/^[a-z0-9-]{1,40}$/u.test(source.id) ||
       !['code', 'skill', 'guide'].includes(source.kind) || typeof source.label !== 'string' || !source.label.trim() ||

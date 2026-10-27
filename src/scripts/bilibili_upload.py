@@ -110,6 +110,14 @@ def _is_collection_route_context(
     prefix: Optional[str] = None,
 ) -> bool:
     """Match a configured non-default collection route to a source streamer."""
+    source_keywords = [str(value).strip() for value in (entry.get('sourceKeywords') or [])
+                       if str(value).strip()]
+    if source_keywords:
+        # Content routes are independent of the host. Do not use tags, which
+        # may describe the streamer rather than the game in this recording.
+        source_text = ' '.join(str(value or '') for value in (source_desc, title))
+        return any(keyword.casefold() in source_text.casefold() for keyword in source_keywords)
+
     room_ids = entry.get('roomIds') or []
     normalized_room_ids = {str(value).strip() for value in room_ids}
     if str(room_id or '').strip() in normalized_room_ids:
@@ -246,7 +254,8 @@ def get_collection_section_id(
     path_parts = str(media_path or '').replace('\\', '/').split('/')
     is_keyword = publication_kind == 'keyword_topic' or 'topic_clips' in path_parts[:-1]
     keyword_entry = _routing_entry(upload_cfg, 'keyword') if is_keyword else {}
-    selected_entry = keyword_entry or route_entry or (sui_entry if is_sui else other_entry)
+    content_entry = route_entry if route_entry.get('sourceKeywords') else {}
+    selected_entry = content_entry or keyword_entry or route_entry or (sui_entry if is_sui else other_entry)
     if selected_entry:
         section_id = _positive_collection_id(selected_entry.get('sectionId'))
     else:
@@ -595,6 +604,7 @@ async def upload_video(
     source_desc: Optional[str] = None,
     streamer_name: Optional[str] = None,
     room_id: Optional[str] = None,
+    pacing=None,
 ):
     """上传视频到 B 站。"""
     if not os.path.exists(video_path):
@@ -665,16 +675,33 @@ async def upload_video(
         dynamic=dynamic,
     )
 
-    uploader = video_uploader.VideoUploader(
+    from clip_upload_pacing import paced_uploader_type, PreuploadRateLimited, UploadPaused, http_status
+    uploader_type = (paced_uploader_type(video_uploader.VideoUploader, pacing, [page])
+                     if pacing else video_uploader.VideoUploader)
+    uploader = uploader_type(
         pages=[page],
         meta=meta,
         credential=credential,
+        line=video_uploader.Lines.BDA2,
     )
 
     print('[INFO] 开始上传...')
     from clip_upload_progress import UploadProgress
-    result = await UploadProgress([page], video_path).run(uploader)
+    progress = UploadProgress([page], video_path, event_sink=(
+        lambda name, index: pacing.record('submit_start' if name == 'PRE_SUBMIT' else 'part_complete',
+                                          'submit' if name == 'PRE_SUBMIT' else 'page', part_index=index)
+    ) if pacing else None)
+    try:
+        result = await progress.run(uploader)
+    except Exception as error:
+        if pacing and not isinstance(error, (PreuploadRateLimited, UploadPaused)):
+            pacing.record('upload_failed', progress.failure_stage or 'unknown', http_status(error))
+            if http_status(error) == 406:
+                print('[RATE_LIMIT_406] submission outcome requires reconciliation; account cooldown 600s')
+        raise
     if result:
+        if pacing:
+            pacing.record('archive_complete', 'submit', 200)
         if collection_section_id is None:
             collection_section_id = get_collection_section_id(
                 streamer_name=streamer_name,
@@ -739,6 +766,8 @@ def main():
             media_path=args.video,
         )
 
+    from clip_upload_pacing import UploadPacing
+    pacing = UploadPacing(credential.dedeuserid)
     result = asyncio.run(
         upload_video(
             video_path=args.video,
@@ -753,6 +782,7 @@ def main():
             source_desc=args.source_desc,
             streamer_name=args.streamer_name,
             room_id=room_id,
+            pacing=pacing,
         )
     )
 

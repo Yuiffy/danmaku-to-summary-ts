@@ -175,6 +175,14 @@ async function verifyGame(event, plan, options, config, files) {
     fs.mkdirSync(scratch, { recursive: true });
     const audio = intervals.map((span, i) => ({ ...span, path: path.join(scratch, `audio-${i + 1}.mp3`), mimeType: 'audio/mpeg' }));
     const frames = times.map((time, i) => ({ index: i + 1, time, path: path.join(scratch, `frame-${i + 1}.jpg`), mimeType: 'image/jpeg' }));
+    const parseReviewed = response => {
+        const value = JSON.parse(response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''));
+        // A fully revalidated retained-context start may precede the detector's
+        // 180s search allowance. Only the original evidence envelope can rebase it.
+        const start = value.decision === 'keep' && value.startFrameReview?.timingSource === 'original_visual_context'
+            ? opening().validateVisualOpeningEnvelope(value, plan.source, audio[0], openingIO) : event.start;
+        return parseVerification(response, { ...event, start }, plan.duration, frames);
+    };
     const ids = new Set([...event.evidenceIds, ...event.chapters.flatMap(c => c.evidenceIds)]);
     const local = rows.filter(r => ids.has(r.id) || intervals.some(span => r.end >= span.start && r.start <= span.end));
     const game = config.games.find(g => g.id === event.gameId);
@@ -192,7 +200,7 @@ async function verifyGame(event, plan, options, config, files) {
         const response = await withSelectionCache({ directory: path.join(files.directory, 'temp', 'game-verification-cache'),
             phase: 'game-media-v3', prompt, signature: { source: plan.source, settings },
             validate: response => { try {
-                const value = parseVerification(response, event, plan.duration, frames);
+                const value = parseReviewed(response);
                 if (value.nonGameReview) validateNonPlayingReview(value.nonGameReview, event, frames, plan.source, {duration:plan.duration,contextSeconds:context});
                 if (value.decision === 'keep') {
                     validateClosingReview(value.endFrameReview, value.end);
@@ -320,7 +328,12 @@ Return ONLY JSON {"decision":"keep|exclude|uncertain","reason":"specific origina
                         writeJsonAtomic(path.join(scratch, `boundary-${kind}-response-${attempt}.json`), value);
                         try { parseExcerpt(value); return value; }
                         catch (error) {
-                            if (attempt === 2) throw error;
+                            if (attempt === 2) {
+                                const unresolved = localAudio && kind === 'start' && opening().unresolvedSpokenOpening?.(value, error.message);
+                                if (!unresolved) throw error;
+                                writeJsonAtomic(path.join(scratch, 'boundary-start-unresolved.json'), unresolved);
+                                return unresolved;
+                            }
                             feedback = `\nValidation repair: ${error.message}. ${localAudio ? 'Re-inspect the independent ASR and images; you have not received audio.' : 'Listen again to this original excerpt.'} Keep uncertainty if words or boundaries cannot be established. Never invent speech or change a decision just to pass validation. Return the exact declared JSON keys. Previous untrusted response: ${value.text}`;
                         }
                     }
@@ -368,11 +381,11 @@ Return ONLY JSON {"decision":"keep|exclude|uncertain","reason":"specific origina
                 publicCopySupported: visiblePlay && !unsupported.length, audioObservations: boundary.audioObservations,
                 boundaryReview: boundary, startFrameReview, endFrameReview, frameObservations, chapterReviews, evidenceMethod: boundarySettings.evidenceMethod }), meta: { model: settings.model,
                 attempts: [...attempts, ...(boundaryResponse.meta?.attempts || [])] } };
-            parseVerification(reviewed, event, plan.duration, frames);
+            parseReviewed(reviewed);
             if (startFrameReview) opening().validateVisualOpeningEnvelope(JSON.parse(reviewed.text), plan.source, audio[0], openingIO);
             return reviewed;
         });
-        return { ...parseVerification(response, event, plan.duration, frames), version, protocolVersion: PROTOCOL_VERSION,
+        return { ...parseReviewed(response), version, protocolVersion: PROTOCOL_VERSION,
             evidenceMethod: boundarySettings.evidenceMethod, audioWindows: intervals, frameTimes: frames.map(f => f.time),
             originalFrameEvidence: frames.map(f => ({ index: f.index, time: f.time, path: f.path, sha256: fileDigest(f.path) })),
             evidenceDirectory: scratch, model: response.meta?.model };

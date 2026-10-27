@@ -1,5 +1,6 @@
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { ProcessingAlertService } from './ProcessingAlertService';
+import type { SummaryTaskFailureDetails } from './SummaryTaskFailure';
 
 describe('ProcessingAlertService recorder lifecycle alerts', () => {
   const cooldownMs = 30 * 60 * 1000;
@@ -216,6 +217,53 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
 
     expect(sendMarkdown).toHaveBeenCalledTimes(1);
     expect((ProcessingAlertService as any).inFlightKeys.size).toBe(0);
+  });
+
+  const summaryFailure: SummaryTaskFailureDetails = {
+    taskId: 'task-one', roomId: '25788785', mediaPath: 'recording.flv',
+    recoveryEpisode: 0, stage: 'asr', reason: 'ValueError: audio ended early', durationSeconds: 3600
+  };
+
+  test('deduplicates terminal failures without suppressing other recordings or recovery episodes', async () => {
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    await ProcessingAlertService.notifySummaryTaskFailed({ ...summaryFailure, taskId: 'task-two' });
+    await ProcessingAlertService.notifySummaryTaskFailed({ ...summaryFailure, recoveryEpisode: 1 });
+    expect(sendMarkdown).toHaveBeenCalledTimes(3);
+    expect(sendMarkdown.mock.calls[0][0]).toContain('直播后处理已停止');
+    expect(sendMarkdown.mock.calls[0][0]).toContain('ValueError: audio ended early');
+  });
+
+  test('coalesces concurrent terminal failure sends while allowing another room recording', async () => {
+    let finishSend!: (value: boolean) => void;
+    sendMarkdown.mockImplementationOnce(() => new Promise<boolean>(resolve => { finishSend = resolve; }));
+    const first = ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    await ProcessingAlertService.notifySummaryTaskFailed({ ...summaryFailure, taskId: 'task-two' });
+    finishSend(true);
+    await first;
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+  });
+
+  test('bounds failed terminal notification sends and allows a later attempt', async () => {
+    sendMarkdown.mockRejectedValue(new Error('network unavailable'));
+    const first = ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    await jest.advanceTimersByTimeAsync(1000);
+    await first;
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    expect((ProcessingAlertService as any).inFlightKeys.size).toBe(0);
+    sendMarkdown.mockResolvedValue(true);
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    expect(sendMarkdown).toHaveBeenCalledTimes(3);
+  });
+
+  test('skips terminal failure sends when disabled or no notifier is configured', async () => {
+    (ConfigProvider.getConfig as jest.Mock).mockReturnValue({ monitoring: { processingAlerts: { enabled: false } } });
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    (ProcessingAlertService as any).notifier = undefined;
+    (ConfigProvider.getConfig as jest.Mock).mockReturnValue({});
+    await ProcessingAlertService.notifySummaryTaskFailed(summaryFailure);
+    expect(sendMarkdown).not.toHaveBeenCalled();
   });
 
 });

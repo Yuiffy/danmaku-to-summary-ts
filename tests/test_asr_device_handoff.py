@@ -166,7 +166,7 @@ class HandoffTests(unittest.TestCase):
 
     def run_fake(self, source, samples, *, fail_at=None, live=None, duration=1000, grow_window=False,
                  interrupt_at=None, observe_interrupt=False, initial_device='cpu', speaker_policy=None,
-                 shared_gpu=False, cpu_enabled=True):
+                 shared_gpu=False, cpu_enabled=True, cache_hit=False):
         events, timer, calls = [], [0], [0]
         payload = {'backend': 'paraformer', 'audio_path': str(source), 'room_id': '25788785',
             'device_handoff': {'enabled': True, 'idle_s': 30, 'poll_s': 30, 'window_s': 30 if grow_window else 120},
@@ -187,6 +187,7 @@ class HandoffTests(unittest.TestCase):
         class Worker:
             def __init__(self, original, device, timeout):
                 self.device = device
+                self.ready = {'model_cache_hit': cache_hit}
                 events.append(('open', device))
             def close(self): events.append(('close', self.device))
             def abort(self): events.append(('abort', self.device))
@@ -238,6 +239,15 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(result['timings']['handoff_gpu_audio_s'], 120)
             self.assertEqual(sum(c['end']-c['start'] for c in result['chunks']), 1000)
             self.assertEqual(sum(e[0] == 'finish' for e in events), 1)
+
+    def test_cross_job_cache_hit_reaches_existing_timing_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'recording.flv'
+            source.write_bytes(b'x' * 150000)
+            result, _ = self.run_fake(source, [IDLE], duration=120, initial_device='cuda', cache_hit=True)
+            self.assertEqual(result['timings']['handoff_cross_job_cache_hits'], 1)
+            self.assertEqual(result['timings']['model_cache_hit'], 1)
+            self.assertEqual(result['timings']['model_load_s'], 0)
 
     def test_worker_crash_resumes_without_retranscribing_completed_windows(self):
         with tempfile.TemporaryDirectory() as directory:

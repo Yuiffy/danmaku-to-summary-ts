@@ -324,6 +324,125 @@ class ClipUploadRegistryTests(unittest.TestCase):
             "queue": queue_data,
         }
 
+    def test_406_stops_groups_and_waits_ten_minutes_without_generic_retry_limit(self):
+        fixture = self.make_fixture(count=3)
+        fixture['queue']['jobs'][0]['attempts'] = 30
+        calls = []
+        def run_batch(group, job):
+            calls.append(group)
+            return subprocess.CompletedProcess([], 75, stdout='[RATE_LIMIT_406] stage=preupload')
+        before = dt.datetime.now(dt.timezone.utc)
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        job = saved_queue['jobs'][0]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(job['status'], 'retry_wait')
+        self.assertEqual(job['retryKind'], 'bilibili_http_406')
+        self.assertEqual(job['http406Attempts'], 1)
+        self.assertEqual(job['attempts'], 31)
+        self.assertGreaterEqual(dt.datetime.fromisoformat(job['retryAt']), before + dt.timedelta(seconds=600))
+        self.assertTrue(all(clip['status'] == 'queued' for clip in saved_registry['clips'].values()))
+        self.assertNotIn('submissionRateLimit', saved_queue)
+
+    def test_406_gate_blocks_account_before_remote_guard_or_upload(self):
+        from src.scripts.clip_upload_pacing import UploadPacing
+        fixture = self.make_fixture()
+        database = fixture['queue_path'].with_name(registry.clip_upload_pacing.DATABASE_NAME)
+        UploadPacing('test-account', database, emit=lambda _: None).record('preupload_failed', 'preupload', 406)
+        with patch.object(registry.clip_upload_state, 'load_worker_snapshot', return_value=(fixture['registry'], fixture['queue'])), \
+                patch.object(registry, 'QUEUE_PATH', fixture['queue_path']), \
+                patch.object(registry, 'configured_upload_account', return_value=('test-account', '', '')), \
+                patch.object(registry, 'refresh_account_upload_guard') as guard, \
+                patch.object(registry, 'run_batch') as upload:
+            self.assertFalse(registry.run_one_job())
+        guard.assert_not_called()
+        upload.assert_not_called()
+
+    def test_slow_mode_one_archive_then_yields_queue_without_counting_an_error(self):
+        fixture = self.make_fixture(count=3)
+        database = fixture['queue_path'].with_name(registry.clip_upload_pacing.DATABASE_NAME)
+        pacer = registry.clip_upload_pacing.UploadPacing('test-account', database, emit=lambda _: None)
+        pacer.activate_slow('confirmed incident')
+        calls = []
+        def run_batch(group, job):
+            calls.append([clip['id'] for clip in group])
+            self.assertEqual(pacer.reserve(1), 0)
+            pacer.record('archive_complete', 'submit', 200)
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 0, stdout='uploaded')
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [[1]])
+        job = saved_queue['jobs'][0]
+        self.assertEqual(job['retryKind'], 'bilibili_upload_slow')
+        self.assertEqual(job['status'], 'retry_wait')
+        self.assertNotIn('attempts', job)
+        self.assertEqual(saved_registry['clips']['1']['status'], 'uploaded')
+        self.assertEqual(saved_registry['clips']['2']['status'], 'queued')
+
+    def test_406_in_slow_mode_pauses_every_job_persistently_and_notifies(self):
+        fixture = self.make_fixture(count=3)
+        database = fixture['queue_path'].with_name(registry.clip_upload_pacing.DATABASE_NAME)
+        pacer = registry.clip_upload_pacing.UploadPacing('test-account', database, emit=lambda _: None)
+        pacer.activate_slow('confirmed incident')
+        calls = []
+        def run_batch(group, job):
+            calls.append(group)
+            pacer.reserve(1)
+            pacer.record('preupload_failed', 'preupload', 406, 1)
+            return subprocess.CompletedProcess([], 75, stdout='[RATE_LIMIT_406] stage=preupload')
+        _, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(len(calls), 1)
+        job = saved_queue['jobs'][0]
+        self.assertEqual(job['retryKind'], 'bilibili_upload_paused')
+        self.assertNotIn('retryAt', job)
+        with patch.object(registry.clip_upload_state, 'load_worker_snapshot', return_value=(fixture['registry'], saved_queue)), \
+                patch.object(registry, 'QUEUE_PATH', fixture['queue_path']), \
+                patch.object(registry, 'configured_upload_account', return_value=('test-account', '', '')), \
+                patch.object(registry.clip_upload_retry, 'send_safety_notification', return_value=True) as notify, \
+                patch.object(registry, 'refresh_account_upload_guard') as guard, \
+                patch.object(registry, 'run_batch') as upload:
+            self.assertFalse(registry.run_one_job())
+            self.assertFalse(registry.run_one_job())
+        # The earlier slow alert already has a five-minute retry deadline;
+        # the newly created pause alert is delivered immediately, once.
+        self.assertEqual(notify.call_count, 1)
+        self.assertIn('等待人工处理', notify.call_args.args[1])
+        guard.assert_not_called()
+        upload.assert_not_called()
+
+    def test_manual_resume_releases_safety_pause_but_keeps_24h_slow_mode(self):
+        fixture = self.make_fixture(count=1)
+        database = fixture['queue_path'].with_name(registry.clip_upload_pacing.DATABASE_NAME)
+        pacer = registry.clip_upload_pacing.UploadPacing('test-account', database, emit=lambda _: None)
+        pacer.activate_slow('confirmed incident')
+        pacer.record('preupload_failed', 'preupload', 406, 1)
+        fixture['queue']['jobs'][0].update(status='retry_wait', retryKind='bilibili_upload_paused',
+                                         lastOutput='[UPLOAD_PAUSED]')
+        registry.save_json(fixture['queue_path'], fixture['queue'])
+        with patch.object(registry, 'RUNTIME_DIR', fixture['runtime']), \
+                patch.object(registry, 'QUEUE_PATH', fixture['queue_path']), \
+                patch.object(registry, 'configured_upload_account', return_value=('test-account', '', '')), \
+                patch.object(registry, 'acquire_lock', return_value=True), patch.object(registry, 'release_lock'):
+            self.assertEqual(registry.resume_uploads(type('Args', (), {'note': 'manual investigation complete'})()), 0)
+        status = registry.clip_upload_pacing.protection_status('test-account', database)
+        self.assertFalse(status['paused'])
+        self.assertTrue(status['slow'])
+        job = registry.load_json(fixture['queue_path'], {})['jobs'][0]
+        self.assertEqual(job['status'], 'pending')
+        self.assertNotIn('retryKind', job)
+
+    def test_406_stops_mixed_routes_and_legacy_delay_is_zero(self):
+        fixture = self.make_fixture()
+        fixture['clips'][0]['manifestPath'] = str(fixture['root'] / 'manifest.json')
+        fixture['queue']['jobs'][0]['delay'] = 60
+        result = subprocess.CompletedProcess([], 0, stdout='[RATE_LIMIT_406] stage=preupload')
+        with patch.object(registry.subprocess, 'run', return_value=result) as run, \
+                patch.object(registry, '_clip_in_review', return_value=True):
+            completed = registry.run_batch(fixture['clips'], fixture['queue']['jobs'][0])
+        self.assertIn('[RATE_LIMIT_406]', completed.stdout)
+        self.assertEqual(run.call_count, 1)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index('--delay')+1], '0')
+
     def write_done(self, fixture, clip_ids):
         state = {"done": {}, "got_406": {}}
         for clip_id in clip_ids:
@@ -426,19 +545,43 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["1"], "uploaded")
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["2"], "queued")
 
-    def test_unknown_submission_stops_job_without_automatic_retry(self):
+    def test_unknown_submission_waits_then_retries_only_unfinished_clips(self):
         fixture = self.make_fixture()
+        intent = {"title": "【小岁】测试标题 2", "mediaPath": fixture["clips"][1]["mediaPath"],
+                  "startedAt": registry.now_iso()}
 
         def run_batch(group, job):
             self.write_done(fixture, [1])
+            state = registry.load_json(fixture["state_path"], {})
+            state["submission_intents"] = {"2": intent}
+            registry.save_json(fixture["state_path"], state)
             return subprocess.CompletedProcess([], 2, stdout=(
                 "[STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying"))
 
         saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
         self.assertEqual(saved_registry["clips"]["1"]["status"], "uploaded")
-        self.assertEqual(saved_registry["clips"]["2"]["status"], "failed")
-        self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
-        self.assertNotIn("retryAt", saved_queue["jobs"][0])
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "queued")
+        job = saved_queue["jobs"][0]
+        self.assertEqual(job["status"], "retry_wait")
+        self.assertEqual(job["attempts"], 1)
+        retry_at = registry.parse_utc_timestamp(job["retryAt"])
+        self.assertGreaterEqual((retry_at - registry.parse_utc_timestamp(intent["startedAt"])).total_seconds(), 300)
+        self.assertIsNone(registry.next_pending_job(saved_queue))
+        self.assertEqual(registry.load_json(fixture["state_path"], {})["submission_intents"], {"2": intent})
+
+        # A later worker tick keeps the original ID/intent and skips the success.
+        job["retryAt"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)).isoformat()
+        fixture.update(registry=saved_registry, queue=saved_queue)
+
+        def retry_batch(group, job):
+            self.assertEqual([clip["id"] for clip in group], [2])
+            self.assertEqual(registry.load_json(fixture["state_path"], {})["submission_intents"], {"2": intent})
+            self.write_done(fixture, [1, 2])
+            return subprocess.CompletedProcess([], 0, stdout="reconciled and uploaded")
+
+        saved_registry, saved_queue = self.run_job_with(fixture, retry_batch)
+        self.assertEqual(saved_queue["jobs"][0]["status"], "done")
+        self.assertTrue(all(clip["status"] == "uploaded" for clip in saved_registry["clips"].values()))
 
     def test_source_overlap_blocks_enqueue_and_worker_preflight_even_with_force(self):
         fixture = self.make_fixture()
@@ -665,9 +808,27 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(calls, [[1], [2], [3]])
         self.assertEqual(saved_registry["clips"]["2"]["status"], "uploaded")
         self.assertEqual(saved_registry["clips"]["3"]["status"], "uploaded")
-        self.assertEqual(saved_registry["clips"]["1"]["status"], "failed")
-        self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
-        self.assertNotIn("retryAt", saved_queue["jobs"][0])
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
+        self.assertIn("retryAt", saved_queue["jobs"][0])
+
+    def test_submission_recovery_conflicts_remain_terminal(self):
+        for reason in ("submission recovery conflict: title exists online",
+                       "submission recovery authorization invalid: public copy changed"):
+            with self.subTest(reason=reason):
+                fixture = self.make_fixture(count=2)
+                fixture["queue"]["jobs"][0]["batchSize"] = 1
+                calls = []
+
+                def run_batch(group, job):
+                    calls.append([clip["id"] for clip in group])
+                    return subprocess.CompletedProcess([], 2, stdout=f"[WAIT] submission outcome unknown\n[STOP] {reason}")
+
+                saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+                self.assertEqual(calls, [[1]])
+                self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
+                self.assertNotIn("retryAt", saved_queue["jobs"][0])
+                self.assertEqual(saved_registry["clips"]["1"]["status"], "failed")
 
     def test_all_state_success_wins_over_subprocess_exit_code(self):
         fixture = self.make_fixture()

@@ -1471,7 +1471,7 @@ async function generateTopicClips(options = {}) {
     const parsed = parseTopicSrt(options.srtPath);
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
     const literalMatches = findKeywordMatches(parsed.segments, config.keywords);
-    const recall = usePreflight && config.ambiguousRecall.enabled
+    const recall = usePreflight && (config.ambiguousRecall.enabled || config.memeRecall?.enabled)
         ? require('./workflow-runtime').loadWorkflow('clipping/topicRecovery') : null;
     const matches = recall?.mergeTopicRecallMatches?.(parsed.segments, literalMatches, config, info) || literalMatches;
     if (matches.length === 0) {

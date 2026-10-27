@@ -542,6 +542,7 @@ export class ConfigValidator {
         fillerRegex: '^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+',
       },
       clipTopics: {
+        memeRecall: { enabled: false, contextSeconds: 60, rules: [] },
         enabled: false,
         mode: 'local_review',
         keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],

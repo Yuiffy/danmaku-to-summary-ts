@@ -94,7 +94,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
     }
     let input = buildInput(group);
     if ((!options.retainedContext || contextBudget) && config.review.audioChecks?.enabled === true
-        && input.hits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
+        && input.hits.some(hit => hit.recall?.requiresSemanticConfirmation && hit.recall.kind !== 'meme_reference')) {
         const { getAsrConfig, resolvePythonCommand } = require('../asr/asr_backends');
         const backend = getAsrConfig(rootConfig).fun_asr_nano;
         const audio = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');

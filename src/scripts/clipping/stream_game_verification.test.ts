@@ -162,14 +162,18 @@ describe('original gameplay evidence review', () => {
       .toMatchObject({ provider: 'gemini', apiMode: 'gemini_native', model: 'native-model' });
   });
 
-  test.each([false, true])('default local boundary route and cached resume preserve spoken/silent starts (silent=%s)', async (silent) => {
+  test.each(['spoken', 'silent', 'unbound', 'retained'])('default local boundary route and cached resume preserve starts (%s)', async (mode) => {
+    const silent = mode !== 'spoken';
+    const retained = mode === 'retained', candidateEnd = retained ? 500 : 300, firstGame = retained ? 307 : silent ? 107 : 100;
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-default-route-'));
     try {
       const mediaPath = path.join(directory, 'source.flv'), srtPath = path.join(directory, 'source.srt');
-      fs.writeFileSync(srtPath, '1\n00:01:40,000 --> 00:01:42,000\n准备启动游戏了\n\n2\n00:04:50,000 --> 00:05:00,000\n今天游戏先玩到这里\n');
+      fs.writeFileSync(srtPath, '1\n00:01:40,000 --> 00:01:42,000\n准备启动游戏了\n\n2\n'
+        + (retained ? '00:08:10,000 --> 00:08:20,000' : '00:04:50,000 --> 00:05:00,000') + '\n今天游戏先玩到这里\n');
       const config = require('./stream_game_plan').getGameConfig({});
+      if (retained) config.contextSeconds = 360;
       const originalRows = [{ start: 1, end: 2, text: '今天先聊日常' }, { start: 100, end: 102, text: silent ? '聊完今天的话题' : '准备启动游戏了' },
-        { start: 290, end: 300, text: '今天游戏先玩到这里' }];
+        { start: candidateEnd - 10, end: candidateEnd, text: '今天游戏先玩到这里' }];
       const checkRequest = (inputs: any[], settings: any) => {
         expect(inputs.every(input => input.mimeType.startsWith('image/'))).toBe(true);
         expect(settings).toMatchObject({ provider: 'daiYu', apiMode: 'openai_chat' });
@@ -187,13 +191,16 @@ describe('original gameplay evidence review', () => {
           const frames = JSON.parse(prompt.match(/Images are (\[.*?\])\./s)[1]);
           return { text: JSON.stringify({ reason: 'Actual game images checked', chapterReviews: [],
             frameObservations: frames.map((frame: any) => ({ index: frame.index,
-              activity: frame.recordingSeconds >= (silent ? 107 : 100) && frame.recordingSeconds < 300 ? 'gameplay' : 'other',
+              activity: frame.recordingSeconds >= firstGame && frame.recordingSeconds < candidateEnd ? 'gameplay' : 'other',
               description: 'Original recording frame' })) }) };
         }),
         localBoundaryRequest: jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
           checkRequest(inputs, settings);
           expect(prompt).toContain('ASR and images, NOT audio');
           const launch = prompt.includes('Locate the start');
+          if (mode === 'unbound' && launch) return { text: JSON.stringify({ decision: 'keep', observed: true,
+            reason: 'Independent opening words cannot match source subtitles', boundaryAnchor: 'before_phrase',
+            heardWords: '另一份听写里的准备句', seconds: 100, quoteSeconds: 100 }) };
           if (silent && launch) return { text: JSON.stringify({ decision: 'uncertain', observed: true,
             reason: 'The original game appears without an identifiable spoken launch', heardWords: null }) };
           return { text: JSON.stringify({ decision: 'keep', reason: 'Independent transcript matches original images',
@@ -206,10 +213,11 @@ describe('original gameplay evidence review', () => {
           if (prompt.includes('COMPLETE preceding original-audio ASR')) return { text: JSON.stringify({ decision: 'keep',
             reason: 'The whole original lead-in is unrelated, with no possible earlier setup, then a silent original game transition',
             windowStartsUnrelated: true, earlierContextClosed: true, allPossibleSetupRetained: true,
-            ownGameTransition: true, retainedContentAllowed: true, retainedLeadIn: null }) };
+            ownGameTransition: true, retainedContentAllowed: true, retainedLeadIn: retained
+              ? { transcriptIndex: 2, ...originalRows[1] } : null }) };
           const frames = JSON.parse(prompt.match(/Images are (\[.*?\])\./s)[1]);
           return { text: JSON.stringify({ reason: 'Original pixels show the first game transition', frames: frames.map((frame: any) =>
-            ({ index: frame.index, activity: frame.recordingSeconds >= 107 ? 'game' : 'other', description: 'Original opening pixels' })) }) };
+            ({ index: frame.index, activity: frame.recordingSeconds >= firstGame ? 'game' : 'other', description: 'Original opening pixels' })) }) };
         }),
         closingRequest: jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
           checkRequest(inputs, settings);
@@ -217,20 +225,26 @@ describe('original gameplay evidence review', () => {
           return { text: JSON.stringify({ reason: 'Game has closed', frames: frames.map((frame: any) =>
             ({ index: frame.index, activity: 'other', description: 'Talking scene after closing' })) }) };
         }) };
-      const candidate = { id: 'game-1', gameId: 'elden-ring', start: 100, end: 300, chapters: [], evidenceIds: ['T1', 'T2'] };
-      const plan = { source: { mediaPath }, duration: 400, streamerName: 'Host' };
+      const candidate = { id: 'game-1', gameId: 'elden-ring', start: retained ? 300 : 100, end: candidateEnd, chapters: [], evidenceIds: ['T1', 'T2'] };
+      const plan = { source: { mediaPath }, duration: candidateEnd + 100, streamerName: 'Host' };
       const result = await verification.verifyGame(candidate, plan, options, config, { directory });
-      expect(result).toMatchObject({ version: 4, decision: 'keep', evidenceMethod: 'independent_local_asr', start: silent ? 106.75 : 100, end: 300 });
+      const expectedStart = retained ? 100 : silent ? 106.75 : 100;
+      const timingSource = retained ? 'original_visual_context' : 'original_visual_transition';
+      expect(result).toMatchObject({ version: 4, decision: 'keep', evidenceMethod: 'independent_local_asr', start: expectedStart, end: candidateEnd });
       if (silent) {
-        expect(result).toMatchObject({ protocolVersion: 13, startFrameReview: { start: 106.75 },
-          audioObservations: [{ index: 1, heardWords: null, timingSource: 'original_visual_transition' }, { index: 2, heardWords: '今天游戏先玩到这里' }] });
+        expect(result).toMatchObject({ protocolVersion: 13, startFrameReview: { start: expectedStart },
+          audioObservations: [{ index: 1, heardWords: null, timingSource }, { index: 2, heardWords: '今天游戏先玩到这里' }] });
         expect(result.boundaryReview.excerptReviews[0]).not.toHaveProperty('quoteSource');
+      }
+      if (mode === 'unbound') {
+        expect(fs.existsSync(path.join(result.evidenceDirectory, 'boundary-start-unresolved.json'))).toBe(true);
+        expect(options.localBoundaryRequest.mock.calls.filter(([prompt]) => prompt.includes('Locate the start'))).toHaveLength(2);
       }
       const openingCalls = options.openingRequest.mock.calls.length;
       expect(await verification.verifyGame(candidate, plan, options, config, { directory })).toMatchObject({ decision: 'keep', start: result.start });
       expect(options.openingRequest).toHaveBeenCalledTimes(openingCalls);
       expect(options.transcribe).toHaveBeenCalledTimes(2);
-      expect(options.localBoundaryRequest).toHaveBeenCalledTimes(2);
+      expect(options.localBoundaryRequest).toHaveBeenCalledTimes(mode === 'unbound' ? 3 : 2);
       expect(options.boundaryRequest).not.toHaveBeenCalled();
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });

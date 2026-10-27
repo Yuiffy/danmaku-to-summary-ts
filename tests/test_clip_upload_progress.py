@@ -12,6 +12,25 @@ from src.scripts.clip_upload_status import show_clips, show_job_progress
 
 
 class UploadProgressTests(unittest.TestCase):
+    def test_failure_stage_and_request_events_exclude_sdk_payload(self):
+        page = object()
+        samples, events = [], []
+        tracker = UploadProgress([page], 'movie.mp4', sink=samples.append,
+                                 event_sink=lambda *args: events.append(args))
+        class Uploader(AsyncEvent):
+            async def start(self):
+                self.dispatch('AFTER_PAGE', {'page': page, 'cookie': 'private'})
+                self.dispatch('PRE_SUBMIT', {'cookie': 'private'})
+                self.dispatch('SUBMIT_FAILED', {'cookie': 'private'})
+                await asyncio.sleep(0)
+                raise RuntimeError('406')
+        with self.assertRaisesRegex(RuntimeError, '406'):
+            asyncio.run(tracker.run(Uploader()))
+        self.assertEqual(events, [('AFTER_PAGE', 1), ('PRE_SUBMIT', None)])
+        self.assertEqual(samples[-1]['failureStage'], 'submitting')
+        self.assertEqual(samples[-1]['lastEvent'], 'SUBMIT_FAILED')
+        self.assertNotIn('private', json.dumps(samples))
+
     def test_out_of_order_retry_chunks_and_part_submit_are_not_archive_success(self):
         pages = [object(), object()]
         samples = []

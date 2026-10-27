@@ -36,15 +36,21 @@ export function admitEarlyBatch(batch: any, enqueue = (payload: any) => localReq
         const claimPath = path.join(ledgerRoot, `${id}.json`);
         for (const file of fs.readdirSync(ledgerRoot).filter(name => name.endsWith('.json') && name !== `${id}.json`)) {
             const previous = JSON.parse(fs.readFileSync(path.join(ledgerRoot, file), 'utf8'));
-            if (previous.sources.some((old: any) => sources.some((source: any) => source.identity === old.identity))) {
+            const originalIdentities = (batch.prefixReservations || []).map((prefix: any) => coverage.resolveRecordingPrefix(prefix).identity);
+            const previousPrefixes = (previous.roomId === batch.roomId && previous.day === batch.day ? previous.prefixReservations || [] : [])
+                .map((prefix: any) => coverage.resolveRecordingPrefix(prefix).identity);
+            if (previous.sources.some((old: any) => sources.some((source: any) => source.identity === old.identity) || originalIdentities.includes(old.identity))
+                || sources.some((source: any) => previousPrefixes.includes(source.identity))) {
                 return { status: 'already_reserved', id: previous.id, mediaPath: previous.mediaPath };
             }
         }
-        const directory = path.join(path.dirname(sources[0].videoPath), 'campaign_early', id);
+        const directory = path.join(batch.sourceDirectory || path.dirname(sources[0].videoPath), 'campaign_early', id);
         fs.mkdirSync(directory, { recursive: true });
         const mediaPath = path.join(directory, path.basename(sources[0].videoPath));
         const claim = { version: 1, id, campaignId: batch.campaignId, roomId: batch.roomId, day: batch.day,
-            mediaPath, sources, transitionAt: batch.transitionAt, admittedAt: new Date().toISOString() };
+            mediaPath, sources, transitionAt: batch.transitionAt, admittedAt: new Date().toISOString(),
+            ...(batch.snapshotKey ? { snapshotKey: batch.snapshotKey, snapshotNote: batch.snapshotNote,
+                prefixReservations: batch.prefixReservations, capturedAt: batch.capturedAt } : {}) };
         if (!fs.existsSync(claimPath)) coverage.atomicRecordingJson(claimPath, claim);
         const saved = JSON.parse(fs.readFileSync(claimPath, 'utf8'));
         if (saved.queueReceipt || saved.completedAt) return { status: 'already_reserved', id, mediaPath, ...saved.queueReceipt };
@@ -69,8 +75,15 @@ export async function runEarlyCampaign(payload: any, adapters: any = {}): Promis
         const merger = new Merger();
         const segments = claim.sources.map((source: any) => {
             const resolved = fs.existsSync(source.videoPath) ? source.videoPath : path.join(path.dirname(source.videoPath), 'bak', path.basename(source.videoPath));
-            if (coverage.recordingIdentity(resolved) !== source.identity || Date.now() - fs.statSync(resolved).mtimeMs < 90000) throw new Error('Campaign source changed or still active');
+            if (coverage.recordingIdentity(resolved) !== source.identity || (!source.snapshot && Date.now() - fs.statSync(resolved).mtimeMs < 90000)) throw new Error('Campaign source changed or still active');
             const xmlPath = fs.existsSync(source.xmlPath) ? source.xmlPath : path.join(path.dirname(source.xmlPath), 'bak', path.basename(source.xmlPath));
+            if (source.snapshot && (!claim.snapshotKey || !claim.prefixReservations?.length
+                || coverage.recordingIdentity(xmlPath) !== source.xmlIdentity)) throw new Error('Snapshot evidence changed or missing');
+            if (source.snapshot) {
+                const prefix = claim.prefixReservations[claim.sources.indexOf(source)];
+                if (fs.statSync(resolved).size !== prefix.bytes
+                    || coverage.recordingPrefixHash(resolved, prefix.bytes, prefix.metadataRanges) !== prefix.sha256) throw new Error('Snapshot media evidence changed');
+            }
             const opened = new Date(source.startedAt);
             // Early snapshots concatenate without synthetic reconnect gaps, including XML.
             return { videoPath: resolved, xmlPath, fileOpenTime: opened, fileCloseTime: opened, eventTimestamp: opened };
@@ -83,6 +96,7 @@ export async function runEarlyCampaign(payload: any, adapters: any = {}): Promis
         await merger.mergeXmlFiles(segments, xml);
     }
     coverage.readRecordingMap(media);
+    for (const prefix of claim.prefixReservations || []) coverage.resolveRecordingPrefix(prefix);
     const asr = adapters.processMedia || localRequire('./src/scripts/enhanced_auto_summary').processMedia;
     const result = await asr(media, null, { bypassQueueTurn: true, asrContext: { roomId: claim.roomId, room_id: claim.roomId, sourceMediaPath: media, xmlPath: xml } });
     if (!result?.srtPath || !fs.existsSync(result.srtPath)) throw new Error('Early campaign ASR did not produce subtitles');

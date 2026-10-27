@@ -202,7 +202,8 @@ test('summary without captions explicitly reports missing video content, with no
   expect(search).not.toHaveBeenCalled();
 });
 
-test.each(['视频说猫转氨酶高,是啥问题', '视频里提到小岁什么', '回复一下这个视频'])('target-video factual question avoids unrelated recordings: %s', async text => {
+test.each(['视频说猫转氨酶高,是啥问题', '视频里提到小岁什么', '回复一下这个视频',
+  '@鹿饼Shikamochi 这个插件耗token多吗', '这套技能费用高吗', '这个skill省 tokens 吗'])('target-video factual question avoids unrelated recordings: %s', async text => {
   const knowledge = createCommentKnowledge(runtime, options, { video: async () => ({ ...video,
     title: '【栞栞Shiori】娜娜血检出来转氨酶有点高', description: '栞栞Shiori直播间',
     transcript: { language: 'ai-zh', partial: false, cues: [{ at: 1, text: '医生说他转氨酶有一点点偏高一点点' }] }
@@ -210,6 +211,36 @@ test.each(['视频说猫转氨酶高,是啥问题', '视频里提到小岁什么
   const result = await knowledge({ ...event, text }, signal());
   expect(result?.video?.content).toBe('subtitles'); expect(result?.clues).toEqual([]);
   expect(search).not.toHaveBeenCalled();
+});
+
+test('tool-cost question passes the target claim to the single answer call without room recall', async () => {
+  const request = { ...event, text: '@鹿饼Shikamochi 这个插件耗token多吗' };
+  const readVideo = jest.fn(async () => ({ ...video, title: '看视频插件演示', description: '作者的工具演示',
+    transcript: { language: 'ai-zh', partial: false, cues: [
+      { at: 6, text: '看一个五分钟视频' }, { at: 9, text: '实际花费是一分五' },
+      { at: 15, text: '把多帧融入到一个图片中来节省token' }
+    ] } }));
+  const knowledge = createCommentKnowledge(runtime, options, { video: readVideo, now: Date.now });
+  const transport = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [
+    { finish_reason: 'stop', message: { content: '作者说五分钟视频花了一分五，靠多帧拼图省token；这不等于我们模型的实测费用。' } }
+  ] }) });
+  const answer = createCommentAnswerer({ url: 'https://provider.invalid', apiKey: 'secret' }, transport as unknown as typeof fetch, knowledge);
+  await expect(answer(request.text, signal(), request)).resolves.toContain('作者说');
+  expect(readVideo).toHaveBeenCalledWith(event.oid, expect.anything());
+  expect(search).not.toHaveBeenCalled(); expect(transport).toHaveBeenCalledTimes(1);
+  const body = JSON.parse(transport.mock.calls[0][1].body);
+  expect(body.messages[1].content).toContain('把多帧融入到一个图片中来节省token');
+  expect(body.tools).toBeUndefined();
+  expect(Buffer.byteLength(JSON.stringify(body.messages), 'utf8') + LIMITS.outputTokens + 256).toBeLessThanOrEqual(LIMITS.tokenReservation);
+});
+
+test.each([
+  { type: 17 as const, text: '这个插件耗token多吗' },
+  { type: 1 as const, text: '鹿饼你耗token多吗' }
+])('tool-cost routing does not read a video for a dynamic or bot-usage question: $text', async request => {
+  const io = { video: jest.fn(), now: Date.now };
+  await createCommentKnowledge(runtime, options, io)({ ...event, ...request }, signal());
+  expect(io.video).not.toHaveBeenCalled(); expect(search).not.toHaveBeenCalled();
 });
 
 test('video-based comfort reads the target transcript without unrelated historical recall, and does not cache a missing transcript', async () => {
@@ -319,4 +350,39 @@ test('prompt trimming retains whole target cues before related clues and marks s
   expect(result.video.excerpts).toEqual(excerpts);
   for (const cue of result.video.excerpts) expect(cues).toContainEqual(cue);
   expect(Buffer.byteLength(JSON.stringify(messages), 'utf8')).toBeLessThanOrEqual(3456);
+});
+
+test('a quoted collaboration location searches historical exact words and reports the matching cue vicinity', async () => {
+  const request = { ...event, type: 17, text: '栞栞在4人超级鸡马联动中说了一句“冰上”是啥时间点' };
+  search.mockResolvedValue({ limited: false, hits: [{ evidenceId: 'quoted', date: '2026-09-03',
+    time: '00:10:00', roomName: '岁己SUI', kind: 'subtitle', context: [
+      { time: '00:10:00', text: '明天小岁小栞小荣联动' },
+      { time: '00:10:05', text: '冰上，这里滑下去了' },
+      { time: '00:10:07', text: '原来是在说这一段' }
+    ] }] });
+  const io = { video: jest.fn(), now: Date.now };
+  const result = await createCommentKnowledge(runtime, options, io)(request, signal());
+  expect(search).toHaveBeenCalledTimes(3);
+  for (const [, args] of search.mock.calls) expect(args).toMatchObject({ date: null, terms: ['冰上'], kind: 'subtitle' });
+  expect(result?.clues[0]).toMatchObject({ date: '2026-09-03', time: '00:10:05', quote: expect.stringContaining('冰上') });
+  expect(io.video).not.toHaveBeenCalled();
+});
+
+test('an explicit video collaboration question never borrows a different room recording', async () => {
+  const io = { video: jest.fn(async () => ({ ...video, transcript: { language: 'zh', partial: false,
+    cues: [{ at: 42, text: '冰上，这里滑下去了' }] } })), now: Date.now };
+  const request = { ...event, text: '视频里的联动说“冰上”是几分' };
+  const result = await createCommentKnowledge(runtime, options, io)(request, signal());
+  expect(result?.video?.excerpts).toContainEqual({ at: 42, text: '冰上,这里滑下去了' });
+  expect(search).not.toHaveBeenCalled();
+});
+
+test('a video summons reads the target, while the same invitation under a dynamic skips recording recall', async () => {
+  const io = { video: jest.fn(async () => ({ ...video, transcript: { language: 'zh', partial: false,
+    cues: [{ at: 42, text: '这一段的具体原话' }] } })), now: Date.now };
+  const knowledge = createCommentKnowledge(runtime, options, io);
+  const request = { ...event, text: '@鹿饼Shikamochi 你虽然不是大肥鱼,你也过来' };
+  expect((await knowledge(request, signal()))?.video?.excerpts).toContainEqual({ at: 42, text: '这一段的具体原话' });
+  expect(await knowledge({ ...request, type: 17 }, signal())).toBeUndefined();
+  expect(io.video).toHaveBeenCalledTimes(1); expect(search).not.toHaveBeenCalled();
 });

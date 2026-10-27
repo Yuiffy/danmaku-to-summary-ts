@@ -17,9 +17,20 @@ async function renderGamePart(mediaPath, part, outputPath, config, profile, hook
     const options = { ffmpegPath, threads: 1, timeoutMs: 30 * 60 * 1000, stage: '游戏原码流切片' };
     const sourceHashes = outputPath + '.source.framemd5', outputHashes = outputPath + '.copy.framemd5';
     try {
-        await run(['-y', '-ss', String(part.start), '-i', mediaPath, '-t', String(part.duration),
-            '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-avoid_negative_ts', 'disabled', '-movflags', '+faststart', outputPath], options);
-        const duration = await (hooks.probe || probeMediaDuration)(outputPath, resolveFfprobePath(ffmpegPath));
+        const copy = async requestedDuration => {
+            await run(['-y', '-ss', String(part.start), '-i', mediaPath, '-t', String(requestedDuration),
+                '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-avoid_negative_ts', 'disabled', '-movflags', '+faststart', outputPath], options);
+            return (hooks.probe || probeMediaDuration)(outputPath, resolveFfprobePath(ffmpegPath));
+        };
+        let duration = await copy(part.duration), copyTailAdjustmentSeconds = 0;
+        const overshoot = duration - part.duration;
+        // Reordered video packets can extend the presented MP4 tail beyond -t.
+        // Retry once from the same source/start, with at most .25s less input;
+        // the original tolerance and decoded opening checks still decide acceptance.
+        if (Number.isFinite(duration) && overshoot > .25 && overshoot <= .5 && part.duration > .25) {
+            copyTailAdjustmentSeconds = Math.min(.25, overshoot - .125);
+            duration = await copy(part.duration - copyTailAdjustmentSeconds);
+        }
         if (!Number.isFinite(duration) || Math.abs(duration - part.duration) > .25) throw new Error('Original-stream game cut duration differs from the reviewed interval');
         await run(['-y', '-ss', String(part.start), '-i', mediaPath, '-an', '-frames:v', '3', '-f', 'framemd5', sourceHashes], options);
         await run(['-y', '-i', outputPath, '-an', '-frames:v', '3', '-f', 'framemd5', outputHashes], options);
@@ -29,7 +40,8 @@ async function renderGamePart(mediaPath, part, outputPath, config, profile, hook
         }
         return { ...part, mediaPath: outputPath, bytes: fs.statSync(outputPath).size, sha256: fileDigest(outputPath), actualDuration: duration,
             processing: { resourceMode: profile?.mode || 'idle', ffmpegThreads: 1, videoEncoder: 'copy', audioEncoder: 'copy',
-                hwaccel: null, fallbackUsed: false, originalStreamCopy: true, boundaryCheck: 'matching_first_decoded_frames' },
+                hwaccel: null, fallbackUsed: false, originalStreamCopy: true, copyTailAdjustmentSeconds,
+                boundaryCheck: 'matching_first_decoded_frames' },
             audio: 'original_recording_mix', burnedSubtitles: false };
     } catch (error) {
         if (config.streamGameClips?.requireOriginalStreamCopy === true) {

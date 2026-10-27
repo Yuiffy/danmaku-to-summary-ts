@@ -7,14 +7,14 @@ const root = { ownStreamClips: { enabled: true, roomIds: ['regular'], maxClips: 
     enhancements: { enabled: true, roomIds: ['regular'], workflow: 'creative', creative: { style: 'compact' } },
     selectionPolicy: { excludedCategories: ['global restriction'], roomOverrides: { event: { excludedCategories: ['room restriction'] } } },
     campaigns: [{ id: 'fuya', requiredGames: ['芙娅之魂'], enabled: true, roomIds: ['event'], startsAt: '2026-10-22T00:00:00+08:00', endsAt: '2026-11-06T00:00:00+08:00',
-        settings: { maxClips: 2, ai: { fallbackToLocalRules: false },
+        settings: { maxClips: 5, maxCandidates: 25, ai: { maxCandidateLines: 25, fallbackToLocalRules: false },
             enhancements: { selectionMode: 'all_eligible' },
-            publicationPolicy: { mode: 'curated', minScore: 88, maxStandalone: 2, standoutScore: 100 },
+            publicationPolicy: { mode: 'curated', minScore: 88, maxStandalone: 5, standoutScore: 100 },
             selectionPolicy: { excludedCategories: ['unrelated game/chat/song'], priorityCategories: ['clear independent hook'] } } }] } };
 
 test('campaign settings apply only to the matching room and preserve nested production settings and exclusions', () => {
     const event = getOwnStreamClipsConfig(root, 'event', '2026-10-24 12:00:00', now);
-    expect(event).toMatchObject({ enabled: true, maxClips: 2, ai: { fallbackToLocalRules: false },
+    expect(event).toMatchObject({ enabled: true, maxClips: 5, maxCandidates: 25, ai: { maxCandidateLines: 25, fallbackToLocalRules: false },
         enhancements: { workflow: 'creative', creative: { style: 'compact' }, selectionMode: 'all_eligible' } });
     expect(event.roomIds).toContain('event');
     expect(event.campaignContentGate).toEqual({ id: 'fuya', requiredGames: ['芙娅之魂'] });
@@ -38,6 +38,18 @@ test('campaign publication uses model scores and keeps low scores and heat-only 
     const clips = [91, 87].map((score, i) => ({ start: i * 60, end: i * 60 + 30, score, selectionSource: 'model_global_rerank' }));
     clips.push({ start: 120, end: 150, score: 100, selectionSource: 'danmaku_heat' });
     expect(selectPublication(clips, policy, 'event').clips.map((clip: any) => clip.score)).toEqual([91]);
+});
+
+test('campaign ranks a bounded pool for five finished clips and leaves daily room capacity unchanged', () => {
+    const { buildRecallCandidatePool } = require('./own_selection');
+    const event = getOwnStreamClipsConfig(root, 'event', undefined, now);
+    const candidates = Array.from({ length: 100 }, (_, i) => ({ index: i + 1, start: i * 120, end: i * 120 + 60,
+        score: 99, selectionSource: 'model_global_rerank' }));
+    expect(buildRecallCandidatePool([], candidates, event)).toHaveLength(25);
+    expect(selectPublication(candidates, event.publicationPolicy, 'event').clips).toHaveLength(5);
+    const regular = getOwnStreamClipsConfig(root, 'regular', undefined, now);
+    expect(buildRecallCandidatePool([], candidates, regular)).toHaveLength(100);
+    expect(regular.maxClips).toBe(50);
 });
 test('reviewed game aliases stay scoped to their campaign rooms', () => {
     const settings = JSON.parse(JSON.stringify(root));

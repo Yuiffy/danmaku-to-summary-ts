@@ -2,10 +2,13 @@ import { CommentAudience, CommentEvent, CommentPlatformBlocked, CommentReplyConf
   SAFETY_NOTICE, shanghaiDay, unsafeComment, validateCommentConfig } from './CommentPolicy';
 import { CommentJob, CommentState } from './CommentState';
 import { HOUR_MS, quotaExceeded, reserveCommentQuota } from './CommentQuota';
+import { CommentAnswer, validCommentFeedback } from './CommentFeedback';
+import { CommentFeedbackNote } from '../../../core/admin/commentFeedback';
 
 export interface CommentAdapters {
   save(state: CommentState): Promise<void>;
-  answer(text: string, signal: AbortSignal, event?: CommentEvent, audience?: CommentAudience): Promise<string>;
+  answer(text: string, signal: AbortSignal, event?: CommentEvent, audience?: CommentAudience): Promise<string | CommentAnswer>;
+  collectFeedback?(event: CommentEvent, feedback: CommentFeedbackNote): Promise<void>;
   send(event: CommentEvent, answer: string, signal: AbortSignal): Promise<string>;
   now(): number;
   like?(event: CommentEvent, signal: AbortSignal): Promise<void>;
@@ -67,10 +70,20 @@ export class CommentWorker {
     try { await this.work(); } finally { this.busy = false; }
   }
 
+  private async collectPendingFeedback(now: number): Promise<void> {
+    if (!this.adapters.collectFeedback) return;
+    for (const job of this.state.jobs.filter(job => job.feedback && !job.feedbackSaved && (job.feedbackRetryAt || 0) <= now).slice(0, 20)) {
+      try { await this.adapters.collectFeedback(job.event, job.feedback!); job.feedbackSaved = true; delete job.feedbackRetryAt; }
+      catch { job.feedbackRetryAt = now + 60000; }
+      await this.adapters.save(this.state);
+    }
+  }
+
   private async work(): Promise<void> {
     let now = this.adapters.now();
     const state = this.state;
-    state.jobs = state.jobs.filter(job => job.event.createdAt >= now - LIMITS.retentionMs);
+    state.jobs = state.jobs.filter(job => job.event.createdAt >= now - LIMITS.retentionMs || job.feedback && !job.feedbackSaved);
+    await this.collectPendingFeedback(now);
     for (const job of state.jobs) if (active(job) && job.event.createdAt < now - LIMITS.maxAgeMs) job.status = 'expired';
     for (const day of Object.keys(state.days)) if (day < shanghaiDay(now - LIMITS.retentionMs)) delete state.days[day];
     state.starts = state.starts.filter(at => at > now - 60000);
@@ -134,7 +147,8 @@ export class CommentWorker {
             }
             if (this.stopped || this.controller.signal.aborted) throw new Error('Comment stopped');
             const answer = await this.adapters.answer(job.event.text, this.controller.signal, job.event, job.audience);
-            job.answer = this.controller.signal.aborted || this.stopped ? undefined : publishableAnswer(answer);
+            job.answer = this.controller.signal.aborted || this.stopped ? undefined : publishableAnswer(typeof answer === 'string' ? answer : answer.reply);
+            if (job.answer && typeof answer !== 'string' && validCommentFeedback(answer.feedback, job.event, this.config)) job.feedback = answer.feedback;
           } catch (error) { if (error instanceof CommentPlatformBlocked) state.paused = true; job.answer = undefined; }
           finally {
             clearTimeout(timeout); this.controller = undefined;
@@ -148,6 +162,7 @@ export class CommentWorker {
       }
       job.quotaDay = shanghaiDay(now); job.status = 'ready';
       await this.adapters.save(state);
+      await this.collectPendingFeedback(this.adapters.now());
     }
     if (this.stopped || state.paused) return;
     // All outputs, including free notices, share this persisted send gate.

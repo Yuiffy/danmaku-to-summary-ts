@@ -7,6 +7,7 @@ import {
   QueuedSummaryTask
 } from './MikufansSummaryQueueWorker';
 import { MikufansAsrResourceController } from './MikufansAsrResourceController';
+import { ProcessingAlertService } from '../../../monitoring/ProcessingAlertService';
 
 function createTask(overrides: Partial<QueuedSummaryTask> = {}): QueuedSummaryTask {
   return {
@@ -68,6 +69,7 @@ async function settleWorker(worker: MikufansSummaryQueueWorker): Promise<void> {
 
 describe('MikufansSummaryQueueWorker', () => {
   beforeEach(() => {
+    jest.spyOn(ProcessingAlertService, 'notifySummaryTaskFailed').mockResolvedValue(undefined);
     jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
       whisper: { gpuDetection: { checkIntervalSeconds: 0.001 } },
       webhook: { timeouts: { processTimeout: 1000 } },

@@ -13,7 +13,7 @@ B站批量切片投稿脚本（防重复版）
   --tags       标签（逗号分隔，默认：小岁,虚拟主播,直播切片,岁AI切片）
   --prefix     标题前缀（默认：【小岁】）
   --tid        分区（默认：21=日常）
-  --delay      每次上传间隔秒数（默认：30）
+  --delay      额外稿间隔秒数（默认：0；同账号每5分钟最多5次真实初始化）
   --skip       跳过指定序号（逗号分隔，如：1,2,3）
   --only       只上传指定序号（逗号分隔，如：5,6,7）
   --force      允许本次明确授权的修正版跳过同标题查重并重新投稿
@@ -26,7 +26,7 @@ B站批量切片投稿脚本（防重复版）
   1. 上传前：通过搜索 API + member archives 实时列表双重查同名稿件
   2. 同标题只记录为 title_conflict，不写入已上传状态，等待人工核对
   3. 只有显式 --force 才跳过同标题查重，允许授权的修正版重新投稿
-  4. 406 错误：不盲目重试，先查 member archives；若 B站提示上传过快则等待后重试
+  4. 406 错误：全账号等待10分钟；结果不明确时先对账，不探测或盲目重投
   5. 状态持久化：每传完一个立即写 state，中途 kill 也能保留记录
   6. member archives 是实时的（不走搜索索引），作为查重主力的可靠来源
 """
@@ -73,6 +73,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from clip_upload_progress import UploadProgress
+from clip_upload_pacing import UploadPacing, PreuploadRateLimited, UploadPaused, paced_uploader_type, http_status
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 from clip_upload_manifest import load_upload_manifest, find_review_manifest
 from clip_upload_description import (
@@ -270,43 +271,8 @@ def search_existing_titles(cookie_str, keyword="小岁"):
 
 
 async def probe_upload_available(credential):
-    """Return (available, message) from Bilibili preupload rate-limit probe."""
-    try:
-        session = get_client()
-        response = await session.request(
-            method='GET',
-            url='https://member.bilibili.com/preupload',
-            params={
-                'profile': 'ugcfx/bup',
-                'name': 'rate_limit_probe.mp4',
-                'size': 12500000,
-                'r': 'upos',
-                'ssl': '0',
-                'version': '2.14.0',
-                'build': '2100400',
-                'upcdn': 'bda2',
-                'probe_version': 20221109,
-            },
-            cookies=await credential.get_buvid_cookies(),
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://www.bilibili.com',
-            },
-        )
-        status_code = getattr(response, 'code', 200)
-        raw_text = getattr(response, 'raw_text', None) or str(response)
-        if status_code == 406:
-            try:
-                raw = getattr(response, 'raw', b'')
-                data = json.loads(raw.decode('utf-8', errors='ignore')) if raw else {}
-                return False, data.get('info') or data.get('message') or raw_text[:200]
-            except Exception:
-                return False, raw_text[:200]
-        if status_code >= 400:
-            return False, f'preupload HTTP {status_code}: {raw_text[:200]}'
-        return True, ''
-    except Exception as e:
-        return False, f'preupload probe failed: {e}'
+    """Compatibility export: availability probes are disabled, not a health receipt."""
+    return True, ''
 
 
 def is_submission_rate_limit_error(message):
@@ -411,23 +377,8 @@ def enrich_upload_result(result, cookie_str):
 
 
 async def wait_for_upload_available(credential, wait_seconds, max_retries):
-    for attempt in range(max_retries + 1):
-        available, message = await probe_upload_available(credential)
-        if available:
-            if attempt > 0:
-                print("  [rate-limit] preupload 已恢复，继续上传")
-            return True, ''
-
-        if not is_rate_limit_message(message):
-            return False, message
-
-        if attempt >= max_retries:
-            return False, message
-
-        print(f"  [rate-limit] {message}；等待 {wait_seconds}s 后重试 preupload ({attempt + 1}/{max_retries})")
-        await asyncio.sleep(wait_seconds)
-
-    return False, 'preupload unavailable'
+    """Compatibility export; real SDK initializations now own admission and waiting."""
+    return True, ''
 
 
 def parse_review(review_path):
@@ -553,7 +504,7 @@ def load_generated_description(clip):
     return ''
 
 
-async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None, before_submit=None):
+async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None, before_submit=None, pacing=None):
     """上传单个切片，返回结果 dict"""
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
@@ -582,6 +533,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         clip['start'],
         clip['duration'],
         generated_description,
+        source_kind=clip.get('publicationKind', ''),
     )
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     print(f"  文件: {os.path.basename(filepath)} ({size_mb:.1f}MB)")
@@ -615,6 +567,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
     pages = [video_uploader.VideoUploaderPage(path=part['mediaPath'], title=part['title'],
         description=part.get('description') or ('' if clip.get('parts') else desc)) for part in parts]
 
+    progress = None
     try:
         meta = video_uploader.VideoMeta(
             tid=tid, title=full_title, desc=desc, cover=cover,
@@ -622,18 +575,26 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
             **({"subtitle": {"open": 1, "lan": clip.get("subtitleLanguage") or "zh-CN"}}
                if clip.get("externalSubtitles") else {}),
         )
-        uploader = video_uploader.VideoUploader(
+        uploader_type = (paced_uploader_type(video_uploader.VideoUploader, pacing, pages, before_submit)
+                         if pacing else video_uploader.VideoUploader)
+        uploader = uploader_type(
             pages=pages, meta=meta, credential=credential,
-            # Match the preupload probe; SDK auto-selection can choose an expired CDN certificate.
+            # SDK auto-selection can choose an expired CDN certificate.
             line=video_uploader.Lines.BDA2,
         )
-        if before_submit:
+        if before_submit and not pacing:
             before_submit()
         print(f"  开始上传...")
-        result = await UploadProgress(pages, filepath).run(uploader)
+        progress = UploadProgress(pages, filepath, event_sink=(
+            lambda name, index: pacing.record('submit_start' if name == 'PRE_SUBMIT' else 'part_complete',
+                                              'submit' if name == 'PRE_SUBMIT' else 'page', part_index=index)
+        ) if pacing else None)
+        result = await progress.run(uploader)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
+            if pacing:
+                pacing.record('archive_complete', 'submit', 200)
             print(f"  ✅ 成功: {bvid}")
             # 清理临时封面
             if cleanup_cover_tmp:
@@ -655,6 +616,8 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
                     upload_result[key] = result[key]
             return upload_result
         else:
+            if pacing:
+                pacing.record('upload_failed', 'unknown')
             print(f"  ❌ 上传返回无效结果: {result}")
             if cleanup_cover_tmp:
                 try: os.remove(cover_tmp)
@@ -665,6 +628,12 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         if cleanup_cover_tmp:
             try: os.remove(cover_tmp)
             except: pass
+        if isinstance(e, UploadPaused):
+            print('  [UPLOAD_PAUSED] 全账号投稿已暂停，等待人工处理')
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited',
+                    'errorCode': 'manual_pause', 'errorStage': 'preupload', 'error': err}
+        if pacing and not isinstance(e, PreuploadRateLimited):
+            pacing.record('upload_failed', progress.failure_stage if progress else 'unknown', http_status(e))
         if is_submission_rate_limit_error(err):
             print(
                 f"  [RATE_LIMIT] B站投稿限频（错误码 "
@@ -677,7 +646,12 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
                 'error': err[:500],
                 'errorCode': BILIBILI_SUBMISSION_RATE_LIMIT_CODE,
             }
-        if '406' in err:
+        if isinstance(e, PreuploadRateLimited):
+            print('  [RATE_LIMIT_406] stage=preupload; 全账号等待600秒，停止本批次')
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited',
+                    'errorCode': 406, 'errorStage': 'preupload', 'error': err}
+        if http_status(e) == 406:
+            print('  [RATE_LIMIT_406] submission outcome requires reconciliation; account cooldown 600s')
             print(f"  ❌ 406 错误（可能已上传成功，需查搜索确认）")
             return {'idx': clip['idx'], 'title': full_title, 'status': 'got_406'}
         else:
@@ -698,6 +672,7 @@ async def upload_one_guarded(
     collection_section_id=None,
     allow_duplicate_title=False,
     before_submit=None,
+    pacing=None,
 ):
     full_title = f"{prefix}{clip['title']}"
     collection_section_id = clip.get('collectionSectionId') or collection_section_id
@@ -733,74 +708,31 @@ async def upload_one_guarded(
                     result['subtitleError'] = str(error)[:300]
         return result
 
-    for attempt in range(rate_limit_retries + 1):
-        if not allow_duplicate_title:
-            archives_before = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
-            if full_title in archives_before:
-                bvid = archives_before[full_title]
-                print(f"  [CONFLICT] 上传前发现同标题已存在，需人工核对: {bvid}")
-                return enrich_upload_result({
-                    'idx': clip['idx'], 'title': full_title, 'status': 'title_conflict', 'bvid': bvid,
-                }, cookie_str)
-        else:
-            print(f"  [FORCE] 跳过上传前同标题查重: {full_title}")
-
-        available, message = await wait_for_upload_available(credential, rate_limit_wait, rate_limit_retries)
-        if not available:
-            print(f"  [STOP] preupload 暂不可用: {message}")
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited', 'error': message}
-
-        if attempt > 0:
-            print(f"  [retry] 第 {attempt + 1} 次尝试上传")
-
-        result = await upload_one(
-            clip,
-            credential,
-            prefix,
-            tags,
-            tid,
-            source_desc,
-            collection_section_id=collection_section_id,
-            before_submit=before_submit,
-        )
-        if result.get('status') == 'ok' and result.get('bvid'):
-            result = await enrich_and_attach(result)
-        if result['status'] != 'got_406':
-            return result
-
-        print(f"  [406处理] 等待 15 秒后查 member archives 确认...")
-        await asyncio.sleep(15)
-        archives_now = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
-        if full_title in archives_now:
-            bvid = archives_now[full_title]
-            print(f"  ✅ 406 实际已上传成功: {bvid}")
-            result['status'] = 'ok_after_406'
-            result['bvid'] = bvid
-            return await enrich_and_attach(result)
-
-        if clip.get('automaticPublicationRequired') or clip.get('queueJobId'):
-            print("  [STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying")
-            return result
-
-        available, message = await probe_upload_available(credential)
-        if not is_rate_limit_message(message):
-            print(f"  ❓ 406 后未找到同标题，且 preupload 未明确返回限速: {message}")
-            return result
-
-        if attempt >= rate_limit_retries:
-            print(f"  ❓ 仍被 B站限速，已达到重试上限")
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited', 'error': message}
-
-        print(f"  [rate-limit] {message}；等待 {rate_limit_wait}s 后再次确认/重试")
-        await asyncio.sleep(rate_limit_wait)
-        archives_after_wait = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
-        if full_title in archives_after_wait:
-            bvid = archives_after_wait[full_title]
-            print(f"  ✅ 等待后确认已入库: {bvid}")
-            result = {'idx': clip['idx'], 'title': full_title, 'status': 'ok_after_406', 'bvid': bvid}
-            return await enrich_and_attach(result)
-
-    return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited'}
+    if not allow_duplicate_title:
+        archives_before = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
+        if full_title in archives_before:
+            bvid = archives_before[full_title]
+            print(f"  [CONFLICT] 上传前发现同标题已存在，需人工核对: {bvid}")
+            return enrich_upload_result({
+                'idx': clip['idx'], 'title': full_title, 'status': 'title_conflict', 'bvid': bvid,
+            }, cookie_str)
+    result = await upload_one(clip, credential, prefix, tags, tid, source_desc,
+                              collection_section_id=collection_section_id,
+                              before_submit=before_submit, pacing=pacing)
+    if result.get('status') == 'ok' and result.get('bvid'):
+        return await enrich_and_attach(result)
+    if result['status'] != 'got_406':
+        return result
+    print('  [406处理] 等待15秒后只查稿件确认，不发送可用性探测')
+    await asyncio.sleep(15)
+    archives_now = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
+    if full_title in archives_now:
+        result.update(status='ok_after_406', bvid=archives_now[full_title])
+        if pacing:
+            pacing.record('archive_complete', 'reconciliation', 200)
+        return await enrich_and_attach(result)
+    print('  [STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying')
+    return result
 
 
 async def main():
@@ -814,7 +746,7 @@ async def main():
     parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由；未提供时从媒体路径识别')
     parser.add_argument('--collection-section-id', type=int, default=None, help='本次投稿指定的合集小节 ID')
     parser.add_argument('--tid', type=int, default=None, help='分区ID')
-    parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
+    parser.add_argument('--delay', type=int, default=0, help='额外上传间隔秒数；账号滚动5分钟最多5次初始化')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
     parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
@@ -1029,15 +961,7 @@ async def main():
         source_desc=args.source,
         prefix=args.prefix,
     )
-    upload_available, upload_limit_message = await wait_for_upload_available(
-        credential,
-        max(30, args.rate_limit_wait),
-        max(0, args.rate_limit_retries),
-    )
-    if not upload_available:
-        print(f"\n[ERROR] B站 preupload 当前不可用：{upload_limit_message}")
-        print("[ERROR] 已达到等待/重试上限，停止本批次。稍后重试即可复用当前状态文件。")
-        return
+    pacing = UploadPacing(getattr(credential, 'dedeuserid', None) or ACCOUNT_MID)
 
     # === 第2步：上传 ===
     print(f"\n=== 第2步：开始上传（间隔 {args.delay}s）===")
@@ -1082,12 +1006,16 @@ async def main():
             collection_section_id,
             allow_duplicate_title=args.force,
             before_submit=before_submit,
+            pacing=pacing,
         )
         results.append(result)
 
         # An explicit server rejection is known not to have created an archive.
         # Preserve the existing account cooldown; only ambiguous submission outcomes stay held.
-        if result.get('status') == 'rate_limited' and result.get('errorCode') == BILIBILI_SUBMISSION_RATE_LIMIT_CODE:
+        if result.get('status') == 'rate_limited' and (
+                result.get('errorCode') == BILIBILI_SUBMISSION_RATE_LIMIT_CODE or
+                result.get('errorCode') == 'manual_pause' or
+                (result.get('errorCode') == 406 and result.get('errorStage') == 'preupload')):
             clear_intent(state, clip)
 
         # 记录到状态
