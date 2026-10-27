@@ -1,6 +1,6 @@
 {
   "secretConfigPath": "config/secret.json",
-  "dailyTokenBudget": 409600,
+  "dailyTokenBudget": 40960000,
   "maxQueue": 20,
   "maxUserQueue": 2,
   "privateReply": "鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～",

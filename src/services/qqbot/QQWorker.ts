@@ -59,7 +59,7 @@ export class QQWorker {
     if (state.day !== day) {
       state.day = day; state.tokens = 0; state.images = 0;
       for (const [key, user] of Object.entries(state.users)) {
-        user.count = 0; user.images = 0; user.starts = user.starts.filter(at => now - at < 3600000);
+        user.count = 0; user.images = 0; user.starts = user.starts.filter(at => now - at < QQ_LIMITS.userWindowMs);
         if (!user.starts.length && now - (user.privateAt || 0) >= QQ_LIMITS.privateIntervalMs && (user.noticeUntil || 0) <= now) delete state.users[key];
       }
     }
@@ -106,9 +106,9 @@ export class QQWorker {
       if (unsafeComment(request.text)) answer = SAFETY_NOTICE;
       else {
         state.starts = state.starts.filter(at => now - at < 60000);
-        user.starts = user.starts.filter(at => now - at < 3600000);
+        user.starts = user.starts.filter(at => now - at < QQ_LIMITS.userWindowMs);
         const limited = state.tokens + QQ_LIMITS.reservation > this.config.dailyTokenBudget ||
-          state.starts.length >= QQ_LIMITS.startsPerMinute || user.count >= QQ_LIMITS.dailyUserReplies || user.starts.length >= QQ_LIMITS.hourlyUserReplies;
+          state.starts.length >= QQ_LIMITS.startsPerMinute || user.starts.length >= QQ_LIMITS.userWindowReplies;
         if (limited) {
           answer = (user.noticeUntil || 0) > now ? '' : QQ_QUOTA_REPLY;
           if (answer) user.noticeUntil = now + 3600000;

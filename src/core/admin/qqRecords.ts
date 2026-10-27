@@ -7,6 +7,7 @@ export interface QQAgentTrace {
 }
 export interface QQRecord {
   version: 1; id: string; appId: string; scope: 'group' | 'c2c'; user: string; conversation: string;
+  senderName?: string;
   question: string; answer: string; status: keyof typeof QQ_RECORD_STATUSES;
   requestedAt: number; updatedAt: number; model: string; error?: 'model_failed' | 'image_failed';
   image?: { sha256: string; prompt: string };
@@ -18,6 +19,8 @@ export interface AdminQQRecordsView {
 export function validQQRecord(value: QQRecord): boolean {
   return !!value && value.version === 1 && /^[1-9]\d{0,24}$/u.test(value.appId) &&
     [value.id, value.user, value.conversation].every(item => typeof item === 'string' && /^[a-f0-9]{64}$/u.test(item)) &&
+    (value.senderName === undefined || typeof value.senderName === 'string' && value.senderName.trim() === value.senderName &&
+      Array.from(value.senderName).length >= 1 && Array.from(value.senderName).length <= 80 && !/[\p{Cc}\p{Cf}]/u.test(value.senderName)) &&
     ['group', 'c2c'].includes(value.scope) && Object.hasOwn(QQ_RECORD_STATUSES, value.status) &&
     typeof value.question === 'string' && Array.from(value.question).length <= 600 &&
     typeof value.answer === 'string' && Array.from(value.answer).length <= 600 &&

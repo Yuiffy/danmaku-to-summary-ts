@@ -18,7 +18,8 @@ export class QQRecords {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const record: QQRecord = { version: 1, id: request.key, appId: this.appId, scope: request.scope, user: request.user,
       conversation: qqDigest(JSON.stringify([request.scope, request.targetId])), question: request.text, answer: '', model: '',
-      requestedAt: request.createdAt, ...previous, ...update, updatedAt: Math.max(this.now(), request.createdAt) };
+      requestedAt: request.createdAt, ...(request.senderName ? { senderName: request.senderName } : {}),
+      ...previous, ...update, updatedAt: Math.max(this.now(), request.createdAt) };
     if (!validQQRecord(record)) throw new Error('Invalid QQ transcript');
     const temporary = `${file}.${process.pid}.tmp`;
     const handle = await fs.open(temporary, 'w', 0o600);

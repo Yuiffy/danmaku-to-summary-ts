@@ -36,6 +36,15 @@ test('dedupe keys include conversation and retain no plaintext identity', () => 
   expect(first.user).toMatch(/^[a-f0-9]{64}$/u);
   expect(qqRequest(message({ groupOpenid: 'group-b' }), now)!.key).not.toBe(first.key);
 });
+
+test('optional platform nicknames are bounded display data and never change identity or admission', () => {
+  const original = qqRequest(message(), now)!;
+  const named = qqRequest(message({ senderName: '  小饼干\n\u200b  ' }), now)!;
+  expect(named.senderName).toBe('小饼干'); expect(named.user).toBe(original.user); expect(named.key).toBe(original.key);
+  expect(qqRequest(message({ senderName: '🐟'.repeat(100) }), now)!.senderName).toBe('🐟'.repeat(80));
+  expect(qqRequest(message({ senderName: '   ' }), now)!.senderName).toBeUndefined();
+  expect(qqRequest(message({ rawEventType: 'GROUP_MESSAGE_CREATE', senderName: '带鱼' }), now)).toBeUndefined();
+});
 test('validates bounded operator configuration', () => {
   expect(() => validateQQConfig(config)).not.toThrow();
   for (const extra of [{ maxQueue: 0 }, { maxUserQueue: 21 }, { dailyTokenBudget: 4095 },

@@ -60,10 +60,10 @@ export class AdminQQRecords {
           const value = JSON.parse(fs.readFileSync(file, 'utf8')) as QQRecord;
           if (!validQQRecord(value) || value.id !== name.slice(0, -5) || value.appId !== account || shanghaiDay(value.requestedAt) !== result.date) throw new Error('archive schema');
           if ((scope === 'all' || scope === value.scope) && (status === 'all' || status === value.status) &&
-            (!search || [value.question, value.answer, value.user, value.conversation].some(text => text.toLocaleLowerCase().includes(search)))) {
-            const { version, id, appId, scope: recordScope, user, conversation, question, answer, status: recordStatus, requestedAt, updatedAt, model, error, image, agent } = value;
+            (!search || [value.question, value.answer, value.user, value.conversation, value.senderName || ''].some(text => text.toLocaleLowerCase().includes(search)))) {
+            const { version, id, appId, scope: recordScope, user, conversation, senderName, question, answer, status: recordStatus, requestedAt, updatedAt, model, error, image, agent } = value;
             records.push({ version, id, appId, scope: recordScope, user, conversation, question, answer, status: recordStatus, requestedAt, updatedAt, model,
-              ...(error ? { error } : {}), ...(image ? { image: { sha256: image.sha256, prompt: image.prompt } } : {}),
+              ...(senderName ? { senderName } : {}), ...(error ? { error } : {}), ...(image ? { image: { sha256: image.sha256, prompt: image.prompt } } : {}),
               ...(agent ? { agent: { modelCalls: agent.modelCalls, inputTokens: agent.inputTokens, outputTokens: agent.outputTokens,
                 tools: agent.tools.map(({ name, status, elapsedMs }) => ({ name, status, elapsedMs })) } } : {}) });
           }

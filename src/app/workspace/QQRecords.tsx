@@ -20,14 +20,14 @@ export function QQRecords() {
       <label>状态 <select value={status} onChange={event => { setStatus(event.target.value); setPage(1); }}><option value="all">全部</option>
         {Object.entries(QQ_RECORD_STATUSES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
       </select></label>
-      <label>关键词 <input value={search} maxLength={120} onChange={event => setSearch(event.target.value)} placeholder="问题、回答或会话标识" /></label><button type="submit">筛选</button>
+      <label>关键词 <input value={search} maxLength={120} onChange={event => setSearch(event.target.value)} placeholder="昵称、问题、回答或会话标识" /></label><button type="submit">筛选</button>
     </form>
     {resource.error && <div className="notice error" role="alert">{resource.error}</div>}
     {!data && resource.loading && <p role="status">正在读取 QQ 问答…</p>}
     {data && <><p className="muted">{data.date} · 共 {data.total} 条。仅“已回复”表示收到 QQ 成功回执；“待核对”不会自动重发。</p>
       <div className="table-scroll"><table><thead><tr><th>时间与会话</th><th>提问</th><th>鹿饼回复</th><th>状态</th></tr></thead><tbody>
         {data.rows.map(row => <tr key={row.id}><td>{dateText(row.requestedAt)}<p>{row.scope === 'group' ? '群聊艾特' : '私聊'}</p>
-          <small>会话 {row.conversation.slice(0, 12)}<br />用户 {row.user.slice(0, 12)}</small></td>
+          <p>{row.senderName || 'QQ 未提供昵称'}</p><small>会话 {row.conversation.slice(0, 12)}<br />用户 {row.user.slice(0, 12)}</small></td>
           <td><p className="comment-copy">{row.question || '（空艾特）'}</p></td><td><p className="comment-copy">{row.answer || '—'}</p><small>{row.model || '固定回复'}</small>
             {row.agent && <details><summary>查询过程 · {row.agent.modelCalls} 次模型调用</summary>
               <p>{row.agent.tools.length ? row.agent.tools.map(step => `${step.name}（${step.status === 'ok' ? '完成' : '失败'}，${step.elapsedMs} ms）`).join(' → ') : '直接回答，未调用资料工具'}</p>

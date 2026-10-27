@@ -24,7 +24,7 @@ export function validateQQState(value: QQState, appId: string): void {
     value.starts.some(at => !time(at)) || !record(value.users) || Object.keys(value.users).length > QQ_LIMITS.maxReceipts ||
     !record(value.receipts) || Object.keys(value.receipts).length > QQ_LIMITS.maxReceipts) throw new Error('Invalid QQ state');
   for (const [key, user] of Object.entries(value.users)) if (!digest(key) || !user || !time(user.count) ||
-    !Array.isArray(user.starts) || user.starts.length > QQ_LIMITS.hourlyUserReplies || user.starts.some(at => !time(at)) ||
+    !Array.isArray(user.starts) || user.starts.length > QQ_LIMITS.userWindowReplies || user.starts.some(at => !time(at)) ||
     user.privateAt !== undefined && !time(user.privateAt) || user.images !== undefined && !time(user.images) ||
     user.noticeUntil !== undefined && !time(user.noticeUntil)) throw new Error('Invalid QQ user state');
   for (const [key, receipt] of Object.entries(value.receipts)) if (!digest(key) || !receipt || !time(receipt.at) ||

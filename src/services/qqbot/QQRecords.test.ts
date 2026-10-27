@@ -39,6 +39,23 @@ test('agent trace survives later send checkpoints and the admin projection strip
   expect(view.rows[0].agent).toEqual(agent); expect(JSON.stringify(view)).not.toContain('must-not-leak');
   await expect(writer.write(request, { status: 'sent', agent: { ...agent, modelCalls: 1000 } })).rejects.toThrow('Invalid QQ transcript');
 });
+
+test('platform nicknames persist through send checkpoints and support admin search alongside legacy records', async () => {
+  const writer = new QQRecords(root, '900000001', () => at + 1000);
+  const named = qqRequest({ ...inbound, senderName: '小饼干' }, at)!;
+  await writer.write(named, { status: 'accepted' });
+  await writer.write(named, { status: 'sent', answer: '你好呀' });
+  await writer.write(qqRequest({ ...inbound, messageId: 'legacy' }, at)!, { status: 'skipped' });
+  const view = new AdminQQRecords(root).view({ search: '小饼干' });
+  expect(view.total).toBe(1); expect(view.rows[0].senderName).toBe('小饼干');
+  expect(new AdminQQRecords(root).view().total).toBe(2);
+  const file = path.join(root, 'data/runtime/qqbot/records/900000001/2026-10-28', `${named.key}.json`);
+  for (const senderName of ['', 'bad\nname', '鱼'.repeat(81), 42]) {
+    const record = JSON.parse(fs.readFileSync(file, 'utf8')); record.senderName = senderName;
+    fs.writeFileSync(file, JSON.stringify(record));
+    expect(() => new AdminQQRecords(root).view()).toThrow('QQ 问答存档无法读取');
+  }
+});
 test('bounded paging and invalid filter rejection', async () => {
   const writer = new QQRecords(root, '900000001', () => at);
   for (let i = 0; i < 51; i++) await writer.write(qqRequest({ ...inbound, messageId: `message-${i}` }, at)!, { status: 'skipped' });

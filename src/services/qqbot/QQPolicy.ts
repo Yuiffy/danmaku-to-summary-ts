@@ -8,7 +8,7 @@ export const QQ_IMAGE_REPLY = '生图功能还在准备中，现在可以先在�
 export const QQ_FAILURE_REPLY = '鹿饼这次没能顺利回答，请稍后再来问我吧。';
 export const QQ_QUOTA_REPLY = '鹿饼今天有点困困了，歇一会儿再来叫我吧～';
 export const QQ_LIMITS = { maxAgeMs: 240000, retentionMs: 86400000, maxReceipts: 10000,
-  startsPerMinute: 5, hourlyUserReplies: 6, dailyUserReplies: 20, sendIntervalMs: 5000,
+  startsPerMinute: 5, userWindowMs: 18000000, userWindowReplies: 100, sendIntervalMs: 5000,
   timeoutMs: 90000, privateIntervalMs: 600000, reservation: 65536, agentTurns: 5 } as const;
 
 export interface QQConfig {
@@ -23,13 +23,13 @@ export interface QQConfig {
   images?: QQImageConfig;
 }
 export interface QQInbound {
-  kind: string; rawEventType: string; senderId: string; senderIsBot?: boolean;
+  kind: string; rawEventType: string; senderId: string; senderName?: string; senderIsBot?: boolean;
   content: string; messageId: string; timestamp: string; groupOpenid?: string;
   mentions?: Array<{ is_you?: boolean }>;
 }
 export interface QQRequest {
   key: string; user: string; scope: 'group' | 'c2c'; targetId: string; msgId: string;
-  text: string; createdAt: number;
+  text: string; createdAt: number; senderName?: string;
 }
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[\w.-]{1,256}$/u.test(value);
 export const qqDigest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -65,8 +65,11 @@ export function qqRequest(message: QQInbound, now: number, botId?: string): QQRe
   const text = message.content.normalize('NFKC').replace(/<@!?[\w.-]+>/gu, ' ')
     .replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/gu, ' ').trim();
   if (Array.from(text).length > LIMITS.inputChars) return;
+  const senderName = typeof message.senderName === 'string' ? Array.from(message.senderName.normalize('NFC')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '').trim()).slice(0, 80).join('') : '';
   return { key: qqDigest(JSON.stringify([scope, targetId, message.messageId])),
-    user: qqDigest(JSON.stringify([scope, message.senderId])), scope, targetId, msgId: message.messageId, text, createdAt };
+    user: qqDigest(JSON.stringify([scope, message.senderId])), scope, targetId, msgId: message.messageId, text, createdAt,
+    ...(senderName ? { senderName } : {}) };
 }
 
 export function qqFixedReply(request: QQRequest, config: QQConfig): string | undefined {

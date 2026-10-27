@@ -105,11 +105,11 @@ test('budget exhaustion sends only one notice and performs no more generation', 
   worker.receive(message('c')); await worker.idle();
   expect(io.answer).toHaveBeenCalledTimes(1); expect(io.send).toHaveBeenCalledTimes(2);
 });
-test('hourly windows survive midnight while the daily budget resets', async () => {
+test('five-hour windows survive midnight while the daily budget resets', async () => {
   const { worker, message, io, state } = setup();
   const user = qqRequest(message(), epoch)!.user;
   state.day = '2026-10-27'; state.tokens = config.dailyTokenBudget;
-  state.users[user] = { count: 20, starts: Array(6).fill(epoch - 60000) };
+  state.users[user] = { count: 100, starts: Array(QQ_LIMITS.userWindowReplies).fill(epoch - 60000) };
   worker.receive(message()); await worker.idle();
   expect(state.tokens).toBe(0); expect(io.answer).not.toHaveBeenCalled(); expect(io.send).toHaveBeenCalledTimes(1);
 });
