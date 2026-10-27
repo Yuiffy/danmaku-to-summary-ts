@@ -50,19 +50,19 @@ test('sends real multipart reference bytes to dedicated provider once and archiv
   fs.writeFileSync(path.join(root, 'public/reference_images/sui.png'), png);
   const transport = jest.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200 }));
   const message = request('生成岁己在月球上看星星的图片');
-  const result = await createQQImageGenerator(root, '1906056059', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any)(message, new AbortController().signal);
+  const result = await createQQImageGenerator(root, '900000001', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any)(message, new AbortController().signal);
   const [endpoint, init] = transport.mock.calls[0] as unknown as [string, any];
   expect(endpoint).toBe('http://127.0.0.1:8080/v1/images/edits');
   expect(init.headers.Authorization).toBe('Bearer fake-qq-key'); expect(init.body.getBuffer().toString()).toContain('name="image[]"');
   expect(init.body.getBuffer().toString()).toContain('Content-Type: image/png'); expect(transport).toHaveBeenCalledTimes(1);
   expect(qqDigest(fs.readFileSync(result.file))).toBe(result.sha256);
-  await new QQRecords(root, '1906056059').write(message, { status: 'sent', model: result.model, image: { sha256: result.sha256, prompt: result.prompt } });
-  expect(new AdminQQRecords(root).image('1906056059', '2026-10-28', message.key)).toEqual(fs.readFileSync(result.file));
-  fs.writeFileSync(result.file, 'tampered'); expect(() => new AdminQQRecords(root).image('1906056059', '2026-10-28', message.key)).toThrow();
+  await new QQRecords(root, '900000001').write(message, { status: 'sent', model: result.model, image: { sha256: result.sha256, prompt: result.prompt } });
+  expect(new AdminQQRecords(root).image('900000001', '2026-10-28', message.key)).toEqual(fs.readFileSync(result.file));
+  fs.writeFileSync(result.file, 'tampered'); expect(() => new AdminQQRecords(root).image('900000001', '2026-10-28', message.key)).toThrow();
 });
 test('generic requests use generations and never download provider-supplied URLs or retry', async () => {
   const transport = jest.fn(async () => new Response(JSON.stringify({ data: [{ url: 'http://127.0.0.1/private' }] }), { status: 200 }));
-  const generate = createQQImageGenerator(root, '1906056059', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake' }, transport as any);
+  const generate = createQQImageGenerator(root, '900000001', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake' }, transport as any);
   await expect(generate(request('生成星空的图片'), new AbortController().signal)).rejects.toThrow('QQ image bytes missing');
   expect(transport).toHaveBeenCalledTimes(1); expect((transport.mock.calls[0] as unknown as [string])[0]).toContain('/images/generations');
 });

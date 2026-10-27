@@ -26,14 +26,14 @@ it('forwards QQ transcript reads only through local authenticated proxy', async 
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 it('streams QQ record images only for fixed identifiers and read-only local requests', async () => {
-  const endpoint = `/qq-records/1906056059/2026-10-28/${'a'.repeat(64)}/image`;
+  const endpoint = `/qq-records/900000001/2026-10-28/${'a'.repeat(64)}/image`;
   fetchMock.mockResolvedValueOnce(new Response('png', { headers: { 'Content-Type': 'image/png' } }));
   const response = await forwardAdmin(request(endpoint));
   expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('image/png');
   expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-token');
   expect((await forwardAdmin(request(endpoint, { method: 'POST', body: '{}' }))).status).toBe(405);
   expect((await forwardAdmin(request(endpoint, { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
-  expect((await forwardAdmin(request(endpoint.replace('1906056059', 'secret')))).status).toBe(404);
+  expect((await forwardAdmin(request(endpoint.replace('900000001', 'secret')))).status).toBe(404);
   expect((await forwardAdmin(request(endpoint.replace('/image', '/delete')))).status).toBe(404);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
