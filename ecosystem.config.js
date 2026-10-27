@@ -15,6 +15,25 @@ const gpuTdrEnv = {
 module.exports = {
   apps: [
     {
+      name: 'shikamochi-qqbot',
+      script: 'dist/qqbot/tools/qqbot/run.js',
+      args: ['--config', 'config/qqbot.example.json', '--live'],
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      stop_exit_codes: [0, 2],
+      restart_delay: 10000,
+      watch: false,
+      shutdown_with_message: true,
+      kill_timeout: 45000,
+      windowsHide: true,
+      env: { NODE_ENV: 'production', DANMAKU_PROJECT_ROOT: __dirname },
+      error_file: path.join(__dirname, 'logs', 'qqbot-error.log'),
+      out_file: path.join(__dirname, 'logs', 'qqbot-out.log'),
+      time: true
+    },
+    {
       name: 'campaign-early-trigger',
       script: 'src/tools/clipping/campaignEarly.ts',
       interpreter: process.execPath,

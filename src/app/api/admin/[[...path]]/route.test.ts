@@ -15,6 +15,28 @@ afterEach(() => { global.fetch = fetchOriginal; delete process.env.ADMIN_TOKEN_F
 function request(endpoint: string, options: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000/api/admin${endpoint}`, { ...options, headers: { Host: '127.0.0.1:3000', ...options.headers } });
 }
+it('forwards QQ transcript reads only through local authenticated proxy', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ rows: [] }));
+  expect((await forwardAdmin(request('/qq-records?date=2026-10-28'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/qq-records');
+  expect(fetchMock.mock.calls[0][0].search).toBe('?date=2026-10-28');
+  expect((await forwardAdmin(request('/qq-records', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/qq-records/private'))).status).toBe(404);
+  expect((await forwardAdmin(request('/qq-records', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it('streams QQ record images only for fixed identifiers and read-only local requests', async () => {
+  const endpoint = `/qq-records/1906056059/2026-10-28/${'a'.repeat(64)}/image`;
+  fetchMock.mockResolvedValueOnce(new Response('png', { headers: { 'Content-Type': 'image/png' } }));
+  const response = await forwardAdmin(request(endpoint));
+  expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('image/png');
+  expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-token');
+  expect((await forwardAdmin(request(endpoint, { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request(endpoint, { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect((await forwardAdmin(request(endpoint.replace('1906056059', 'secret')))).status).toBe(404);
+  expect((await forwardAdmin(request(endpoint.replace('/image', '/delete')))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
 it('proxies global upload status as read-only without enabling arbitrary queue endpoints', async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ queuedJobs: 3 }));
   expect((await forwardAdmin(request('/queues/status'))).status).toBe(200);

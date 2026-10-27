@@ -15,6 +15,7 @@ import { AdminTitles } from '../../services/admin/AdminTitles';
 import { AdminBilibiliLogin } from '../../services/admin/AdminBilibiliLogin';
 import { AdminCommentReplies } from '../../services/admin/AdminCommentReplies';
 import { AdminCommentFeedback } from '../../services/admin/AdminCommentFeedback';
+import { AdminQQRecords } from '../../services/admin/AdminQQRecords';
 import { AdminCampaignCandidates } from '../../services/admin/AdminCampaignCandidates';
 import { AdminCampaignFeedback } from '../../services/admin/AdminCampaignFeedback';
 import { AdminAsrStatus } from '../../services/admin/AdminAsrStatus';
@@ -54,12 +55,13 @@ export function startAdminService(): void {
   const bilibiliLogin = new AdminBilibiliLogin(configs, root);
   const commentReplies = new AdminCommentReplies(root);
   const commentFeedback = new AdminCommentFeedback(root);
+  const qqRecords = new AdminQQRecords(root);
   const campaignCandidates = new AdminCampaignCandidates(clips, roots,
     () => readJson(path.join(root, 'config/production.json'), {}).ownStreamClips?.campaigns || []);
   const campaignFeedback = new AdminCampaignFeedback(campaignCandidates, clips, jobs, runner, feedback);
   const asr = new AdminAsrStatus(root, { queueFile: process.env.WHISPER_QUEUE_FILE, logFile: process.env.ADMIN_ASR_LOG_FILE });
   asr.startHistoryIndex();
-  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, campaignCandidates, campaignFeedback, asr }, fs.readFileSync(tokenFile, 'utf8').trim());
+  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, campaignCandidates, campaignFeedback, asr }, fs.readFileSync(tokenFile, 'utf8').trim());
   const port = Number(process.env.ADMIN_PORT || 15127);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ADMIN_PORT 无效');
   const server = app.listen(port, '127.0.0.1', () => console.log(`管理 API: http://127.0.0.1:${port}`));

@@ -17,7 +17,9 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
   const endpoint = url.pathname.slice('/api/admin'.length);
   const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/(actions|status|asr(?:\/history)?))?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
   const campaignCandidate = /^\/campaign-candidates(?:\/[a-f0-9]{64}(?:\/source-playback|\/assets\/source-preview|\/feedback|\/actions)?)?$/u.test(endpoint);
-  if (!allowed.test(endpoint) && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && !campaignCandidate) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  const qqImage = /^\/qq-records\/[1-9]\d{0,24}\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{64}\/image$/u.test(endpoint);
+  if (!allowed.test(endpoint) && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && endpoint !== '/qq-records' && !qqImage && !campaignCandidate) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  if ((endpoint === '/qq-records' || qqImage) && request.method !== 'GET') return NextResponse.json({ error: 'QQ 记录仅可读取' }, { status: 405 });
   if (campaignCandidate && (endpoint.endsWith('/actions') ? request.method !== 'POST' : !['GET', 'HEAD'].includes(request.method))) return NextResponse.json({ error: '活动候选接口方法无效' }, { status: 405 });
   if (endpoint === '/comment-replies' && request.method !== 'GET') return NextResponse.json({ error: '评论记录仅可读取' }, { status: 405 });
   if (endpoint === '/comment-feedback' && request.method !== 'GET') return NextResponse.json({ error: '视频反馈仅可读取' }, { status: 405 });

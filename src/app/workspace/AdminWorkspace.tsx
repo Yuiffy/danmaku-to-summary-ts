@@ -9,18 +9,20 @@ import { RecordingQuestions } from './RecordingQuestions';
 import { BilibiliLogin } from './BilibiliLogin';
 import { CommentReplies } from './CommentReplies';
 import { CommentFeedback } from './CommentFeedback';
+import { QQRecords } from './QQRecords';
 import { CampaignCandidates } from './CampaignCandidates';
 import { UploadQueue } from './UploadQueue';
 import { AsrQueue } from './AsrQueue';
 import { useResource } from './client';
 
-type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback';
+type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq';
 const navigation: { id: View; mark: string; name: string; caption: string }[] = [
   { id: 'review', mark: '▷', name: '视频审核', caption: '素材 · 字幕 · 投稿' },
   { id: 'fuya', mark: '◇', name: '芙娅之魂', caption: '逐场备选 · 原片预览' },
   { id: 'config', mark: '≡', name: '配置', caption: '处理流程与房间规则' },
   { id: 'login', mark: '◎', name: 'B 站登录', caption: '状态检查 · 恢复登录' },
   { id: 'comments', mark: '↔', name: '评论回复', caption: '处理进度 · 回复记录' },
+  { id: 'qq', mark: '@', name: 'QQ 问答', caption: '群聊艾特 · 本地记录' },
   { id: 'feedback', mark: '✎', name: '视频反馈', caption: '观众建议 · 制作复盘' },
   { id: 'reminders', mark: '◷', name: '直播提醒', caption: '事项与发送记录' },
   { id: 'questions', mark: '⌕', name: '问鹿饼', caption: '直播记忆 · 证据检索' },
@@ -59,6 +61,7 @@ export function AdminWorkspace() {
         {view === 'login' && <BilibiliLogin />}
         {view === 'comments' && <CommentReplies />}
         {view === 'feedback' && <CommentFeedback />}
+        {view === 'qq' && <QQRecords />}
         {view === 'reminders' && <Reminders onConfig={() => navigate('config')} />}
         {view === 'operations' && <Operations />}
         {view === 'delayed' && <DelayedTasks />}

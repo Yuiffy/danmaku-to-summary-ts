@@ -32,6 +32,7 @@ B 站 SDK 的维护状态、调用归属和替换边界见 [接口上游索引](
 | 一个 TS/JS 模块 | `npm test -- --runInBand --runTestsByPath src/path/module.test.ts` |
 | Webhook、队列、回复持久化 | `npm run test:integration`，再 `npm run test:compiled` |
 | Node 操作工具、workflow bridge | `npm run test:node` |
+| QQ 群艾特回复 | 相邻 `services/qqbot/*.test.ts` 和 `tools/qqbot/run.test.ts`；运行契约见 [qqbot.md](qqbot.md) |
 | Python 上传简介 | `python -m unittest discover -b -s tests -p test_batch_upload_description.py` |
 | Python 上传注册表 | `python -m unittest discover -b -s tests -p test_clip_upload_registry.py` |
 | 全部便携 Python 回归 | `npm run test:python` |

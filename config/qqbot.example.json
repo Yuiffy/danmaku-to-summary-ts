@@ -1,0 +1,21 @@
+{
+  "secretConfigPath": "config/secret.json",
+  "dailyTokenBudget": 409600,
+  "maxQueue": 20,
+  "maxUserQueue": 2,
+  "privateReply": "鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～",
+  "images": {
+    "enabled": true,
+    "model": "gpt-image-2.5-sunburst",
+    "quality": "high",
+    "dailyLimit": 20,
+    "userDailyLimit": 3,
+    "timeoutMs": 180000,
+    "registryConfigPath": "config/production.json"
+  },
+  "knowledge": {
+    "runtimeConfigPath": "data/runtime/live-vote.json",
+    "roomId": "25788785",
+    "collaborationRooms": ["30655190", "1791260716", "26966466"]
+  }
+}

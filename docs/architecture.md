@@ -89,6 +89,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
+| `services/qqbot`, `tools/qqbot` | authenticated QQ mention admission, fixed private guidance, bounded Agents SDK question/tool loop, room-scoped recording evidence and local tool traces, reference-based image generation through a dedicated key and account receipts; see [QQ bot guide](qqbot.md) | ordinary group chatter/history, arbitrary agent tools or paths, Bilibili publication/credentials, shared media queues or automatic activation |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
 | `questions/RecordingBrowser`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, previews of maintained highlights/clip subtitles and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or broadcast starts |
@@ -118,6 +119,17 @@ must be updated before using the new task-list/cancellation adapter.
 | `docs`, `plans` | maintained guides, contracts, architecture decisions and roadmaps | task diaries, experiment results, deployment snapshots |
 | `local-scripts`, `temp`, `tmp` | task-specific scripts, reports, captures and experiments (ignored) | reusable product behavior |
 | `data/runtime`, `logs`, `output`, `build`, `dist` | mutable state or generated artifacts | hand-maintained source |
+
+`qqbot/QQRecords` owns atomic question/answer transcripts independently of short-lived
+dedupe receipts. `admin/AdminQQRecords` exposes a bounded read-only date/filter listing;
+`core/admin/qqRecords` owns the shared schema. Neither page reads provider credentials
+nor initiates model calls or QQ publication. See [QQ bot guide](qqbot.md).
+
+`questions/LiveOverview` reads fixed generated overview artifacts under trusted recording
+roots, preserving the dated session separately from newer observed recording fragments.
+`qqbot/QQKnowledge` exposes it alongside the existing corpus tools; the model chooses
+operations through Agents SDK, with no keyword-driven eager retrieval. Generated summaries,
+goodnight copy and comic narratives support overviews, never verbatim speaker attribution.
 
 Dependencies point from entrypoints to services to shared infrastructure. Leaf
 components must not import their parent. Existing script paths remain facades;

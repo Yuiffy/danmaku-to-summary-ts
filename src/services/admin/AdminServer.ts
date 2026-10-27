@@ -19,6 +19,7 @@ import { AdminTitles } from './AdminTitles';
 import { AdminBilibiliLogin } from './AdminBilibiliLogin';
 import { AdminCommentReplies } from './AdminCommentReplies';
 import { AdminCommentFeedback } from './AdminCommentFeedback';
+import { AdminQQRecords } from './AdminQQRecords';
 import { AdminCampaignCandidates } from './AdminCampaignCandidates';
 import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 import { AdminAsrStatus } from './AdminAsrStatus';
@@ -35,6 +36,7 @@ export interface AdminAdapters {
   bilibiliLogin?: AdminBilibiliLogin;
   commentReplies?: AdminCommentReplies;
   commentFeedback?: AdminCommentFeedback;
+  qqRecords?: AdminQQRecords;
   campaignCandidates?: AdminCampaignCandidates;
   campaignFeedback?: AdminCampaignFeedback;
   asr?: AdminAsrStatus;
@@ -79,6 +81,14 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.get('/comment-feedback', (req, res) => {
     if (!adapters.commentFeedback) throw new AdminError('视频反馈未配置', 503);
     res.json(adapters.commentFeedback.view(req.query));
+  });
+  app.get('/qq-records', (req, res) => {
+    if (!adapters.qqRecords) throw new AdminError('QQ 记录未配置', 503);
+    res.json(adapters.qqRecords.view(req.query));
+  });
+  app.get('/qq-records/:appId/:date/:id/image', (req, res) => {
+    if (!adapters.qqRecords) throw new AdminError('QQ 记录未配置', 503);
+    res.type('png').send(adapters.qqRecords.image(req.params.appId, req.params.date, req.params.id));
   });
   app.route('/bilibili/login').get(loginRoute).post(loginRoute);
   async function loginRoute(req: express.Request, res: express.Response) {
