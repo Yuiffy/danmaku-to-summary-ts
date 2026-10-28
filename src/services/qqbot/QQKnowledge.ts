@@ -16,8 +16,9 @@ export type QQKnowledge = (request: QQRequest, signal: AbortSignal) => QQQuestio
 
 /** Each question owns its IDs and room scope. The agent chooses every retrieval operation. */
 export function createQQKnowledge(runtime: QuestionRuntime, config: NonNullable<QQConfig['knowledge']>): QQKnowledge {
-  const allowed = new Set([config.roomId, ...config.collaborationRooms]);
   const rooms = configuredQuestionRooms(runtime.questions);
+  const allowed = new Set([config.roomId, ...config.collaborationRooms,
+    ...(config.allConfiguredRooms ? rooms.map(room => room.roomId) : [])]);
   if (!runtime.questions.lexical?.enabled || [...allowed].some(id => !rooms.some(room => room.roomId === id))) {
     throw new Error('QQ knowledge requires configured rooms and the read-only lexical index');
   }
@@ -44,7 +45,7 @@ export function createQQKnowledge(runtime: QuestionRuntime, config: NonNullable<
     }));
     let overviewCalls = 0;
     tools.unshift({ name: 'read_live_overview',
-      description: '读取所问主播最新可用场次或指定日期的直播梗概、晚安回复、漫画脚本。概括最新/上次直播播了什么优先用它，无需关键词。返回资料日期与最新已见录制日期；晚安/漫画是生成概述，不是逐字原话。date=null取最新，指定日只读当日；不是完整开播历史。',
+      description: '读取所问主播最新可用场次或指定日期的直播梗概、晚安回复、漫画脚本。概括最新/上次直播播了什么优先用它，无需关键词。返回资料日期与最新已见录制日期；晚安/漫画是生成概述，不是逐字原话。date=null取最新，指定日只读当日；不是完整开播历史。概述为空不代表没有ASR或弹幕，可用list_recordings浏览后read_recordings取证。',
       parameters: { type: 'object', additionalProperties: false, properties: { date: { type: ['string', 'null'] } }, required: ['date'] },
       execute: async args => {
         const input = args as { date: string | null };
@@ -59,6 +60,7 @@ export function createQQKnowledge(runtime: QuestionRuntime, config: NonNullable<
         return { overviews };
       }
     });
-    return { scope: corpus.scopeDescription, tools, close: () => corpus.close() };
+    return { scope: corpus.scopeDescription + '本次范围中的姓名指已配置的主播。泛问主播情报、近况时先查最新直播资料；概述缺失可浏览ASR和弹幕，不应直接断言只支持默认主播。',
+      tools, close: () => corpus.close() };
   };
 }

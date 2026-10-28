@@ -52,3 +52,13 @@ test('validates bounded operator configuration', () => {
     expect(() => validateQQConfig({ ...config, ...extra })).toThrow();
   }
 });
+
+test('QQ can opt into configured recording rooms without changing legacy limits', () => {
+  const knowledge = { runtimeConfigPath: 'runtime.json', roomId: '25788785', collaborationRooms: [] };
+  for (const allConfiguredRooms of [undefined, false, true]) {
+    expect(() => validateQQConfig({ ...config, knowledge: { ...knowledge, allConfiguredRooms } })).not.toThrow();
+  }
+  expect(() => validateQQConfig({ ...config, knowledge: { ...knowledge, allConfiguredRooms: 'true' as any } })).toThrow();
+  expect(() => validateQQConfig({ ...config, knowledge: { ...knowledge, allConfiguredRooms: true,
+    collaborationRooms: ['1', '2', '3', '4'] } })).toThrow();
+});

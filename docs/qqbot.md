@@ -66,6 +66,12 @@ Web 配置编辑器会隐藏 `appSecret` 和 `apiKey`，保留遮蔽值即可保
 | `aggregate_evidence` | 对已返回证据的时间偏移作确定性统计 |
 
 工具集合由可信配置限定，命名主播只能选择已授权的房间；每题跨房间结果分清来源。
+QQ 示例启用 `knowledge.allConfiguredRooms=true`，使用 `runtimeConfigPath` 中
+`questions.recordingRoots` 的全部已配置主播；每题仍按提问中的主播名或 `roomAliases`
+选择最多三间房，未指名时使用 `roomId`，不会全库扫所有主播。未启用时兼容原来的
+`roomId` 加 `collaborationRooms` 白名单。录播目录名会提供完整主播名和中文简称，
+其他昵称需在 `roomAliases` 显式配置。泛问主播情报时优先查直播概述；没有生成概述时，
+继续浏览该主播的 ASR、弹幕，不能把“没有概述”解释成“没有资料”。此设置不改变 B 站评论范围。
 没有资料配置时仍可直接聊天；帮助和普通聊天也由 agent 判断，不强制检索。
 工具参数错误或读取失败作为固定、不含原错误路径的反馈返回，允许 agent 修正或换工具。
 同一操作不重复 IO；每题最多 5 次模型调用、4 次工具操作，每次只执行一个工具。

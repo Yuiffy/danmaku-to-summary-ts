@@ -19,7 +19,7 @@ export interface QQConfig {
   maxQueue: number;
   maxUserQueue: number;
   privateReply: string;
-  knowledge?: CommentReplyConfig['knowledge'];
+  knowledge?: NonNullable<CommentReplyConfig['knowledge']> & { allConfiguredRooms?: boolean };
   images?: QQImageConfig;
 }
 export interface QQInbound {
@@ -44,7 +44,8 @@ export function validateQQConfig(config: QQConfig): void {
     typeof config.privateReply !== 'string' || !config.privateReply.trim() || Array.from(config.privateReply).length > 300 ||
     /[\p{Cc}\p{Cf}]/u.test(config.privateReply) || unsafeComment(config.privateReply)) throw new Error('Invalid QQ bot configuration');
   const k = config.knowledge;
-  if (k && (typeof k.runtimeConfigPath !== 'string' || !k.runtimeConfigPath.trim() || !/^[1-9]\d{0,24}$/u.test(k.roomId) ||
+  if (k && (k.allConfiguredRooms !== undefined && typeof k.allConfiguredRooms !== 'boolean' ||
+    typeof k.runtimeConfigPath !== 'string' || !k.runtimeConfigPath.trim() || !/^[1-9]\d{0,24}$/u.test(k.roomId) ||
     !Array.isArray(k.collaborationRooms) || k.collaborationRooms.length > 3 || k.collaborationRooms.some(id =>
       typeof id !== 'string' || !/^[1-9]\d{0,24}$/u.test(id)))) throw new Error('Invalid QQ knowledge configuration');
   if (config.images) validateQQImageConfig(config.images);

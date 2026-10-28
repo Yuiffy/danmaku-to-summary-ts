@@ -16,6 +16,7 @@
   "knowledge": {
     "runtimeConfigPath": "data/runtime/live-vote.json",
     "roomId": "25788785",
+    "allConfiguredRooms": true,
     "collaborationRooms": ["30655190", "1791260716", "26966466"]
   }
 }
