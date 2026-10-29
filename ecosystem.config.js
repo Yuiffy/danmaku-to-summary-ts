@@ -15,6 +15,22 @@ const gpuTdrEnv = {
 module.exports = {
   apps: [
     {
+      name: 'sui-live-asr',
+      script: 'dist/tools/live-asr/runLiveAsr.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      restart_delay: 10000,
+      kill_timeout: 10000,
+      windowsHide: true,
+      env: { NODE_ENV: 'production' },
+      error_file: path.join(__dirname, 'logs', 'live-asr-error.log'),
+      out_file: path.join(__dirname, 'logs', 'live-asr-out.log'),
+      time: false
+    },
+    {
       name: 'danmaku-webhook',
       script: 'dist/app/main.js',
       // 使用绝对路径确保正确

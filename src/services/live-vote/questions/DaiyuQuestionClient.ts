@@ -45,7 +45,7 @@ export function createDaiyuQuestionCompletion(settings: DaiyuSettings, transport
         headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'gpt-6-luna', messages: request.messages,
-          tools: request.phase === 'plan' ? [QUESTION_TOOLS[0]] : QUESTION_TOOLS,
+          tools: QUESTION_TOOLS,
           tool_choice: request.toolChoice, parallel_tool_calls: false, max_tokens: 2048
         })
       });

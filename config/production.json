@@ -2078,6 +2078,20 @@
     }
   },
   "asr": {
+    "device_handoff": { "enabled": false, "idle_s": 45, "min_remaining_s": 600 },
+    "cpu_fallback": { "enabled": true, "min_available_memory_gb": 10 },
+    "live": {
+      "enabled": true,
+      "room_ids": [
+        "25788785"
+      ],
+      "room_roots": {
+        "25788785": [
+          "D:/files/videos/DDTV录播/25788785_岁己SUI"
+        ]
+      },
+      "idle_release_s": 120
+    },
     "participantDiscovery": {
       "enabled": true,
       "visual": {

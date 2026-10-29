@@ -6,6 +6,42 @@
 
 岁己房间的生产 Paraformer 流程还支持后置 SenseVoiceSmall 情感分析。它复用 Paraformer 时间轴，不重复 VAD/标点，并把结果提供给晚安回复、漫画脚本和自动切片。配置、输出契约与评分规则见 [sui-emotion-analysis.md](./sui-emotion-analysis.md)。
 
+## 分段设备接力（可选）
+
+`asr.device_handoff.enabled` 默认关闭。开启后，标准 `paraformer-zh` 的 CUDA 路由使用
+单任务 Python 协调器，接入原 ASR 锁、队列与结果消费者；先退出空闲常驻模型，避免重复占显存。
+微调 Paraformer、显式 CPU、SenseVoice、MOSS、Nano 和 Whisper 保留原路线。
+中央队列通过 `ASR_CPU_FALLBACK=1` 准入的任务仍遵守队列轮次和文件锁，获取锁后跳过旧 GPU 等待。
+
+协调器保留原设备配置；只有 CPU 模型子进程隐藏 CUDA，并沿用 2 线程、BelowNormal、EcoQoS
+与 E 核策略。CPU 运行期间每 5 秒观察资源；GPU 连续空闲 `idle_s`（45 秒）且剩余音频至少
+`min_remaining_s`（600 秒）才接力。默认空闲条件：利用率低于 40%、显存占比低于 70%、
+可用显存至少 4096MiB，且原资源保护配置未检测到游戏。GPU 边界按扣除本模型 CUDA allocator
+后的外部显存用量比较同一预算，避免把自己加载的显存误判为外部压力。采样失败不证明空闲。
+已有 `CUDA_VISIBLE_DEVICES` 限制仍保留，GPU 采样使用该列表的第一块卡。
+
+每窗最长 120 秒音频，在 VAD 观察到的语音结束处提交；换设备只发生在已保存的窗口边界。
+GPU 边界采样前留 1.2 秒消除上一窗自身计算的利用率影响；再次繁忙则先释放 GPU 模型，
+可用内存达到 `asr.cpu_fallback.min_available_memory_gb`（默认 10GiB，下限 4GiB）时回 CPU，
+否则等待。已经加载的 CPU 模型按实际可用内存至少 4GiB 的运行底线继续，避免因自身加载
+减少了入场余量而逐窗反复重载；释放后的新 CPU 模型仍须达到入场门槛。
+没有操作系统级“只用剩余 GPU”的硬保证，游戏刚启动时最多仍需完成当前窗口。
+模型加载、单窗与后处理请求受 `worker_timeout_s`（600 秒）限制；原外层任务超时仍有效。
+
+录像一次解码为对齐媒体 PTS 的临时 float32 PCM，约 64KB/秒音频，退出时清理；磁盘不足时失败，
+不丢弃已保存分段。独立 `.asr-handoff.json` 保存模型配方、源指纹、音频采样指纹、时长与
+原始 FunASR 窗口结果。OS 文件锁限制单写者；每窗原子写入，失败/重试只补缺口。
+源、配方不匹配或损坏的接力侧车拒绝复用，应先保留并核对旧侧车。默认模型文件应保持固定，
+不要在任务中替换同一路径下的权重。启用房间可导入验证通过的 `.live-asr.json`，只读不回写。
+`timings.handoff_*` 记录本次 CPU/GPU 覆盖音频秒数、复用音频、切换次数与转写耗时。
+
+整场文字完成后仅执行一次既有说话人、情感与谐音修正，保留输出 JSON/字幕契约。
+自动接力范围为文字转写阶段，最终说话人/情感阶段继续遵守原保护和设备策略。
+换设备会重新加载模型，通常有数十秒冷启动成本。开启此路线后标准 GPU 任务也按任务加载模型，
+不跨任务复用常驻 ASR 权重；短任务可能更慢，应结合真实长录播耗时决定是否启用。
+这是同模型分窗推理，分句边界可能与整场推理不同，不能承诺逐字相同。
+关闭开关恢复原入口；运行中的协调器不会热读开关。开发/验证只写隔离目录，开关上线需单独部署。
+
 ## MOSS 说话人灰度
 
 生产设置 `asr.moss_rollout.enabled=true`、`ratio=0.2`、`eligibility="confirmed_multi"`、`room_ids=[]`，覆盖所有房间的已确认多人联动场次。只有转写前的 `participantDiscovery.mode="multi"` 且 `modeStatus="confirmed"` 才参与稳定哈希抽样；单播、未知、候选及仅有联动计划都跳过，仅开启 `enable_speaker` 或配置嘉宾名单也不会触发。确认可来自现有参与者发现流程的多帧现场证据或人工确认；这不等于声纹实名验证。没有确认依据时保留原后端，不先运行 MOSS 来决定是否运行 MOSS，也不追加整场 Paraformer 探测。此严格策略可能漏掉未被确认的真实联动。
@@ -60,6 +96,63 @@ python -m pip install -r src/scripts/python/requirements-moss.txt
 Windows 侧需要 requests、FFmpeg/FFprobe；CAM++ 实名匹配继续使用现有 FunASR 环境。具体部署值以 `config/production.json` 为准。已有字幕不因灰度配置变化而重写，正在运行的旧 Python 子进程也不受源码更新影响。
 
 ## 默认 Paraformer 与显式 Whisper
+
+### 直播中的 CPU 增量转写
+
+`asr.live` 是独立的显式房间白名单，不继承所有录播房间。默认关闭；当前生产试用仅配置岁己
+`25788785` 的实时录播目录。`room_ids` 和 `room_roots` 必须同时匹配，运行器目前只接受一个
+房间。启动命令为 `node dist/tools/live-asr/runLiveAsr.js`，PM2 名称 `sui-live-asr`。
+`python_executable` 可显式选择现有 FunASR 环境；不配置时使用 Paraformer 的 Python 或 PATH。
+
+运行器只检查配置根目录和最近两个日期目录内、最近 90 秒仍更新的原始录像，忽略归档、bak、
+合并视频和其他房间。全局只有一个串行 CPU worker，使用 FP32 默认 Paraformer、VAD 和标点，
+两个推理线程、低进程优先级及现有 EcoQoS/E 核偏好；实时进程禁用 CUDA。没有活跃文件后
+120 秒退出模型进程释放内存。这是限线程方案，不是整机 CPU 百分比硬配额。
+
+每次从已落盘的音频位置取约 60 秒，保留录像写入端 3 秒余量。VAD 选择靠近末尾、有至少
+0.6 秒后续静音的语音结束位置；例如本次覆盖到第 57 秒，下次从第 57 秒继续。没有停顿时
+延长至最多 120 秒，再以长度上限切开；纯静音也记录覆盖。初次接入正在直播的长录像会从
+开头补齐，积压期间近期字幕可能尚不可查。模型只有空闲时释放，不每分钟重新加载。
+
+`<base>.live-asr.json` v1 保存房间、模型配方、源文件大小/创建时间/固定媒体采样哈希以及
+不重叠的转写窗口；窗口内的 FunASR 时间戳仍为毫秒，外部 start/end 为源时间轴秒。
+`spec.audio_timeline=media_pts_v1` 要求 FFmpeg 按媒体 PTS 补齐音频时间戳间隙；下播复用时
+说话人和情感也读取同样对齐的音频，不能把缺包后的连续 PCM 时长当成录像时间轴。
+每批原子保存。`<base>.live.srt` 是可变的直播查询字幕，不能作为普通 `<base>.srt` 冒充完整
+下播产物；历史向量索引不收录它，直播问题的有界文件搜索可读取它，正式字幕存在时优先正式版。
+状态在 `data/runtime/live-asr/status.json`；错误不推进位置，重启按缓存恢复。
+
+`FileMerger` 在备份原片段前，按实际片段时长和同一补黑间隙规则建立合并录像的缓存。时间轴
+差异超过 0.25 秒、模型/房间/媒体指纹不匹配时拒绝复用。下播 Paraformer 读取匹配缓存，只用
+CPU 补齐未覆盖区间和尾段；复用窗口不再转写，然后执行既有说话人、声纹、情感、字幕校正及
+sidecar 输出。说话人和情感仍遵循原设备配置。`live_asr_reused_audio_s`、
+`live_asr_missing_audio_s`、`live_asr_completion_s` 记录在 ASR timings 中。已有缓存无需实时
+worker 在线才能读取；缓存无效或缺失则回退原转写流程，不能跳过缺失音频。
+显式指定其他后端、微调模型或命中既有 MOSS 多人灰度的任务仍走其原模型；不同模型的缓存
+不能混用。这些特殊任务可能重新转写，实时开关不覆盖已有模型路由授权。
+
+同模型 CPU/GPU 通常接近，但短窗 VAD 边界、标点上下文及浮点计算可能改变文字；不能承诺与
+整场 GPU 字幕逐字一致。关闭 `asr.live.enabled` 并停止 `sui-live-asr` 即可回退，已有正式字幕
+不受影响。服务编译产物部署后须刷新 webhook 进程，合并缓存钩子才会加载；新增 worker 的
+启用和生产配置修改属于部署操作，不属于普通验证。
+
+### GPU 繁忙时的 CPU 队列处理
+
+`asr.cpu_fallback` 默认为关闭，当前生产开启，`min_available_memory_gb: 10`。
+中央 summary 队列检测到游戏保护或既有 GPU 使用率/显存阈值繁忙时，对 CPU 支持的
+Paraformer/SenseVoice 任务改用一次性 CPU 子进程；保持单个队列 ASR 槽位、原模型、说话人
+及后处理要求，停止 GPU 常驻 worker。CPU ASR 与岁己实时 worker 可各运行一个，内存门槛
+检查的是启动当时的剩余物理内存，并非硬内存上限。
+
+CPU 子进程禁用 CUDA，主模型/VAD/标点/说话人/情感使用 CPU、两个推理线程、低优先级和
+EcoQoS/E 核偏好。该进程不再等待游戏退出，也不申请 GPU 资源声明，保留 CPU 忙碌节流。
+ASR 输出的 `timings.cpu_fallback: 1` 标记这一路径；无需更换模型或让用户重排任务。
+设备在任务开始时确定，正在 CUDA 上执行的任务继续原有 GPU 节流，不中途搬迁权重。
+
+Whisper、Nano/vLLM、MOSS 等不在此 CPU 回退范围，保留原准入策略。MOSS 灰度桶按同一
+文件名/房间计算；即使多人证据尚未收集，也预留可能命中 GPU 模型的桶，不静默更换模型。
+剩余内存不足时也保留原等待/节流。回退失败沿用既有队列错误处理，不能把未完成任务记为完成。
+关闭 `asr.cpu_fallback.enabled` 并部署/重启 webhook 即恢复原准入；不影响实时 ASR 开关。
 
 当前默认配置的核心形状：
 

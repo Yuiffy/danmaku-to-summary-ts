@@ -47,7 +47,7 @@ export class LiveQuestionSession {
       return true;
     }
     if (!question) {
-      notice('鹿饼在，请发「@鹿饼 你的问题」。');
+      notice('鹿饼在：聊天、查历史、总结最近5分钟。');
       return true;
     }
     if (unsafeQuestionText(question)) {

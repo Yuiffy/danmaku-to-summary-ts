@@ -20,14 +20,14 @@ export class QuestionCorpus implements QuestionEvidence {
   private embedder?: Embedder;
   private vector?: Promise<Float32Array | undefined>;
 
-  constructor(private readonly config: LiveQuestionConfig, private readonly request: Pick<QuestionRequest, 'roomId' | 'question'>,
+  constructor(private readonly config: LiveQuestionConfig, private readonly request: Pick<QuestionRequest, 'roomId' | 'question' | 'askedAt'>,
     private readonly signal: AbortSignal, botUid?: string, private readonly makeEmbedder?: () => Embedder) {
     this.rooms = questionScope(config, request.roomId, request.question);
     this.scopeDescription = `本次查询资料范围：${JSON.stringify(this.rooms.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`;
     this.embeddingStatus = config.semantic?.enabled ? 'unavailable' : 'disabled';
     this.corpora = this.rooms.map(room => {
       this.coverage.set(room.roomId, { indexedFiles: 0, indexComplete: false, catalogStatus: config.giftCatalogs?.[room.roomId] ? 'unavailable' : 'disabled' });
-      return { room, recordings: new RecordingEvidence(config.recordingRoots[room.roomId], signal, { botUid, question: request.question,
+      return { room, recordings: new RecordingEvidence(config.recordingRoots[room.roomId], signal, { botUid, question: request.question, roomId: room.roomId, askedAt: request.askedAt,
         ...(config.semantic?.enabled && makeEmbedder ? { semanticSearch: date => this.semantic(room.roomId, date) } : {}) }) };
     });
   }
@@ -61,6 +61,18 @@ export class QuestionCorpus implements QuestionEvidence {
     const evidenceId = `r${corpus.room.roomId}_${hit.evidenceId}`;
     this.origins.set(evidenceId, { corpus, localId: hit.evidenceId, gift });
     return { ...hit, evidenceId, roomId: corpus.room.roomId, roomName: corpus.room.name };
+  }
+  async recent(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean; [key: string]: unknown }> {
+    const hits: EvidenceSearchHit[] = [], coverage: unknown[] = [];
+    let limited = false;
+    for (const corpus of this.corpora) {
+      const result = await corpus.recordings.recent(args);
+      const { hits: roomHits, ...metadata } = result;
+      coverage.push({ roomId: corpus.room.roomId, ...metadata });
+      limited ||= result.limited;
+      hits.push(...roomHits.map(hit => ({ ...this.qualify(corpus, hit), context: this.qualifyContext(corpus, hit.context) })));
+    }
+    return { hits, limited, coverage };
   }
   private qualifyContext(corpus: RoomCorpus, cues: EvidenceSearchHit['context'], gift?: EvidenceSearchHit): EvidenceSearchHit['context'] {
     return cues.map(cue => {

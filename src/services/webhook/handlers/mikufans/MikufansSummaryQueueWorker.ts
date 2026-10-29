@@ -8,6 +8,7 @@ import type { LiveSession } from '../../LiveSessionManager';
 import { listRelevantProcesses, terminateProcessTree } from '../../../../utils/processCleanup';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../../utils/ffmpegResource';
 import { MikufansAsrResourceController } from './MikufansAsrResourceController';
+import { canUseAsrCpuFallback } from './AsrCpuFallback';
 
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const LEGACY_WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
@@ -185,6 +186,14 @@ export class MikufansSummaryQueueWorker {
       }
 
       const gameStatus = await this.asrResources.isGameRunning();
+      const gpuStatus = gameStatus.busy ? { busy: false, reason: '' } : await this.asrResources.isLegacyGpuBusy();
+      const useCpu = (gameStatus.busy || gpuStatus.busy) && canUseAsrCpuFallback(config, nextTask);
+      if (useCpu) {
+        await this.asrResources.stopPersistentWorker('GPU/游戏繁忙，改用低优先级 CPU ASR');
+        this.logger.info(`CPU 后台 ASR: ${gameStatus.reason || gpuStatus.reason}`);
+        await this.executeTask(nextTask, true);
+        continue;
+      }
       if (gameStatus.busy) {
         await this.asrResources.stopPersistentWorker(`游戏运行: ${gameStatus.reason}`);
         if (!this.asrGamePaused) {
@@ -203,7 +212,6 @@ export class MikufansSummaryQueueWorker {
       // GPU gate would stop the persistent worker before it can shrink its
       // batch and yield, so keep it only for non-adaptive backends.
       if (!this.asrResources.isAdaptiveGpuProtectionEnabled(config)) {
-        const gpuStatus = await this.asrResources.isLegacyGpuBusy();
         if (gpuStatus.busy) {
           await this.asrResources.stopPersistentWorker(`GPU 繁忙: ${gpuStatus.reason}`);
           this.logger.info(`GPU 当前繁忙，队列Worker继续等待: ${gpuStatus.reason}`);
@@ -217,7 +225,7 @@ export class MikufansSummaryQueueWorker {
     }
   }
 
-  private async executeTask(task: QueuedSummaryTask): Promise<void> {
+  private async executeTask(task: QueuedSummaryTask, useCpu = false): Promise<void> {
     if (!task?.mediaPath) {
       return;
     }
@@ -292,6 +300,7 @@ export class MikufansSummaryQueueWorker {
           ? String(asrWorkerConnection.port)
           : '',
         ASR_PERSISTENT_WORKER_TOKEN: asrWorkerConnection.token || '',
+        ASR_CPU_FALLBACK: useCpu ? '1' : '',
         ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : '',
         ASR_SPEAKER_REQUEST_JSON: encodedSpeakerRequest
       }

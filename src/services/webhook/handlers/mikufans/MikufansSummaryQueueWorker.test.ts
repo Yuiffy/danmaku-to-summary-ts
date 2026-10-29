@@ -126,6 +126,25 @@ describe('MikufansSummaryQueueWorker', () => {
     });
   });
 
+  it.each(['game', 'gpu'])('uses one CPU task while %s is busy without loading the GPU worker', async busy => {
+    jest.spyOn(require('os'), 'freemem').mockReturnValue(32 * 1024 ** 3);
+    (ConfigProvider.getConfig as jest.Mock).mockReturnValue({
+      asr: { default_backend: 'paraformer', cpu_fallback: { enabled: true, min_available_memory_gb: 4 } },
+      whisper: { gpuDetection: { checkIntervalSeconds: 0.001 } }
+    });
+    const queue = createQueue(jest.fn().mockReturnValueOnce(createTask()).mockReturnValue(null));
+    const resources = createResources();
+    if (busy === 'game') (resources.isGameRunning as jest.Mock).mockResolvedValue({ busy: true, reason: 'game', waitMs: 100 });
+    else (resources.isLegacyGpuBusy as jest.Mock).mockResolvedValue({ busy: true, reason: 'gpu' });
+    const worker = new MikufansSummaryQueueWorker(createCallbacks(), resources, queue, createSpeakerRegistry());
+    const execute = jest.spyOn(worker as any, 'executeTask').mockResolvedValue(undefined);
+    worker.ensureRunning();
+    await settleWorker(worker);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }), true);
+    expect(resources.ensurePersistentWorker).not.toHaveBeenCalled();
+    expect(worker.isRunning()).toBe(false);
+  });
+
   it('honors requestStop and does not restart during cleanup', async () => {
     const queue = createQueue();
     const pendingTask = createTask();

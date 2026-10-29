@@ -3,6 +3,63 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
+  test.each(['1', ''])('handoff releases resident GPU model and preserves CUDA for the supervisor (cpu=%s)', async cpu => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-handoff-child-'));
+    const adapter = path.join(directory, 'adapter.cjs');
+    fs.writeFileSync(adapter, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{
+      const payload=JSON.parse(input);console.log(JSON.stringify({backend:payload.backend,segments:[],
+      handoff:payload.device_handoff,cuda:process.env.CUDA_VISIBLE_DEVICES,cpu:process.env.ASR_CPU_FALLBACK}));});`);
+    const requests: string[] = [];
+    const server = net.createServer((socket: any) => {
+      let input = '';
+      socket.on('data', (data: Buffer) => {
+        input += data.toString();
+        if (!input.includes('\n')) return;
+        requests.push(JSON.parse(input.split('\n')[0]).type);
+        socket.end(JSON.stringify({ ok: true }) + '\n');
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const keys = ['ASR_CPU_FALLBACK', 'ASR_PERSISTENT_WORKER_PORT', 'ASR_PERSISTENT_WORKER_TOKEN', 'CUDA_VISIBLE_DEVICES'];
+    const original = keys.map(key => process.env[key]);
+    process.env.ASR_CPU_FALLBACK = cpu;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String(server.address().port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'fixture';
+    process.env.CUDA_VISIBLE_DEVICES = '0';
+    try {
+      const result = await asr.transcribeParaformer('fixture.wav', { asr: {
+        device_handoff: { enabled: true, idle_s: 45 }, cpu_fallback: { min_available_memory_gb: 12 },
+        paraformer: { python_executable: process.execPath, python_args: [adapter], process_timeout_s: 10 }
+      } });
+      expect(result).toMatchObject({ cuda: '0', cpu, handoff: { enabled: true, idle_s: 45, min_available_memory_gb: 12 } });
+      expect(requests).toEqual(['shutdown']);
+    } finally {
+      keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i]; });
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  test('CPU-admitted jobs bypass an advertised GPU worker and hide CUDA from the one-shot child', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-cpu-child-'));
+    const adapter = path.join(directory, 'adapter.cjs');
+    fs.writeFileSync(adapter, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{
+      const payload=JSON.parse(input);console.log(JSON.stringify({backend:payload.backend,segments:[],
+      cuda:process.env.CUDA_VISIBLE_DEVICES,threads:process.env.OMP_NUM_THREADS,cpu:process.env.ASR_CPU_FALLBACK}));});`);
+    const keys = ['ASR_CPU_FALLBACK', 'ASR_PERSISTENT_WORKER_PORT', 'ASR_PERSISTENT_WORKER_TOKEN'];
+    const original = keys.map(key => process.env[key]);
+    process.env.ASR_CPU_FALLBACK = '1'; process.env.ASR_PERSISTENT_WORKER_PORT = '1'; process.env.ASR_PERSISTENT_WORKER_TOKEN = 'fixture';
+    try {
+      const result = await asr.transcribeParaformer('fixture.wav', { asr: { paraformer: {
+        python_executable: process.execPath, python_args: [adapter], process_timeout_s: 10
+      } } });
+      expect(result).toMatchObject({ backend: 'paraformer', cuda: '', threads: '2', cpu: '1' });
+    } finally {
+      keys.forEach((key, index) => { if (original[index] === undefined) delete process.env[key]; else process.env[key] = original[index]; });
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   test.each([{ roomId: '1', discovery: false }, { roomId: '2', discovery: false }, { roomId: '2', discovery: true }])
   ('passes row verification for an allowed room or discovered collaboration (%j)', async ({ roomId, discovery }) => {
     const payloads: any[] = [];

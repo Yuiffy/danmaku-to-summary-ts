@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { parseStringPromise } from 'xml2js';
 import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
+import { writeMergedLiveAsrCache } from '../live-asr/LiveAsrStorage';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
 import {
   applyFfmpegProcessPriority,
@@ -144,6 +145,13 @@ export class FileMerger {
 
       // 合并后视频流健康检测：检测黑屏，如有问题则自动转码修复
       await this.verifyAndFixIfNeeded(outputPath);
+      try {
+        await writeMergedLiveAsrCache(segments.map(segment => segment.videoPath), outputPath,
+          source => this.getVideoDuration(source),
+          index => fillGaps ? this.calculateGapTime(segments[index], segments[index + 1]) / 1000 : 0);
+      } catch (error) {
+        this.logger.warn('实时 ASR 缓存无法映射到合并录像，下播保留原 ASR 回退', { error });
+      }
     } catch (error) {
       this.logger.error('合并视频文件失败', { error });
       throw error;

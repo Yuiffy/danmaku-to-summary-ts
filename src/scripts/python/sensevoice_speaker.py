@@ -10,7 +10,7 @@ from sensevoice_runtime import ResourcePeakMonitor, log_progress, set_timing, su
 from speaker_identity import timeline_from_chunk_labels
 
 
-def _load_audio_with_ffmpeg(audio_path):
+def _load_audio_with_ffmpeg(audio_path, align_timestamps=False):
     """Decode unsupported containers directly to 16 kHz mono float PCM."""
     import numpy as np
 
@@ -36,6 +36,8 @@ def _load_audio_with_ffmpeg(audio_path):
         "f32le",
         "pipe:1",
     ]
+    if align_timestamps:
+        command[command.index('-ac'):command.index('-ac')] = ['-af', 'aresample=async=1:first_pts=0']
     run_kwargs = {
         "capture_output": True,
         "timeout": 900,
@@ -53,7 +55,9 @@ def _load_audio_with_ffmpeg(audio_path):
     return np.frombuffer(raw_audio, dtype=np.float32), 16000
 
 
-def load_audio_16k_mono(audio_path):
+def load_audio_16k_mono(audio_path, align_timestamps=False):
+    if align_timestamps:
+        return _load_audio_with_ffmpeg(audio_path, align_timestamps=True)
     try:
         import soundfile as sf
 
@@ -156,6 +160,8 @@ def _generate_speaker_embeddings(
     """
     if not chunks:
         return []
+    if isinstance(payload, dict) and str(payload.get('device', '')).startswith('cpu'):
+        stage = stage.replace('(CUDA)', '(CPU)')
 
     import torch
 

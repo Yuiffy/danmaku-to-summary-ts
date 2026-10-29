@@ -552,7 +552,7 @@ def load_punc_model(AutoModel, payload, device, gpu_throttle=None):
             return AutoModel(
                 model=punc_model_name,
                 device="cuda:0" if device == "cuda" else device,
-                disable_update=True,
+                disable_update=True, ncpu=2 if device == "cpu" else 4,
             )
     except Exception as exc:
         if not PUNC_MODEL_WARNED:
