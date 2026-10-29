@@ -3,7 +3,7 @@ import { QuestionEvidence } from './RecordingEvidence';
 import { parseEvidenceReview, reviewedAnswer, REVIEW_PROMPT, reviewValidationIssue } from './QuestionReview';
 import { generalQuestionAnswer, isRoastQuestion, isSocialQuestion, PLAYFUL_ROAST_PROMPT } from './QuestionConversation';
 import { aggregateEvidence, BROWSE_TOOLS, isQuestionToolName, QuestionToolName } from './QuestionTools';
-import { BrowseResult, browseRefinement, parseListRecordings, parseReadRecordings } from './RecordingBrowser';
+import { BrowseEntry, BrowseResult, browseRefinement, parseListRecordings, parseReadRecordings } from './RecordingBrowser';
 
 export interface AgentToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export interface AgentMessage {
@@ -29,6 +29,7 @@ export interface QuestionAgentStep {
   readFallback?: boolean;
   validationIssue?: string;
   toolIssue?: 'invalid_arguments' | 'unavailable';
+  browse?: { total: number; returned: number; cues: number; unfinished: number; nextOffset: number | null };
 }
 export type QuestionAgentObserver = (step: QuestionAgentStep) => void;
 
@@ -101,7 +102,7 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
   const queryDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' })
     .format(new Date(request.askedAt ?? Date.now()));
   const report = (turn: number, phase: QuestionAgentStep['phase'], started: number, status: QuestionAgentStep['status'],
-    review?: Pick<QuestionAgentStep, 'decision' | 'rankedCount' | 'contextFallback' | 'readFallback' | 'validationIssue' | 'toolIssue'>) => {
+    review?: Pick<QuestionAgentStep, 'decision' | 'rankedCount' | 'contextFallback' | 'readFallback' | 'validationIssue' | 'toolIssue' | 'browse'>) => {
     try { observe?.({ turn, phase, elapsedMs: Math.max(0, Date.now() - started), status, ...review }); }
     catch { /* Diagnostics must not change query behavior. */ }
   };
@@ -114,18 +115,21 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
   let repairedReview = false;
   let lastOverview: BrowseResult | undefined;
   let refinedOverview = false;
+  const browsed = new Map<string, BrowseEntry>();
+  let replannedBrowse = false;
   let lastToolFailed = false;
   let replannedToolFailure = false;
   let lastSearchLimited = false;
   let replannedLimitedSearch = false;
   let replannedRoast = false;
-  let requireEvidenceTool = false;
+  let requireEvidenceTool: 'roast' | 'browse' | undefined;
   for (let count = 0; count <= MAX_TOOL_CALLS; count++) {
     if (signal.aborted) throw new Error('Question cancelled');
     const modelStarted = Date.now();
     let turn: Omit<AgentMessage, 'role'>;
     try {
-      const instructions: AgentMessage[] = count ? [{ role: 'system', content: requireEvidenceTool ?
+      const instructions: AgentMessage[] = count ? [{ role: 'system', content: requireEvidenceTool === 'browse' ?
+        `浏览尚未覆盖所需资料。请选择一个只读工具继续查证，不直接回答：按原问题日期和场次选择尚未精读的候选、按nextOffset翻目录，或按nextCueOffset续读。前4份候选可能只是重复副本、断线续录或歌词，不能代表所问范围；不要重复同一操作。可根据已返回原文改用具体词搜索。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : requireEvidenceTool ?
         `请选择一个只读工具补查原文，不直接回答。只挑一个最清楚的普通小事，用至多两个同主题词搜索collection=recordings、kind=subtitle，不要同时验证草稿里的三件事；从摘要/切片定位原文时withinEvidenceId必须为null，可用线索的date缩小。不要用主播名或黑料作关键词。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : `${REVIEW_PROMPT}\n剩余工具操作：${MAX_TOOL_CALLS - count}。${isRoastQuestion(request.question) ? '\n本题要善意调侃，先完成一个有原文支持的日常小事即可；不必凑齐三个，不必负面，不必出糗。原文明确自述普通小事就可作为事实核心写一句玩笑，不能因它不够黑而insufficient；有线索缺上下文时先context。' : ''}` }] : [];
       turn = await complete({ messages: [...messages, ...instructions], toolChoice: requireEvidenceTool ? 'required' : count === 0 ? 'auto' : 'none', phase: count && !requireEvidenceTool ? 'review' : 'plan' }, signal);
     } catch (error) {
@@ -137,7 +141,7 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
     let args: unknown;
     let initialCall: AgentToolCall | undefined;
     if (count === 0 || requireEvidenceTool) {
-      requireEvidenceTool = false;
+      requireEvidenceTool = undefined;
       if (!turn.tool_calls?.length) {
         const general = generalQuestionAnswer(turn.content, request.question);
         report(count + 1, 'model', modelStarted, general ? 'ok' : 'failed', general ? undefined : { decision: 'invalid', validationIssue: 'evidence_not_requested' });
@@ -216,11 +220,21 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
         refinedOverview = true;
         review = { action: 'tool', rankedEvidenceIds: review.rankedEvidenceIds, tool: { name: 'read_recordings', arguments: refinement } };
       }
+      // A single fallback batch does not exhaust other recordings or continuation pages.
+      if (review.action === 'insufficient' && !replannedBrowse && count < MAX_TOOL_CALLS - 1 &&
+          (lastOverview?.nextOffset != null || [...browsed.values()].some(entry =>
+            entry.totalCues === null || entry.sampled || entry.nextCueOffset !== null))) {
+        replannedBrowse = true;
+        requireEvidenceTool = 'browse';
+        report(count + 1, 'model', reviewStarted, 'ok', { decision: 'insufficient', validationIssue: 'incomplete_browse_needs_refinement' });
+        messages.push({ role: 'assistant', content: turn.content });
+        continue;
+      }
       // A playful framing still needs facts: highlights are leads, and ordinary events are enough.
       if (isRoastQuestion(request.question) && (unverifiedRoast || review.action === 'insufficient') &&
           !replannedRoast && count < MAX_TOOL_CALLS) {
         replannedRoast = true;
-        requireEvidenceTool = true;
+        requireEvidenceTool = 'roast';
         report(count + 1, 'model', reviewStarted, 'ok', { decision: review.action, validationIssue: 'roast_needs_verified_event' });
         // Do not keep an unverified draft: its unsupported claims can anchor the next answer.
         messages.push({ role: 'system', content:
@@ -245,6 +259,7 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
     const toolStarted = Date.now();
     let toolStatus: QuestionAgentStep['status'] = 'ok';
     let toolIssue: QuestionAgentStep['toolIssue'];
+    let browse: QuestionAgentStep['browse'];
     try {
       // Canonicalize keys/term order; malformed parameters still go through the tool validator.
       const key = name + JSON.stringify(args, (_key, value) => {
@@ -262,10 +277,17 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
             else parseReadRecordings(args);
           }
           catch { toolIssue = 'invalid_arguments'; throw new Error('Invalid recording browser arguments'); }
-          const browse = name === 'list_recordings' ? evidence.list?.bind(evidence) : evidence.read?.bind(evidence);
-          if (!browse) throw new Error('Recording browser unavailable');
-          result = await browse(args);
+          const browseTool = name === 'list_recordings' ? evidence.list?.bind(evidence) : evidence.read?.bind(evidence);
+          if (!browseTool) throw new Error('Recording browser unavailable');
+          result = await browseTool(args);
           if (name === 'list_recordings') lastOverview = result as BrowseResult;
+          const page = result as BrowseResult;
+          for (const entry of page.recordings) browsed.set(entry.recordingId, entry);
+          // Counts/cursors only: never log filenames, excerpts or arbitrary model arguments.
+          browse = { total: page.total, returned: page.recordings.length,
+            cues: page.recordings.reduce((sum, entry) => sum + entry.preview.length, 0),
+            unfinished: page.recordings.filter(entry => entry.totalCues === null || entry.sampled || entry.nextCueOffset !== null).length,
+            nextOffset: page.nextOffset };
         } else if (name === 'aggregate_evidence') result = aggregateEvidence(args, id => evidence.citation(id));
         else result = name === 'search_recordings' ? await evidence.search(args) : name === 'read_recent' ?
           await evidence.recent?.(args) || { hits: [], limited: true, status: 'unavailable' } : evidence.context(args);
@@ -284,7 +306,7 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
         expectedArguments: QUESTION_TOOLS.find(tool => tool.function.name === name)?.function.parameters,
         notice: '修正参数或改用其他只读资料工具。date只接受YYYY、YYYY-MM、YYYY-MM-DD或null；日期区间先按月份列目录，再筛选所需日期。' };
     } finally {
-      report(count + 1, name, toolStarted, toolStatus, toolIssue ? { toolIssue } : undefined);
+      report(count + 1, name, toolStarted, toolStatus, { ...(toolIssue ? { toolIssue } : {}), ...(browse ? { browse } : {}) });
     }
     const content = JSON.stringify({ untrustedRecordingEvidence: result });
     messages.push(initialCall ? { role: 'tool', tool_call_id: initialCall.id, content } : { role: 'user', content });
