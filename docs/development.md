@@ -86,3 +86,39 @@ lint 的历史 warning 与失败的 error 分开报告；临时目录不参与 l
 [architecture.md 的 PM2 deployment](architecture.md#pm2-deployment)。
 不要直接执行历史诊断脚本验证一个重构：其中部分会请求付费 API 或发送评论。
 真实媒体验收需要在具体任务中约定素材和行为，使用本地任务目录保存证据。
+
+## 精剪技能对照实验
+
+`src/tools/clipping/editingSkillExperiment.ts` 是独立实验入口，不接入生产队列。
+它比较冻结的当前 story-planning 提示与附加技能提示，使用同一 stage 配置，交替调用顺序，
+每个样本允许 1–3 次重复。结果仅覆盖故事时间轴规划；不是全流程精剪或投稿审核结论。
+
+```powershell
+node -r ts-node/register src/tools/clipping/editingSkillExperiment.ts --manifest temp/<task>/manifest.json --output temp/<task>/dry-run
+# 确认本地样本、模型及调用范围后执行；输出目录必须尚不存在。
+node -r ts-node/register src/tools/clipping/editingSkillExperiment.ts --manifest temp/<task>/manifest.json --output temp/<task>/paired --execute
+```
+
+Manifest 的 `version: 1`、`repetitions`、`stage`、`samples` 必填。`stage` 遵循现有 StageConfig，
+从待比较的运行配置冻结，不另猜模型。每个样本包含 `id/roomId/sessionId/split`，
+以及相对 manifest 的 `promptPath/evidencePath` 和各文件的 SHA-256。
+证据含 `sourceDuration/sourceCues/protectedSpans/protectedCues`；cue 有 `id/start/end/text`。
+`split` 为 screening 或 holdout，同一直播间同场 session 不得跨组。
+
+每个样本的 `reference` 单独提供 `requiredBeats` 和 `redundantCueIds`，不进入模型请求。
+必要节拍采用 `{label,cueIds,alternativeCueIds?}`：主组或任一替代组全部保留即命中；
+例如同一方案有两种完整说法时不能要求两种都留。先冻结标注再生成；看完输出后修订标注，
+应另存为事后诊断，不能覆盖原结果或冒充留出集验证。时长、删减率、cue 命中均不能代替媒体审核。
+
+入口在首次调用前核对所有摘要与引用，保存配置、请求、响应、版本、指标和独立用量账本。
+dry-run 不请求模型。模型请求错误终止，结构无效的草案记录为失败；不自动改用其他模型。
+`costCny: null` 表示没有可核实计价，不表示免费。生产活动 workflow、dist 和上传注册表不变。
+
+每条有效草案附 `boundaryReview`：纯函数 `buildEditingBoundaryReview` 在新跳切两侧生成
+原素材时间的复核窗口，默认各取前后 0.75 秒，保留附近 cue；没有字幕的空档也生成窗口。
+接入后续审核时由 IO 层按原素材取画面和声音，分别检查尾字、动作完成、反应停留与声音衔接，
+必要时扩大观察窗。此模块不自动移动切点、不实施 J/L cut，也不设置审核通过。
+未来生产接入应位于 story 时间轴校验之后、渲染之前，并继续执行现有独立 QA 和原声审计。
+
+聚焦回归覆盖实验输入防篡改、调用顺序、完整句组与替代表达、切点双侧窗口：
+`npm test -- --runInBand --runTestsByPath src/workflows/clipping/editingSkillExperiment.test.ts src/workflows/clipping/editingBoundaryReview.test.ts src/tools/clipping/editingSkillExperiment.test.ts`。
