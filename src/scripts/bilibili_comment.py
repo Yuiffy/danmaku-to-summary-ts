@@ -16,6 +16,7 @@ from bilibili_api import comment, Credential, dynamic
 from bilibili_api.comment import CommentResourceType
 from bilibili_api.utils.picture import Picture
 from bilibili_api import request_settings
+from bilibili_api.exceptions import ResponseCodeException
 
 Dynamic = dynamic.Dynamic
 
@@ -247,6 +248,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
     if image_path:
         log(f"[INFO] 图片路径: {image_path}")
 
+    publication_started = False
     try:
         if reply_to_id is not None and (not isinstance(reply_to_id, str) or not re.fullmatch(r'[1-9][0-9]*', reply_to_id)):
             raise ValueError('Invalid parent comment ID')
@@ -272,7 +274,8 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
                     'success': False,
                     'error': f'Cookie 自动刷新失败: {e}',
                     'message': 'Cookie 自动刷新失败',
-                    'credential_refresh_failed': True
+                    'credential_refresh_failed': True,
+                    'publication_outcome': 'not_sent'
                 }
 
         # 验证凭证是否有效
@@ -287,6 +290,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
                 'error': '凭证无效',
                 'message': 'SESSDATA或bili_jct无效，请检查Cookie',
                 'credential_invalid': True,
+                'publication_outcome': 'not_sent',
                 'credential_refreshed': credential_refreshed
             }
 
@@ -311,6 +315,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         # 使用 comment.send_comment 函数发送评论
         log(f"[INFO] 调用B站API发送评论，oid={comment_id}, type={comment_type.value}...")
         log(f"[INFO] 评论内容长度: {len(content)}")
+        publication_started = True
         result = await comment.send_comment(
             text=content,
             oid=int(comment_id),
@@ -321,6 +326,8 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         )
 
         reply_id = str(result.get('rpid_str') or result.get('rpid', ''))
+        if not re.fullmatch(r'[1-9][0-9]*', reply_id):
+            raise ValueError('Successful response has no valid comment receipt')
         log(f"[OK] 评论发布成功，回复ID: {reply_id}")
         log(f"[INFO] 完整返回结果: {result}")
 
@@ -339,7 +346,9 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         return {
             'success': False,
             'error': str(e),
-            'message': '评论发布失败'
+            'message': '评论发布失败',
+            'publication_outcome': 'not_sent' if not publication_started else
+                'rejected' if isinstance(e, ResponseCodeException) else 'unknown'
         }
 
 

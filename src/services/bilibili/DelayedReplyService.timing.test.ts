@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { CommentPublicationError } from './CommentPublicationError';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { DelayedReplyService } from './DelayedReplyService';
 import { DelayedReplyStore } from './DelayedReplyStore';
@@ -271,9 +272,92 @@ describe('delayed reply timing and late events', () => {
     expect(publishComment).toHaveBeenCalledTimes(1);
   });
 
+  it('recovers an accepted main reply after a lost response without a second POST', async () => {
+    fs.writeFileSync(task.comicImagePath!, 'image');
+    publishComment.mockRejectedValueOnce(new CommentPublicationError('read timeout', 'unknown'));
+    const reconcile = jest.fn().mockResolvedValue({ replyId: 'recovered', replyTime: now.getTime() });
+    service.bilibiliAPI.reconcileCommentPublication = reconcile;
+    await service.executeDelayedReply(task);
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({ content: 'Good night' }), startedAt: now.getTime() }));
+    expect(task).toMatchObject({ status: 'completed', replyId: 'recovered', mainReplyState: 'published' });
+  });
+
+  it('automatically rechecks a missing receipt after restart, retaining the exact attempted payload', async () => {
+    fs.writeFileSync(task.comicImagePath!, 'image');
+    publishComment.mockRejectedValueOnce(new Error('response lost'));
+    const reconcile = jest.fn().mockResolvedValueOnce(undefined).mockResolvedValue({ replyId: 'recovered', replyTime: now.getTime() });
+    service.bilibiliAPI.reconcileCommentPublication = reconcile;
+    await service.executeDelayedReply(task);
+    expect(task).toMatchObject({ status: 'pending', mainReplyState: 'unknown', retryCount: 0 });
+    expect(scheduleTask).toHaveBeenCalledTimes(1);
+    fs.writeFileSync(task.goodnightTextPath, 'Changed after sending');
+    const restoredStore = new DelayedReplyStore(path.join(directory, 'tasks.json'));
+    await restoredStore.initialize();
+    const restored: any = new DelayedReplyService({ publishComment, getDynamics, reconcileCommentPublication: reconcile } as any, restoredStore);
+    jest.spyOn(restored, 'scheduleTask').mockImplementation(() => undefined);
+    await restored.loadTasks();
+    const recovered = restored.getTasks()[0];
+    jest.setSystemTime(recovered.scheduledTime);
+    await restored.executeDelayedReply(recovered);
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(reconcile.mock.calls[1][0].request.content).toBe('Good night');
+    expect(recovered).toMatchObject({ status: 'completed', replyId: 'recovered' });
+  });
+
+  it('resumes read-only recovery for a crashed publishing intent and never resends on lookup failure', async () => {
+    const intent = { request: { dynamicId: 'dynamic', content: 'Original' }, startedAt: now.getTime(), attachedSummary: false };
+    await store.updateTask(task.taskId, { status: 'processing', mainReplyState: 'publishing', mainReplyIntent: intent });
+    const reconcile = jest.fn().mockRejectedValue(new Error('read unavailable'));
+    service.bilibiliAPI.reconcileCommentPublication = reconcile;
+    await service.loadTasks();
+    const restored = service.getTasks()[0];
+    expect(restored).toMatchObject({ status: 'pending', mainReplyState: 'unknown' });
+    await service.executeDelayedReply(restored);
+    expect(restored.status).toBe('pending');
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(publishComment).not.toHaveBeenCalled();
+  });
+
+  it('retains late comic and summary events while an accepted text reply awaits its receipt', async () => {
+    const comicImagePath = task.comicImagePath!, summaryPath = path.join(directory, 'late_LIVE_CONTENT.json');
+    task.comicImagePath = '';
+    publishComment.mockRejectedValueOnce(new CommentPublicationError('response lost', 'unknown'));
+    service.bilibiliAPI.reconcileCommentPublication = jest.fn().mockResolvedValueOnce(undefined)
+      .mockResolvedValue({ replyId: 'recovered', replyTime: now.getTime() });
+    await service.executeDelayedReply(task);
+    expect(task.mainReplyState).toBe('unknown');
+    fs.writeFileSync(comicImagePath, 'image');
+    const separateSummary = jest.spyOn(service, 'tryPublishLiveContentSummarySeparately').mockResolvedValue('waiting');
+    expect(await service.addTask(task.roomId, task.goodnightTextPath, comicImagePath,
+      undefined, undefined, undefined, summaryPath, 'separate')).toBe(task.taskId);
+    expect(task).toMatchObject({ comicImagePath, liveContentSummaryPath: summaryPath, mainReplyState: 'unknown' });
+    expect(task.mainReplyIntent?.request.images).toBeUndefined();
+    jest.setSystemTime(task.scheduledTime);
+    await service.executeDelayedReply(task);
+    expect(task).toMatchObject({ status: 'waiting_comic', replyId: 'recovered', mainReplyHasImage: false });
+    expect(separateSummary).toHaveBeenCalledWith(task);
+    expect(publishComment).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('keeps unresolved intents when a newer recording arrives after cooldown (deferred=%s)', async deferredForActiveLive => {
+    const intent = { request: { dynamicId: 'dynamic', content: 'Original' }, startedAt: now.getTime(), attachedSummary: false };
+    await store.updateTask(task.taskId, { status: 'pending', mainReplyState: 'unknown', mainReplyIntent: intent,
+      createTime: new Date(now.getTime() - 40 * 60_000), deferredForActiveLive });
+    const newText = path.join(directory, 'newer.md'); fs.writeFileSync(newText, 'new recording');
+    expect(await service.addTask(task.roomId, newText, '')).toBe(task.taskId);
+    expect(service.getTasks()).toHaveLength(1);
+    expect((await store.getTask(task.taskId))?.mainReplyIntent).toEqual(intent);
+    expect(task.mainReplyState).toBe('unknown');
+    service.bilibiliAPI.reconcileCommentPublication = jest.fn().mockResolvedValue(undefined);
+    await service.executeDelayedReply(task);
+    expect(service.bilibiliAPI.reconcileCommentPublication).toHaveBeenCalledWith(intent);
+    expect(publishComment).not.toHaveBeenCalled();
+  });
+
   it('still retries a rejected main reply, without resetting image wait intent', async () => {
     fs.writeFileSync(task.comicImagePath!, 'image');
-    publishComment.mockRejectedValueOnce(new Error('temporary rejection'));
+    publishComment.mockRejectedValueOnce(new CommentPublicationError('temporary rejection', 'rejected'));
     await service.executeDelayedReply(task);
     expect(task.status).toBe('pending');
     expect(task.mainReplyState).toBe('ready');

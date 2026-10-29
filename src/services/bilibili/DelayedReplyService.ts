@@ -14,6 +14,8 @@ import {
   BilibiliDynamic,
   RoomLiveStatus,
   LiveContentSummaryDeliveryMode,
+  PublishCommentRequest,
+  PublishCommentResponse,
 } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
@@ -24,6 +26,8 @@ import { DelayedReplyScheduler } from './delayed-reply/DelayedReplyScheduler';
 import { DelayedReplyPolicy } from './delayed-reply/DelayedReplyPolicy';
 import { DelayedReplyDynamicResolver } from './delayed-reply/DelayedReplyDynamicResolver';
 import { ReplyContentReader } from './delayed-reply/ReplyContentReader';
+import { MainReplyCompletion } from './delayed-reply/MainReplyCompletion';
+import { MainReplyPublication } from './delayed-reply/MainReplyPublication';
 import { SupplementaryReplyWorkflow } from './delayed-reply/SupplementaryReplyWorkflow';
 
 /**
@@ -46,6 +50,8 @@ export class DelayedReplyService implements IDelayedReplyService {
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private readonly scheduler: DelayedReplyScheduler;
   private readonly supplementary: SupplementaryReplyWorkflow;
+  private readonly mainPublication: MainReplyPublication;
+  private readonly mainCompletion: MainReplyCompletion;
   private readonly dynamicResolver: DelayedReplyDynamicResolver;
   private isRunningFlag = false;
   private notifier?: WeChatWorkNotifier;
@@ -60,6 +66,22 @@ export class DelayedReplyService implements IDelayedReplyService {
     notifier?: WeChatWorkNotifier
   ) {
     this.notifier = notifier;
+    this.mainPublication = new MainReplyPublication(bilibiliAPI, store, async task => {
+      task.status = 'pending';
+      task.mainReplyState = 'unknown';
+      task.error = 'Main publication outcome is unknown; checking the existing comment automatically';
+      task.scheduledTime = new Date(Date.now() + Math.max(1, BilibiliConfigHelper.getDelayedReplyConfig().retryDelayMinutes) * 60_000);
+      await store.updateTask(task.taskId, { status: task.status, mainReplyState: task.mainReplyState,
+        error: task.error, scheduledTime: task.scheduledTime });
+      this.scheduleTask(task);
+    });
+    this.mainCompletion = new MainReplyCompletion({ store, notifier,
+      artifactResolver: this.artifactResolver, diagnostics: this.diagnostics,
+      liveContentSummaryComposer: this.liveContentSummaryComposer,
+      scheduleTask: task => this.scheduleTask(task),
+      tryPublishLiveContentSummarySeparately: task => this.tryPublishLiveContentSummarySeparately(task),
+      executeSummaryDynamicReply: (task, text, image) => this.executeSummaryDynamicReply(task, text, image)
+    });
     this.dynamicResolver = new DelayedReplyDynamicResolver(bilibiliAPI, this.policy);
     this.supplementary = new SupplementaryReplyWorkflow({
       bilibiliAPI, store, notifier,
@@ -207,8 +229,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         (task.mainReplyState === 'unknown' ||
           (task.mainReplyState === 'publishing' && !this.executingTaskIds.has(task.taskId)))
       );
-      if (uncertainTask) return uncertainTask.taskId;
-      const exactExistingTask = Array.from(this.tasks.values()).find(
+      // Unknown publication still owns late comic/summary events for this recording.
+      const exactExistingTask = uncertainTask || Array.from(this.tasks.values()).find(
         task => this.policy.isSameDelayedReplyTextTask(task, roomId, goodnightTextPath) &&
                 (
                   task.status === 'pending' ||
@@ -335,6 +357,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       );
 
       if (existingTask) {
+        if (existingTask.mainReplyState === 'unknown' || existingTask.mainReplyState === 'publishing') {
+          this.logger.info('保留发布结果待核验的任务，继续自动查找原评论回执', { roomId, taskId: existingTask.taskId });
+          return existingTask.taskId;
+        }
         if (existingTask.replyId) {
           this.logger.info('跳过添加任务：房间已有任务发布过主回复，避免重复评论', {
             roomId,
@@ -725,7 +751,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.tasks.set(task.taskId, task);
         if (task.status === 'processing' || task.mainReplyState === 'publishing') {
           if (!task.replyId && task.mainReplyState !== 'ready') {
-            task.status = 'failed';
+            task.status = this.mainPublication.canReconcile(task) ? 'pending' : 'failed';
             task.mainReplyState = 'unknown';
             task.error = 'Main publication outcome is unknown; automatic resend stopped';
           } else {
@@ -1097,6 +1123,11 @@ export class DelayedReplyService implements IDelayedReplyService {
     return this.supplementary.executeSupplementalComicReply(task);
   }
 
+  private async completeMainReply(task: DelayedReplyTask, request: PublishCommentRequest,
+    result: PublishCommentResponse, attachedSummary: boolean): Promise<void> {
+    return this.mainCompletion.complete(task, request, result, attachedSummary);
+  }
+
   private async executeDelayedReplyLocked(task: DelayedReplyTask): Promise<void> {
     let publishFailureContext: {
       dynamicId: string;
@@ -1124,6 +1155,12 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       if (this.policy.isDelayedReplyTaskExpired(task)) {
         await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
+        return;
+      }
+
+      if (task.mainReplyState === 'unknown' && !task.replyId) {
+        const receipt = await this.mainPublication.reconcile(task);
+        if (receipt) await this.completeMainReply(task, task.mainReplyIntent!.request, receipt, task.mainReplyIntent!.attachedSummary);
         return;
       }
 
@@ -1277,7 +1314,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       let imagePath: string[] | undefined;
-      let shouldWaitForSupplementalComic = false;
       const withinFirstReplyWave = !!targetDynamic && this.policy.isWithinFirstReplyWave(finalDynamic);
       if (task.comicImagePath) {
         const hasComicImage = await this.checkFileExists(task.comicImagePath);
@@ -1328,7 +1364,6 @@ export class DelayedReplyService implements IDelayedReplyService {
           if (comicGenerationFailed) {
             await this.notifyComicGenerationFailure(task);
           }
-          shouldWaitForSupplementalComic = !comicGenerationFailed;
         }
       }
 
@@ -1390,16 +1425,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       let result;
       this.publishingDynamicReplyKeys.add(dynamicReplyDedupeKey);
       try {
-        task.mainReplyState = 'publishing';
-        await this.store.updateTask(task.taskId, { mainReplyState: 'publishing' });
-        result = await this.bilibiliAPI.publishComment({
-          dynamicId: finalDynamic.id,
-          content: replyText,
-          images: imagePath
-        });
+        result = await this.mainPublication.publish(task, {
+          dynamicId: String(finalDynamic.id), content: replyText, images: imagePath
+        }, composition.attached);
       } catch (publishError) {
-        task.mainReplyState = 'ready';
-        await this.store.updateTask(task.taskId, { mainReplyState: 'ready' });
         publishFailureContext = {
           dynamicId: String(finalDynamic.id),
           replyText,
@@ -1411,125 +1440,12 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.publishingDynamicReplyKeys.delete(dynamicReplyDedupeKey);
       }
 
-      this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
-        dynamicId: String(finalDynamic.id),
-        replyId: String(result.replyId)
-      });
-      // 输出回复链接
-      const replyUrl = `https://www.bilibili.com/opus/${String(finalDynamic.id)}#reply${String(result.replyId)}`;
-      this.logger.info(`回复链接: ${replyUrl}`);
-
-      task.repliedDynamicId = String(finalDynamic.id);
-      task.replyId = String(result.replyId);
-      task.mainReplyState = 'published';
-      task.mainReplyHasImage = !!imagePath?.length;
-      // A ready event may attach a comic while the main request is in flight.
-      shouldWaitForSupplementalComic = !task.mainReplyHasImage && !!task.comicImagePath &&
-        !this.artifactResolver.isComicGenerationTerminalFailure(task.comicImagePath);
-      task.completedAt = new Date();
-      task.error = undefined;
-      if (composition.attached) {
-        this.liveContentSummaryComposer.markAttached(task, 'main', task.replyId);
-      }
-
-      if (shouldWaitForSupplementalComic) {
-        task.comicWaitCount = 0;
-        task.status = 'waiting_comic';
-        task.scheduledTime = new Date(Date.now() + DelayedReplyService.COMIC_WAIT_INTERVAL_MS);
-        task.error = '已发送纯文字晚安回复，等待漫画图片生成后补图';
-
-        await this.store.updateTask(task.taskId, {
-          status: task.status,
-          repliedDynamicId: task.repliedDynamicId,
-          replyId: task.replyId,
-          mainReplyState: task.mainReplyState,
-          mainReplyHasImage: task.mainReplyHasImage,
-          completedAt: task.completedAt,
-          scheduledTime: task.scheduledTime,
-          comicWaitCount: task.comicWaitCount,
-          error: task.error,
-          ...this.liveContentSummaryComposer.getTaskUpdates(task)
-        });
-
-        this.logger.info('已发送纯文字晚安回复，继续等待漫画图片生成后补图', {
-          taskId: task.taskId,
-          dynamicId: task.repliedDynamicId,
-          replyId: task.replyId,
-          comicImagePath: task.comicImagePath,
-          nextCheckTime: task.scheduledTime.toISOString()
-        });
-
-        this.scheduleTask(task);
-      } else {
-        const hasPendingLiveContent = !!task.liveContentSummaryPath &&
-          !this.liveContentSummaryComposer.isDelivered(task) &&
-          task.liveContentSummaryState !== 'failed';
-        task.status = BilibiliConfigHelper.getSummaryDynamicSettings()
-          ? 'waiting_summary'
-          : hasPendingLiveContent
-            ? 'waiting_live_content'
-            : 'completed';
-        await this.store.updateTask(task.taskId, {
-          status: task.status,
-          repliedDynamicId: task.repliedDynamicId,
-          replyId: task.replyId,
-          mainReplyState: task.mainReplyState,
-          mainReplyHasImage: task.mainReplyHasImage,
-          completedAt: task.completedAt,
-          error: undefined,
-          ...this.liveContentSummaryComposer.getTaskUpdates(task)
-        });
-
-        this.logger.info(`延迟回复完成: ${task.taskId}`, {
-          dynamicId: String(finalDynamic.id)
-        });
-      }
-
-      if (
-        !composition.attached &&
-        (task.liveContentSummaryDeliveryMode === 'separate' || task.liveContentSummaryForceSeparate)
-      ) {
-        await this.tryPublishLiveContentSummarySeparately(task);
-      }
-
-      // B站评论已经成功发布并持久化，通知失败不能触发重试，否则会重复评论。
-      if (this.notifier) {
-        try {
-          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-          const anchorName = anchorConfig?.name;
-          const imageGenerationInfo = this.diagnostics.getComicGenerationInfo(task.comicImagePath);
-          const textGenerationInfo = this.diagnostics.getTextGenerationInfo(task.goodnightTextPath, task.comicImagePath);
-          await this.notifier.notifyReplySuccess(
-            String(finalDynamic.id),
-            String(result.replyId),
-            anchorName,
-            replyText,
-            result.imageUrl,
-            imagePath ? imagePath[0] : undefined,
-            imageGenerationInfo,
-            textGenerationInfo
-          );
-        } catch (notifyError) {
-          this.logger.warn('动态回复已发布，但成功通知发送异常；不会重试评论避免重复回复', {
-            taskId: task.taskId,
-            dynamicId: String(finalDynamic.id),
-            replyId: String(result.replyId),
-            error: notifyError instanceof Error ? notifyError.message : String(notifyError)
-          });
-        }
-      }
-
-      if (shouldWaitForSupplementalComic) {
-        return;
-      }
-
-      await this.executeSummaryDynamicReply(
-        task,
-        replyText,
-        imagePath ? imagePath[0] : undefined
-      );
+      if (!result) return;
+      await this.completeMainReply(task, { dynamicId: String(finalDynamic.id), content: replyText, images: imagePath }, result, composition.attached);
     } catch (error) {
       this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
+
+      if (!task.replyId && task.mainReplyState === 'unknown') throw error;
 
       if (task.replyId) {
         // A saved receipt changes the retry boundary to follow-up work only.

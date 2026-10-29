@@ -1,7 +1,7 @@
 /**
  * B站API服务接口
  */
-import { BilibiliDynamic, PublishCommentRequest, PublishCommentResponse, RoomLiveStatus } from './types';
+import { BilibiliDynamic, PublishCommentRequest, PublishCommentResponse, RoomLiveStatus, MainReplyIntent } from './types';
 
 export interface IBilibiliAPIService {
   /**
@@ -30,6 +30,9 @@ export interface IBilibiliAPIService {
    * @returns 评论响应
    */
   publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse>;
+
+  /** Read-only receipt lookup; absence never authorizes a duplicate POST. */
+  reconcileCommentPublication?(intent: MainReplyIntent): Promise<PublishCommentResponse | undefined>;
 
   /**
    * 上传图片

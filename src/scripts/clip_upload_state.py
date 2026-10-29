@@ -1,12 +1,28 @@
 """Short, locked upload-worker snapshots and status-only registry commits."""
 
 import copy
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class UploadStateIO:
+    REGISTRY_PATH: Path
+    QUEUE_PATH: Path
+    acquire_queue_mutation_lock: Callable[[], Any]
+    release_queue_mutation_lock: Callable[[Any], None]
+    load_json: Callable[[Path, dict], dict]
+    save_json: Callable[[Path, dict], None]
+    default_registry: Callable[[], dict]
+    default_queue: Callable[[], dict]
+    normalize_registry_media_paths: Callable[[dict], bool]
 
 
 STATUS_FIELDS = ("status", "updatedAt", "failureReason", "uploadState", "uploadedAt")
 
 
-def load_worker_snapshot(api):
+def load_worker_snapshot(api: UploadStateIO):
     """Read the registry and queue from the same enqueue transaction boundary."""
     handle = api.acquire_queue_mutation_lock()
     try:
@@ -19,7 +35,7 @@ def load_worker_snapshot(api):
         api.release_queue_mutation_lock(handle)
 
 
-def commit_worker_statuses(api, snapshot, ids):
+def commit_worker_statuses(api: UploadStateIO, snapshot, ids):
     """Preserve current authorization, media and unrelated IDs while saving progress."""
     handle = api.acquire_queue_mutation_lock()
     try:

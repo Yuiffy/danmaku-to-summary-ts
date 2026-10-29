@@ -50,4 +50,47 @@ describe('BilibiliAPIService comment threading', () => {
       .rejects.toMatchObject({ code: 'VALIDATION_ERROR', statusCode: 400 });
     expect(spawnPython).not.toHaveBeenCalled();
   });
+  function outcome(output: unknown, code = 0, spawnError = false) {
+    (spawnPython as jest.Mock).mockImplementation(() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      process.nextTick(() => {
+        if (spawnError) { child.emit('error', new Error('spawn unavailable')); return; }
+        child.stdout.write(typeof output === 'string' ? output : JSON.stringify(output));
+        child.emit('close', code);
+      });
+      return child;
+    });
+  }
+
+  it.each([0, 1])('propagates explicit rejection even with exit code %s', async code => {
+    outcome({ success: false, error: 'provider rejected', publication_outcome: 'rejected' }, code);
+    await expect(api.publishComment({ dynamicId: '123', content: 'text' })).rejects.toMatchObject({ publicationOutcome: 'rejected' });
+  });
+
+  it.each(['invalid JSON', { success: true }, { success: false, error: 'lost response' }])('keeps ambiguous child output unknown: %p', async output => {
+    outcome(output);
+    await expect(api.publishComment({ dynamicId: '123', content: 'text' })).rejects.toMatchObject({ publicationOutcome: 'unknown' });
+  });
+
+  it('classifies a failed process launch as not sent', async () => {
+    outcome('', 1, true);
+    await expect(api.publishComment({ dynamicId: '123', content: 'text' })).rejects.toMatchObject({ publicationOutcome: 'not_sent' });
+  });
+
+  it.each([0, 1])('notifies once for a classified credential failure with exit code %s', async code => {
+    outcome({ success: false, error: 'Cookie invalid', credential_invalid: true, publication_outcome: 'not_sent' }, code);
+    const notify = jest.spyOn(api as any, 'notifyCredentialIssue').mockResolvedValue(undefined);
+    await expect(api.publishComment({ dynamicId: '123', content: 'text' }))
+      .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR', publicationOutcome: 'not_sent' });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('Cookie invalid'), expect.objectContaining({ dynamicId: '123' }));
+  });
+
+  it('retains a valid send receipt when refreshed credentials cannot be saved', async () => {
+    outcome({ success: true, reply_id: '12345678901234567890', refreshed_credential: { sessdata: 'updated' } });
+    jest.spyOn(api as any, 'persistRefreshedCredential').mockRejectedValue(new Error('disk unavailable'));
+    await expect(api.publishComment({ dynamicId: '123', content: 'text' })).resolves.toMatchObject({ replyId: '12345678901234567890' });
+  });
+
 });

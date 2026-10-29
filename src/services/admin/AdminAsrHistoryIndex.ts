@@ -37,6 +37,17 @@ export class AdminAsrHistoryIndex {
       sort_at=excluded.sort_at,streamer=excluded.streamer,metadata=excluded.metadata,payload=excluded.payload`)
       .run(key, row.generatedAt || '', row.streamerName, row.metadata, payload);
   }
+  upsertMany(rows: Array<{ source: string; row: AsrHistoryItem }>): void {
+    if (!rows.length) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const item of rows) this.upsert(item.source, item.row);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
   close(): void { this.db.close(); }
 }
 

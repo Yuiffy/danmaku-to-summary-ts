@@ -29,6 +29,7 @@ Mikufans / DDTV events -> WebhookService (one running process, one task owner)
      -> DelayedReplyPolicy / ReplyContentReader / DelayedReplyArtifactResolver
      -> LiveContentSummaryComposer / DelayedReplyDiagnostics
      -> SupplementaryReplyWorkflow (comic, separate live summary, summary dynamic)
+     -> MainReplyPublication / MainReplyCompletion (durable main intent and receipt recovery)
      -> DelayedReplyScheduler / task store
      -> Bilibili API / WeChat Work notifications
 ```
@@ -252,6 +253,52 @@ clip expiry and durable replay recipes, while `clip_media_restore.py` invokes th
 existing media renderers without mutating publication state. The standalone
 Windows maintenance task is described in [clip media retention](clip-media-retention.md).
 
+### Main comment publication recovery
+
+`delayed-reply/MainReplyPublication` persists `mainReplyIntent` before invoking the
+publisher: the original request, epoch-millisecond `startedAt`, and whether the
+main comment attached the live summary. `MainReplyCompletion` records the normal
+or recovered receipt and then resumes existing follow-up work. The scheduler and
+task store remain owned by `DelayedReplyService`.
+
+The Python sender adds `publication_outcome` on errors: `not_sent` before the send
+call, `rejected` for an explicit API rejection, otherwise `unknown`. The Node
+adapter preserves that classification; malformed/missing receipts after launch
+are unknown. A refreshed-credential persistence error cannot discard a valid
+publication receipt. Only explicit not-sent/rejected failures use normal POST
+retry. Unknown outcomes retain the intent and schedule read-only reconciliation
+at the existing retry interval (at least one minute), without consuming POST
+retries or generating new text. Restarted publishing tasks follow the same path.
+
+`CommentPublicationRecovery` invokes the fixed `bilibili_comment_receipt.py` CLI.
+It reads up to three time-ordered comment pages from the original resource and
+accepts exactly one top-level match for current account UID, original normalized
+text, image presence and attempt time (-5 seconds through +120 seconds). Each
+lookup is bounded to 30 seconds. Absence, moderation invisibility, ambiguous
+matches, account changes, slow publication outside that window or unavailable
+reads never authorize another POST; reconciliation continues until ordinary task
+expiry. Legacy tasks without an intent or lookup adapter remain unknown/failed.
+This recovery applies to delayed main replies, not the separate comment-chat or
+supplementary publication workflows. It adds no content-review stage.
+
+### Extracted orchestration components
+
+- `scripts/clipping/creative_requests.js` owns request construction, response logs
+  and existing draft reuse; `creative_evidence.js` owns resource-scheduled frame
+  capture/contact sheets; `creative_story_stage.js` owns story selection and its
+  existing repair flow. `creative_runner.js` composes them and retains its export.
+- `scripts/background_clip_support.js` owns queue admission and reusable clip
+  operations. `background_clip_runner.js` owns execution/progress and remains the
+  child CLI target. Summary and campaign adapters import the support module,
+  avoiding a dependency cycle through the worker entrypoint.
+- `scripts/clip_upload_policy.py` owns rolling-window event normalization,
+  deduplication and quota calculation without filesystem/network access. The
+  registry retains compatibility functions and supplies its current limit/window
+  settings. `clip_upload_state.UploadStateIO` narrows snapshot/status-commit
+  dependencies to locks and persistence; it has no publication capability.
+- `services/admin/AdminAsrHistoryObserver` owns incremental history observation;
+  status/page adapters do not own its loop. See the history contract in web-admin.md.
+
 ## Language decision
 
 Keep TypeScript and Python. They serve different runtime/ecosystem needs.
@@ -291,8 +338,8 @@ for isolated runs. The bridge verifies the manifest and every file digest before
 loading modules. It does not import TypeScript or ts-node. Keep prior release
 directories for rollback; restore the previous pointer to roll back activation.
 
-When a source-executed CLI adds a `loadWorkflow` entry, register that entry in the
-release builder and its isolated test fixture. Validate and activate the complete
+When a source-executed CLI adds a `loadWorkflow` entry, register that entry in
+`src/tools/workflows/workflowEntries.ts` and its isolated test fixture. Validate and activate the complete
 release before running the updated CLI in production; an older active manifest
 cannot load the newly added entry. Use an explicit release directory for isolated
 validation rather than assuming the latest candidate is active.
@@ -391,8 +438,13 @@ owner; publication changes also need persistence/idempotency workflow coverage.
 - Mikufans recording lifecycle code delegates process/queue work to its worker;
   delayed-reply timers stay in `DelayedReplyScheduler`.
 
-The graph is a static TS/JS graph, not proof about dynamic requires or Python
-runtime imports. `--json` produces a machine-readable inventory and violation list.
+The graph includes literal `createRequire` aliases anchored at the caller or the
+repository package.json, plus `loadWorkflow` bridges resolved through the same
+entry catalogue used by the release builder. `--json` reports `bridgeEdges` and
+`unresolvedImports` (file, line, expression) alongside violations. Computed targets
+and unrecognized anchors remain an explicit inventory, not a new execution gate.
+This is still a static TS/JS graph, not proof about arbitrary loader aliases,
+lexical shadowing or Python runtime imports.
 
 ## Change guide
 
@@ -411,7 +463,8 @@ for rollout, time/citation contracts, token budgets and read-only accounting com
 | missing output path or delayed registration | `MikufansDelayedReplyCoordinator`, `DelayedReplyArtifactResolver` |
 | expiry, duplicate identity, retry classification | `DelayedReplyPolicy` |
 | front matter, body cleaning, publishability | `ReplyContentReader` |
-| primary publication, task locks, cancellation | `DelayedReplyService` |
+| primary publication and lost receipts | `delayed-reply/MainReplyPublication`, `MainReplyCompletion`, `CommentPublicationRecovery` |
+| task locks, scheduling, cancellation | `DelayedReplyService` |
 | supplementary publications, durable intent and independent retries | `SupplementaryReplyWorkflow` |
 | summary/comment length or generation diagnostics | `LiveContentSummaryComposer`, `DelayedReplyDiagnostics` |
 | keyword window, candidate recall, subtitle boundaries | `clipping/topic_selection.js`, `clipping/own_selection.js` |

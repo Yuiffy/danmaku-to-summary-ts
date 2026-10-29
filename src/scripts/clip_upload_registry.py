@@ -31,7 +31,7 @@ try:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel, clip_upload_policy
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
         terminal_upload_error_reason, format_upload_failure, is_submission_recovery_pending)
@@ -39,7 +39,7 @@ except ImportError:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel, clip_upload_policy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -78,23 +78,10 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def parse_utc_timestamp(value: Any) -> Optional[dt.datetime]:
-    if not value:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
+parse_utc_timestamp = clip_upload_policy.parse_utc_timestamp
 
 
-def normalize_utc_now(value: Optional[dt.datetime] = None) -> dt.datetime:
-    current = value or dt.datetime.now(dt.timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=dt.timezone.utc)
-    return current.astimezone(dt.timezone.utc)
+normalize_utc_now = clip_upload_policy.normalize_utc_now
 
 
 def load_upload_runtime_config() -> Dict[str, Any]:
@@ -195,93 +182,20 @@ def fetch_recent_account_submissions(
     return events
 
 
-def rolling_upload_event_key(event: Dict[str, Any]) -> str:
-    if event.get("bvid"):
-        return f"bvid:{event['bvid']}"
-    if event.get("aid"):
-        return f"aid:{event['aid']}"
-    if event.get("clipId") is not None:
-        return f"clip:{event.get('jobId', '')}:{event['clipId']}"
-    return f"at:{event.get('at', '')}:{event.get('title', '')}"
+rolling_upload_event_key = clip_upload_policy.rolling_upload_event_key
 
 
-def normalize_rolling_upload_event(event: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(event, dict):
-        return None
-    submitted_at = parse_utc_timestamp(event.get("at"))
-    if submitted_at is None:
-        return None
-    normalized = {
-        key: value
-        for key, value in event.items()
-        if key
-        in (
-            "at",
-            "bvid",
-            "aid",
-            "title",
-            "source",
-            "clipId",
-            "jobId",
-        )
-        and value not in (None, "")
-    }
-    normalized["at"] = submitted_at.isoformat()
-    return normalized
+normalize_rolling_upload_event = clip_upload_policy.normalize_rolling_upload_event
 
 
-def merge_rolling_upload_events(
-    existing: Iterable[Dict[str, Any]],
-    incoming: Iterable[Dict[str, Any]],
-    now: Optional[dt.datetime] = None,
-) -> List[Dict[str, Any]]:
-    """Merge remote and local events, keeping the later timestamp conservatively."""
-    current = normalize_utc_now(now)
-    cutoff = current - dt.timedelta(seconds=ACCOUNT_ROLLING_WINDOW_SECONDS)
-    merged: Dict[str, Dict[str, Any]] = {}
-    for raw_event in [*existing, *incoming]:
-        event = normalize_rolling_upload_event(raw_event)
-        if event is None:
-            continue
-        event_at = parse_utc_timestamp(event.get("at"))
-        if event_at is None or event_at <= cutoff:
-            continue
-        key = rolling_upload_event_key(event)
-        previous = merged.get(key)
-        if previous is None:
-            merged[key] = event
-            continue
-        previous_at = parse_utc_timestamp(previous.get("at")) or event_at
-        combined = dict(previous)
-        combined.update(event)
-        combined["at"] = max(previous_at, event_at).isoformat()
-        if previous.get("source") == "upload_worker":
-            combined["source"] = previous["source"]
-        merged[key] = combined
-    return sorted(
-        merged.values(),
-        key=lambda event: parse_utc_timestamp(event.get("at"))
-        or dt.datetime.max.replace(tzinfo=dt.timezone.utc),
-    )
+def merge_rolling_upload_events(existing, incoming, now=None):
+    return clip_upload_policy.merge_rolling_upload_events(
+        existing, incoming, now, window_seconds=ACCOUNT_ROLLING_WINDOW_SECONDS)
 
 
-def ensure_account_upload_guard(
-    queue: Dict[str, Any], account_id: str
-) -> Dict[str, Any]:
-    state = queue.get("accountRollingUploadGuard")
-    if not isinstance(state, dict) or str(state.get("accountId")) != str(account_id):
-        state = {
-            "accountId": str(account_id),
-            "limit": ACCOUNT_ROLLING_UPLOAD_LIMIT,
-            "windowSeconds": ACCOUNT_ROLLING_WINDOW_SECONDS,
-            "events": [],
-        }
-        queue["accountRollingUploadGuard"] = state
-    state["limit"] = ACCOUNT_ROLLING_UPLOAD_LIMIT
-    state["windowSeconds"] = ACCOUNT_ROLLING_WINDOW_SECONDS
-    if not isinstance(state.get("events"), list):
-        state["events"] = []
-    return state
+def ensure_account_upload_guard(queue, account_id):
+    return clip_upload_policy.ensure_account_upload_guard(
+        queue, account_id, limit=ACCOUNT_ROLLING_UPLOAD_LIMIT, window_seconds=ACCOUNT_ROLLING_WINDOW_SECONDS)
 
 
 def registry_submission_events(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -308,31 +222,10 @@ def registry_submission_events(registry: Dict[str, Any]) -> List[Dict[str, Any]]
     return events
 
 
-def recalculate_account_upload_guard(
-    state: Dict[str, Any], now: Optional[dt.datetime] = None
-) -> Dict[str, Any]:
-    current = normalize_utc_now(now)
-    events = merge_rolling_upload_events(state.get("events") or [], [], current)
-    state["events"] = events
-    state["recentCount"] = len(events)
-    if len(events) < ACCOUNT_ROLLING_UPLOAD_LIMIT:
-        state.pop("blockedUntil", None)
-        return state
-
-    # Enough oldest events must expire to leave at most 89 before the next submit.
-    release_index = len(events) - ACCOUNT_ROLLING_UPLOAD_LIMIT
-    release_event_at = parse_utc_timestamp(events[release_index].get("at"))
-    if release_event_at is None:
-        state.pop("blockedUntil", None)
-        return state
-    blocked_until = release_event_at + dt.timedelta(
-        seconds=(
-            ACCOUNT_ROLLING_WINDOW_SECONDS
-            + ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS
-        )
-    )
-    state["blockedUntil"] = blocked_until.isoformat()
-    return state
+def recalculate_account_upload_guard(state, now=None):
+    return clip_upload_policy.recalculate_account_upload_guard(
+        state, now, limit=ACCOUNT_ROLLING_UPLOAD_LIMIT, window_seconds=ACCOUNT_ROLLING_WINDOW_SECONDS,
+        boundary_buffer_seconds=ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS)
 
 
 def refresh_account_upload_guard(
@@ -384,24 +277,11 @@ def refresh_account_upload_guard(
     return state, before != after
 
 
-def account_upload_limit_active(
-    queue: Dict[str, Any], now: Optional[dt.datetime] = None
-) -> bool:
-    state = queue.get("accountRollingUploadGuard")
-    if not isinstance(state, dict):
-        return False
-    blocked_until = parse_utc_timestamp(state.get("blockedUntil"))
-    if blocked_until is None:
-        return False
-    return blocked_until > normalize_utc_now(now)
+account_upload_limit_active = clip_upload_policy.account_upload_limit_active
 
 
-def account_upload_available_slots(state: Dict[str, Any]) -> int:
-    try:
-        recent_count = int(state.get("recentCount") or 0)
-    except (TypeError, ValueError):
-        recent_count = 0
-    return max(0, ACCOUNT_ROLLING_UPLOAD_LIMIT - recent_count)
+def account_upload_available_slots(state):
+    return clip_upload_policy.account_upload_available_slots(state, limit=ACCOUNT_ROLLING_UPLOAD_LIMIT)
 
 
 def format_china_timestamp(value: dt.datetime) -> str:
@@ -1861,8 +1741,16 @@ def recover_interrupted_jobs() -> bool:
     return changed
 
 
+def worker_state_io() -> clip_upload_state.UploadStateIO:
+    """Bind only persistence capabilities, using current adapters for test injection."""
+    return clip_upload_state.UploadStateIO(
+        REGISTRY_PATH, QUEUE_PATH, acquire_queue_mutation_lock, release_queue_mutation_lock,
+        load_json, save_json, default_registry, default_queue, normalize_registry_media_paths,
+    )
+
+
 def run_one_job() -> bool:
-    registry, queue = clip_upload_state.load_worker_snapshot(sys.modules[__name__])
+    registry, queue = clip_upload_state.load_worker_snapshot(worker_state_io())
     if clip_upload_retry.pacing_gate(sys.modules[__name__]):
         return False
     account_guard, guard_changed = refresh_account_upload_guard(queue, registry)
@@ -1879,7 +1767,7 @@ def run_one_job() -> bool:
     job_id = job.get("id")
 
     clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, clip_upload_cancel.requested_ids(job))
-    registry, queue = clip_upload_state.load_worker_snapshot(sys.modules[__name__])
+    registry, queue = clip_upload_state.load_worker_snapshot(worker_state_io())
     job = find_queue_job(queue, job_id) or job
     if job.get("status") == "cancelled":
         return True
@@ -1892,7 +1780,7 @@ def run_one_job() -> bool:
         set_unfinished_clip_statuses(registry, known_ids, "failed", reason)
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, known_ids), error=reason)
-        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, known_ids)
+        registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, known_ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         return True
 
@@ -1906,7 +1794,7 @@ def run_one_job() -> bool:
     ]
     if not pending_ids:
         clip_candidate_queue.finish_job(sys.modules[__name__], registry, job, result="all eligible ids already uploaded")
-        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
+        registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         return True
 
@@ -1914,7 +1802,7 @@ def run_one_job() -> bool:
         schedule_account_upload_limit_retry(
             registry, queue, job, ids, account_guard
         )
-        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
+        registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, ids)
         commit_queue_snapshot(
             queue,
             job_ids=(job_id,),
@@ -1937,7 +1825,7 @@ def run_one_job() -> bool:
         set_unfinished_clip_statuses(registry, pending_ids, "failed", reason)
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, ids), error=reason)
-        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, pending_ids)
+        registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, pending_ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         print(f"[worker] invalid upload job: {reason}", file=sys.stderr)
         return True
@@ -1946,7 +1834,7 @@ def run_one_job() -> bool:
     for clip_id in pending_ids:
         registry["clips"][str(clip_id)]["status"] = "uploading"
         registry["clips"][str(clip_id)]["updatedAt"] = now_iso()
-    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, pending_ids)
+    registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, pending_ids)
     queue = commit_queue_snapshot(queue, job_ids=(job_id,))
     job = find_queue_job(queue, job_id) or job
 
@@ -2020,7 +1908,7 @@ def run_one_job() -> bool:
         if recorded_ids:
             made_upload_progress = True
             clear_submission_rate_limit(queue)
-        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, group_ids)
+        registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, group_ids)
         queue = commit_queue_snapshot(
             queue,
             queue_fields=(
@@ -2048,7 +1936,7 @@ def run_one_job() -> bool:
 
     registry = load_json(REGISTRY_PATH, default_registry())
     sync_clip_statuses(registry, ids)
-    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
+    registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, ids)
     queue = load_json(QUEUE_PATH, default_queue())
     current = find_queue_job(queue, job_id) or job
     clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, ids)
@@ -2120,7 +2008,7 @@ def run_one_job() -> bool:
                 last_output,
                 "uploader completed without recording all requested clips",
             )
-    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
+    registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, ids)
     commit_queue_snapshot(
         queue,
         job_ids=(job_id,),

@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import * as ts from 'typescript';
+import { moduleReferences } from './moduleReferences';
+import { workflowEntries } from '../workflows/workflowEntries';
 
 const sourceRoots = ['src', 'scripts', 'tools'];
 const typedRoots = ['src/app/', 'src/core/', 'src/services/', 'src/utils/', 'src/tools/', 'src/workflows/'];
@@ -9,10 +11,10 @@ const codeExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.py']);
 const defaultLineBudget = 1200;
 // Historical oversized modules are frozen at their reviewed size. Only lower these.
 const lineBudgets: Record<string, number> = {
-  'src/services/bilibili/DelayedReplyService.ts': 1851,
+  'src/services/bilibili/DelayedReplyService.ts': 1727,
   'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1716,
   'src/scripts/ai_comic_generator.py': 3390,
-  'src/scripts/clip_upload_registry.py': 2304,
+  'src/scripts/clip_upload_registry.py': 2191,
   'src/scripts/topic_clipper.js': 2013,
   'src/scripts/own_stream_clipper.js': 1882,
   'src/scripts/python/sensevoice_speaker.py': 2331,
@@ -46,22 +48,7 @@ function walk(directory: string): string[] {
 
 /** Parse actual module references, not comments, prompt strings, or incidental text. */
 export function getModuleSpecifiers(file: string, text: string): string[] {
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-  const imports = new Set<string>();
-  function visit(node: ts.Node): void {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-      && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      imports.add(node.moduleSpecifier.text);
-    } else if (ts.isCallExpression(node)
-      && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-        || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
-      && node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])) {
-      imports.add(node.arguments[0].text);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  return [...imports];
+  return [...new Set(moduleReferences(file, text).references.filter(row => row.base !== 'workflow').map(row => row.specifier))];
 }
 
 export function findCycles(graph: Map<string, string[]>): string[][] {
@@ -170,6 +157,8 @@ export function inspectArchitecture(root: string) {
     .map(file => normalize(path.relative(root, file)));
   const production = files.filter(file => !isTest(file));
   const graph = new Map<string, string[]>();
+  const unresolvedImports: { file: string; line: number; expression: string }[] = [];
+  let bridgeEdges = 0;
   const inventory = production.map(file => {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     const lines = text.split(/\r?\n/).length;
@@ -179,9 +168,22 @@ export function inspectArchitecture(root: string) {
       violations.push(file + ': service/control modules must use TypeScript');
     }
     if (!file.endsWith('.py')) {
-      const dependencies = getModuleSpecifiers(file, text)
-        .map(specifier => resolveLocalImport(root, file, specifier)).filter((file): file is string => !!file);
-      graph.set(file, dependencies.filter(dependency => !isTest(dependency)));
+      const parsed = moduleReferences(file, text);
+      unresolvedImports.push(...parsed.unresolved.map(row => ({ file, ...row })));
+      const dependencies = parsed.references.flatMap(reference => {
+        if (reference.base === 'workflow') {
+          const entry = workflowEntries[reference.specifier];
+          if (!entry) { violations.push(file + ': unknown workflow entry ' + reference.specifier); return []; }
+          const target = 'src/' + entry.replace(/\.js$/u, '.ts');
+          if (!fs.existsSync(path.join(root, target))) violations.push(file + ': missing workflow source ' + target);
+          bridgeEdges++;
+          return [target];
+        }
+        const resolved = resolveLocalImport(root, reference.base === 'project' ? 'package.json' : file, reference.specifier);
+        if (resolved && reference.base === 'project') bridgeEdges++;
+        return resolved ? [resolved] : [];
+      });
+      graph.set(file, [...new Set(dependencies.filter(dependency => !isTest(dependency)))]);
       for (const dependency of dependencies) {
         const reason = boundaryViolation(file, dependency);
         if (reason) violations.push(file + ' -> ' + dependency + ': ' + reason);
@@ -221,7 +223,7 @@ export function inspectArchitecture(root: string) {
   if (pkg.scripts?.prebuild) violations.push('build must not have an implicit prebuild side effect');
   const languages: Record<string, number> = {};
   for (const file of files) languages[path.extname(file)] = (languages[path.extname(file)] || 0) + 1;
-  return { languages, inventory, cycles, violations };
+  return { languages, inventory, cycles, violations, bridgeEdges, unresolvedImports };
 }
 
 if (require.main === module) {
@@ -230,6 +232,7 @@ if (require.main === module) {
     console.log(JSON.stringify(report, null, 2));
   } else {
     console.log('Architecture inventory: ' + JSON.stringify(report.languages));
+    console.log(`Resolved bridge edges: ${report.bridgeEdges}; computed imports outside static coverage: ${report.unresolvedImports.length}`);
     console.log('Largest production/workflow modules:');
     for (const file of [...report.inventory].sort((a, b) => b.lines - a.lines).slice(0, 10)) {
       console.log('- ' + file.lines + '/' + file.budget + ' ' + file.path);

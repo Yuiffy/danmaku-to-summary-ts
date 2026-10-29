@@ -15,8 +15,11 @@ import {
   PublishCommentRequest,
   PublishCommentResponse,
   BilibiliAPIResponse,
-  RoomLiveStatus
+  RoomLiveStatus,
+  MainReplyIntent
 } from './interfaces/types';
+import { CommentPublicationError } from './CommentPublicationError';
+import { recoverCommentReceipt } from './CommentPublicationRecovery';
 import { parseDynamicItems } from './DynamicParser';
 
 /**
@@ -357,7 +360,18 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    * 发布动态评论
    * 使用 Python bilibili-api 库处理评论功能
    */
+  async reconcileCommentPublication(intent: MainReplyIntent): Promise<PublishCommentResponse | undefined> {
+    await this.refreshConfigIfChanged();
+    return recoverCommentReceipt(intent, {
+      session: this.extractCookieValue(this.cookie, 'SESSDATA') || '',
+      csrf: this.extractCookieValue(this.cookie, 'bili_jct') || '',
+      uid: this.extractCookieValue(this.cookie, 'DedeUserID') || '', payload: this.buildCredentialPayload()
+    });
+  }
+
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
+    let childStarted = false;
+    let credentialIssueNotified = false;
     try {
       if (request.replyToId !== undefined && (typeof request.replyToId !== 'string' || !/^[1-9]\d*$/u.test(request.replyToId))) {
         throw new AppError('Invalid parent comment ID', 'VALIDATION_ERROR', 400);
@@ -411,6 +425,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         const pythonProcess = spawnPython(args, {
           windowsHide: true
         });
+        childStarted = true;
 
         let stdout = '';
         let stderr = '';
@@ -448,11 +463,16 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           if (stdout.trim()) {
             this.logger.error(`Python stdout: ${stdout.trim()}`);
           }
-          reject(this.buildPythonFailureError(stdout, code, '发布评论失败'));
+          const payload = this.parsePythonJsonResult(stdout);
+          const failure = this.buildPythonFailureError(stdout, code, '发布评论失败');
+          const outcome = payload?.publication_outcome;
+          reject(new CommentPublicationError(failure.message,
+            outcome === 'not_sent' || outcome === 'rejected' ? outcome : 'unknown',
+            (failure as AppError).code, (failure as AppError).statusCode));
         });
 
         pythonProcess.on('error', (err) => {
-          reject(err);
+          reject(new CommentPublicationError(err.message, 'not_sent'));
         });
       });
 
@@ -460,7 +480,8 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       const jsonResult = this.parsePythonJsonResult(result.stdout) || JSON.parse(result.stdout);
 
       if (jsonResult.refreshed_credential) {
-        await this.persistRefreshedCredential(jsonResult.refreshed_credential);
+        try { await this.persistRefreshedCredential(jsonResult.refreshed_credential); }
+        catch { this.logger.warn('Comment result retained; saving refreshed credentials failed'); }
       }
 
       if (!jsonResult.success) {
@@ -475,6 +496,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           (code === 'AUTHENTICATION_ERROR' || jsonResult.credential_invalid || jsonResult.credential_refresh_failed) &&
           !this.isTransientNetworkError(detailedError)
         ) {
+          credentialIssueNotified = true;
           await this.notifyCredentialIssue(detailedError, {
             dynamicId: String(request.dynamicId),
             credentialInvalid: !!jsonResult.credential_invalid,
@@ -482,9 +504,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
             credentialRefreshed: !!jsonResult.credential_refreshed
           });
         }
-        throw new AppError(`发布评论失败: ${detailedError}`, code, status);
+        const outcome = jsonResult.publication_outcome;
+        throw new CommentPublicationError(`发布评论失败: ${detailedError}`,
+          outcome === 'not_sent' || outcome === 'rejected' ? outcome : 'unknown', code, status);
       }
 
+      if (!/^[1-9]\d*$/u.test(String(jsonResult.reply_id || ''))) throw new CommentPublicationError('Missing comment receipt', 'unknown');
       this.logger.info('评论发布成功', { replyId: jsonResult.reply_id, imageUrl: jsonResult.image_url });
 
       return {
@@ -494,14 +519,16 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       };
     } catch (error) {
       if (error instanceof AppError) {
-        if (error.code === 'AUTHENTICATION_ERROR' && !this.isTransientNetworkError(error.message)) {
+        if (!credentialIssueNotified && error.code === 'AUTHENTICATION_ERROR' && !this.isTransientNetworkError(error.message)) {
           await this.notifyCredentialIssue(error.message, { dynamicId: String(request.dynamicId) });
         }
-        throw error;
+        if (error instanceof CommentPublicationError) throw error;
+        throw new CommentPublicationError(error.message, childStarted ? 'unknown' : 'not_sent', error.code, error.statusCode);
       }
       this.logger.error('发布评论异常', undefined, error instanceof Error ? error : new Error(String(error)));
-      throw new AppError(
+      throw new CommentPublicationError(
         `发布评论失败: ${error instanceof Error ? error.message : error}`,
+        childStarted ? 'unknown' : 'not_sent',
         'API_ERROR',
         500
       );

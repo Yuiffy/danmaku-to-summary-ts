@@ -44,6 +44,20 @@ class CommentThreadingTest(unittest.IsolatedAsyncioTestCase):
         self.send.assert_awaited_once()
         self.assertEqual(self.send.await_args.kwargs['root'], 777)
 
+    async def test_distinguishes_explicit_rejection_from_lost_receipt(self):
+        from bilibili_api.exceptions import ResponseCodeException
+        for error, outcome in [(ResponseCodeException(-400, 'rejected'), 'rejected'),
+                               (TimeoutError('response lost'), 'unknown')]:
+            self.send.side_effect = error
+            result = await publisher.publish_comment('123', 'Comment', 'session', 'csrf', '456')
+            self.assertEqual(result['publication_outcome'], outcome)
+
+    async def test_failure_before_post_is_safe_to_retry(self):
+        publisher.get_dynamic_comment_id.side_effect = TimeoutError('read failed')
+        result = await publisher.publish_comment('123', 'Comment', 'session', 'csrf', '456')
+        self.assertEqual(result['publication_outcome'], 'not_sent')
+        self.send.assert_not_awaited()
+
     async def test_invalid_parent_is_rejected_before_credential_or_network_work(self):
         for value in ('', '0', '-1', '1e20', '1.5', ' 123', 123, True):
             with self.subTest(value=value):

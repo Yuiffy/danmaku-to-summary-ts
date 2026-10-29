@@ -19,6 +19,8 @@ npm test -- --runInBand
 候选 workflow release，Jest 使用候选版本；不需要先激活生产工作流。
 
 只修改控制面时不需要安装 GPU 模型、运行 PM2 或填写 API key。
+品牌 OP 的 JSON/SRT 由 `.gitattributes` 固定为 LF；这些资源绑定 SHA-256，
+不能让 Windows checkout 自动转换换行后再以新哈希覆盖既有证据。
 本机 Web 工作台的双服务启动、操作范围和验收见 [web-admin.md](web-admin.md)。
 完整 Python 回归还需要 `requests[socks]`、`bilibili-api-python`、`Pillow`、`numpy`、
 `google-genai`、`PyYAML` 和 PyTorch（CPU 版即可完成张量相关单测）。
@@ -34,6 +36,8 @@ B 站 SDK 的维护状态、调用归属和替换边界见 [接口上游索引](
 | Node 操作工具、workflow bridge | `npm run test:node` |
 | QQ 群艾特回复 | 相邻 `services/qqbot/*.test.ts` 和 `tools/qqbot/run.test.ts`；运行契约见 [qqbot.md](qqbot.md) |
 | Python 上传简介 | `python -m unittest discover -b -s tests -p test_batch_upload_description.py` |
+| 评论回执恢复 | `npm test -- --runInBand --runTestsByPath src/services/bilibili/DelayedReplyService.timing.test.ts src/services/bilibili/CommentPublicationRecovery.test.ts`，再 `python -m unittest discover -b -s tests -p test_bilibili_comment*.py` |
+| ASR 历史增量索引 | `npm test -- --runInBand --runTestsByPath src/services/admin/AdminAsrHistoryObserver.test.ts src/services/admin/AdminAsrHistoryIndex.test.ts` |
 | Python 上传注册表 | `python -m unittest discover -b -s tests -p test_clip_upload_registry.py` |
 | 全部便携 Python 回归 | `npm run test:python` |
 | ASR 设备、模型与资源专项 | `npm run test:python:asr`，需要对应 ML 依赖 |
@@ -43,7 +47,10 @@ B 站 SDK 的维护状态、调用归属和替换边界见 [接口上游索引](
 workflows。若直接调用 Jest 或 `node --test`，先执行 `npm run build:workflows`；
 直接运行 Node 测试时加 `--require ./tests/workflowCandidate.cjs`。
 测试不会因缺少候选而悄悄使用已激活的生产版本；缺失时会给出准备命令。
-显式 `DANMAKU_WORKFLOW_RELEASE` 可指定正在验收的独立 release。
+显式 `DANMAKU_WORKFLOW_RELEASE` 可指定正在验收的独立 release。Python 单测调用真实
+Node workflow bridge 时，也必须从候选描述符注入该变量；单独运行这类测试前先执行
+`npm run build:workflows`。Jest 发起的子进程要显式传入 `env: { ...process.env }`，
+确保候选选择从 Jest 环境传递到子进程。
 
 `verify:all` 包含 `verify:core`（quick + Jest）、Node、Python 和编译产物集成测试。
 它生成 `build/` 候选文件，不写生产 `dist`，不修改活动 workflow 指针。
@@ -51,7 +58,8 @@ workflows。若直接调用 Jest 或 `node --test`，先执行 `npm run build:wo
 
 GitHub Actions 在 Windows、Node 24、Python 3.12 上执行 `verify:core`、`test:node`
 和 `test:compiled`。完整 Python/ML 回归仍需本地运行，CI 通过不代表该部分已验证。
-lint 的历史 warning 与失败的 error 分开报告；临时目录不参与 lint。
+lint 的历史 warning 与失败的 error 分开报告；临时目录不参与 lint。架构检查的 `--json` 输出同时列出已解析桥接依赖数和未解析的动态导入；
+排查模块关系时先看该清单，不把静态检查通过当作所有动态路径都已覆盖。
 
 ## 定位与改造步骤
 
