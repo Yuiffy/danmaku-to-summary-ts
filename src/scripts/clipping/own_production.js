@@ -14,6 +14,7 @@ async function produceOwnClips(context, hooks) {
     const reviewPath = path.join(outputRoot, base ? `REVIEW_${base}.md` : 'REVIEW.md');
     Object.assign(metadata, { planPath, reviewPath, uploadManifestPath: path.join(outputRoot, base ? `${base}_UPLOAD_MANIFEST.json` : 'UPLOAD_MANIFEST.json') });
     const source = { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null };
+    metadata.source = source;
     const reservedWindows = context.clips.map(clip => ({ clip, start: clip.start, end: clip.end }));
     const sourceReview = batch => require('../workflow-runtime').loadWorkflow('clipping/ownSourceReview').reviewOwnSourceCandidates(batch, {
         enabled: config.attribution?.sourceReviewBeforeRender === true && (config.attribution.roomIds || []).map(String).includes(String(info.roomId)),
@@ -65,6 +66,7 @@ async function produceOwnClips(context, hooks) {
                 maxClipSeconds: config.maxClipSeconds, aiDurationPolicy: 'content_complete', chunkSeconds: config.chunkSeconds, aiConcurrency: config.aiConcurrency,
                 clipConcurrency: config.clipConcurrency, clipFfmpegThreads: config.clipFfmpegThreads,
                 aiStrategy: config.ai?.strategy, aiModel: config.ai?.model,
+                ...(config.campaignContentGate ? { campaignContentGate: config.campaignContentGate } : {}),
                 viewingAnglesVersion: 1, recallMaxClipsPerChunk: config.ai?.recallMaxClipsPerChunk,
                 selectionPolicy: config.selectionPolicy,
                 publicationPolicy: metadata.publication?.policy || config.publicationPolicy || null,

@@ -1,13 +1,13 @@
 import fetch from 'node-fetch';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import { questionProviderSettings } from '../../live-vote/questions/DaiyuQuestionClient';
-import { CommentAudience, CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, publishableAnswer } from './CommentPolicy';
+import { CommentAudience, CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, COMMENT_TOOL_LIMITS, publishableAnswer } from './CommentPolicy';
 import { CommentContext, CommentPost, CommentSocialContext, fitCommentContext, safeEvidenceText,
   needsCommentEvidence, videoOnlyQuestion } from './CommentContext';
 import { fanTier } from './CommentQuota';
 import { commentReplySystem } from './CommentReplyStyle';
 import { CommentAnswer, FeedbackVideo, COMMENT_FEEDBACK_SYSTEM, canAcknowledgeFeedbackWithoutVideo, feedbackEligible, parseFeedbackAnswer } from './CommentFeedback';
 import { COMMENT_IMAGE_ALLOWANCE, COMMENT_VISUAL_RULES, createCommentVisualReader, needsCommentVisual } from './CommentVisual';
+import { COMMENT_TOOL_SYSTEM, CommentAgentSources, runCommentModel } from './CommentAgentTools';
 
 const VIDEO_CONTENT_DISCLOSURE = '没获取到这个视频的字幕，我看不到视频内容。';
 const hasVideoContent = (evidence?: CommentContext) => evidence?.video?.content === 'subtitles' &&
@@ -24,14 +24,14 @@ function supportsSui(text: string, evidence?: CommentContext): boolean {
   return sources.some(mentionsSui);
 }
 
-/** A bounded single-turn agent. No tools, subprocesses, browsing, history, or provider retries. */
+/** Bounded text/preview answerer with optional model-selected, read-only video/project tools. */
 export function createCommentAnswerer(settings: ReturnType<typeof questionProviderSettings>, transport = fetch,
   context?: (event: CommentEvent, signal: AbortSignal) => Promise<CommentContext | undefined>,
   social?: { config: CommentReplyConfig; hotComments(event: CommentEvent, signal: AbortSignal): Promise<Array<{ text: string; likes: number }>>;
     dynamic?(id: string, signal: AbortSignal): Promise<CommentPost>;
     feedbackVideo?(event: CommentEvent, signal: AbortSignal): Promise<FeedbackVideo> },
-  visual?: ReturnType<typeof createCommentVisualReader>) {
-  const agent = settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined;
+  visual?: ReturnType<typeof createCommentVisualReader>,
+  toolSources?: (event: CommentEvent) => CommentAgentSources) {
   return async (text: string, signal: AbortSignal, event?: CommentEvent, audience?: CommentAudience): Promise<string | CommentAnswer> => {
     if (signal.aborted || Array.from(text).length > LIMITS.inputChars) throw new Error('Invalid comment agent input');
     const evidence = context && event ? await context(event, signal) : undefined;
@@ -60,16 +60,22 @@ export function createCommentAnswerer(settings: ReturnType<typeof questionProvid
     if (visual && event && needsCommentVisual(event, evidence)) try { preview = await visual(event, signal, evidence?.visualTarget); }
     catch (error) { if (error instanceof CommentPlatformBlocked || signal.aborted) throw error; }
     signal.throwIfAborted();
+    const availableSources = event && toolSources ? toolSources(event) : undefined;
+    const sources = availableSources?.video || availableSources?.projects?.catalog.length ? { ...availableSources,
+      ...(visual && event?.type === 1 && availableSources.video && !preview ? {
+        visual: (signal: AbortSignal, target?: Parameters<typeof visual>[2]) => visual(event, signal, target) } : {}) } : undefined;
     const system = (collectFeedback ? COMMENT_FEEDBACK_SYSTEM : commentReplySystem(text, event?.type,
-      { knowledge: !!context, projects: !!social?.config.projectSources?.length, visual: !!visual })) + (preview ? COMMENT_VISUAL_RULES : '');
+      { knowledge: !!context, projects: !!social?.config.projectSources?.length, visual: !!visual })).replace(sources ? '无工具，' : '\u0000', '') +
+      (sources ? COMMENT_TOOL_SYSTEM : '') + (preview || sources?.visual ? COMMENT_VISUAL_RULES : '');
     const visualMap = preview ? { visualPreviewSeconds: preview.times } : undefined;
     const mapBytes = Buffer.byteLength(JSON.stringify(visualMap || {}), 'utf8');
-    const messages = fitCommentContext(text, system, evidence, surroundings, preview ? 3456 - COMMENT_IMAGE_ALLOWANCE - mapBytes : 3456);
+    const promptBytes = sources ? 6500 : 3456;
+    const messages = fitCommentContext(text, system, evidence, surroundings, preview ? promptBytes - COMMENT_IMAGE_ALLOWANCE - mapBytes : promptBytes);
     const fittedEvidence: CommentContext | undefined = JSON.parse(messages[1].content).untrustedEvidence;
-    const readVideo = hasVideoContent(fittedEvidence);
     // UTF-8 bytes give a conservative token bound for the fixed tokenizer family, plus framing/output.
     if (Buffer.byteLength(JSON.stringify(messages), 'utf8') + (preview ? mapBytes : 0) +
-      (preview ? COMMENT_IMAGE_ALLOWANCE : 0) + LIMITS.outputTokens + 256 > LIMITS.tokenReservation) {
+      (preview ? COMMENT_IMAGE_ALLOWANCE : 0) + (sources ? COMMENT_TOOL_LIMITS.outputTokens : LIMITS.outputTokens) + 256 >
+      (sources ? COMMENT_TOOL_LIMITS.tokenReservation : LIMITS.tokenReservation)) {
       throw new Error('Comment prompt budget exceeded');
     }
     // Base64 is transport, not text tokens. Reserve images separately and force low detail.
@@ -77,27 +83,29 @@ export function createCommentAnswerer(settings: ReturnType<typeof questionProvid
       { type: 'text', text: messages[1].content }, { type: 'text', text: JSON.stringify(visualMap) },
       { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${preview.jpeg.toString('base64')}`, detail: 'low' } }
     ] }] : messages;
+    sources?.report?.({ event: 'comment_agent_context', key: event?.key, video: !!fittedEvidence?.video,
+      subtitles: !!hasVideoContent(fittedEvidence), preview: !!preview });
     try {
-      const response = await transport(settings.url, {
-        method: 'POST', headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-6-luna', messages: providerMessages, max_tokens: LIMITS.outputTokens }),
-        agent, signal: signal as any, redirect: 'error', timeout: LIMITS.timeoutMs, size: 32 * 1024
-      });
-      if (!response.ok) throw new Error('Comment provider unavailable');
-      const body = await response.json() as any;
-      const message = body?.choices?.[0]?.message;
+      const result = await runCommentModel(settings, transport, providerMessages, signal, sources, event);
+      const message = result.message;
+      const finalEvidence = result.video ? { ...fittedEvidence, video: result.video } as CommentContext : fittedEvidence;
+      const readVideo = hasVideoContent(finalEvidence);
+      const requiresEvidence = event?.type === 1 && (needsCommentEvidence(text, event.type) || !!result.video);
       const parsed = collectFeedback ? parseFeedbackAnswer(message?.content, event!, feedbackVideo!, social!.config) : undefined;
-      const answer = !message?.tool_calls && body?.choices?.[0]?.finish_reason !== 'length' &&
+      const answer = !message?.tool_calls && result.finishReason !== 'length' &&
         (collectFeedback ? parsed?.reply : publishableAnswer(message?.content));
       if (signal.aborted || !answer || answer.includes(settings.apiKey)) throw new Error('Invalid public comment answer');
-      if (event?.type === 1 && needsCommentEvidence(text, event.type) && mentionsSui(answer) && !supportsSui(text, fittedEvidence)) {
+      if (requiresEvidence && mentionsSui(answer) && !supportsSui(text, finalEvidence)) {
         throw new Error('Unsupported video participant');
       }
-      const result = event?.type === 1 && needsCommentEvidence(text, event.type) && !readVideo &&
+      const descriptionComparison = result.projectsRead && !!finalEvidence?.video?.description;
+      const reply = requiresEvidence && !readVideo &&
         !canAcknowledgeFeedbackWithoutVideo(text, parsed?.feedback) ?
-        (preview ? '没获取到字幕，以下仅据抽样预览画面。' : VIDEO_CONTENT_DISCLOSURE) + answer : answer;
-      if (!publishableAnswer(result)) throw new Error('Invalid public comment answer');
-      return parsed?.feedback ? { reply: result, feedback: parsed.feedback } : result;
-    } catch { throw new Error('Comment generation failed'); }
+        (descriptionComparison ? '未取到视频字幕，以下据作者简介与项目资料对比。' :
+          preview || result.previewRead ? '没获取到字幕，以下仅据抽样预览画面。' : VIDEO_CONTENT_DISCLOSURE) + answer : answer;
+      if (!publishableAnswer(reply)) throw new Error('Invalid public comment answer');
+      return sources ? { reply, tokens: result.tokens, ...(parsed?.feedback ? { feedback: parsed.feedback } : {}) } :
+        parsed?.feedback ? { reply, feedback: parsed.feedback } : reply;
+    } catch (error) { if (error instanceof CommentPlatformBlocked) throw error; throw new Error('Comment generation failed'); }
   };
 }

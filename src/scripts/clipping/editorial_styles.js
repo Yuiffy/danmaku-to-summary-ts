@@ -30,6 +30,8 @@ async function applyStyles(results, context) {
             const binding = { baselineMediaSha256: digest(artifact.output.mediaPath), baselineSubtitlesSha256: digest(artifact.output.srtPath),
                 baselineMetadataSha256: digest(artifact.output.metadataPath) };
             return { id, title: artifact.copy.title, binding, duration: (await mediaIO.probe(artifact.output.mediaPath)).duration,
+                precedingAudience: (danmaku || []).filter(row => row.time >= artifact.window.start - 120 && row.time <= artifact.window.start)
+                    .slice(-24).map(({ time, text }) => ({ time, text })),
                 subtitles: loadWorkflow('clipping/editorialStyle').parseSrt(fs.readFileSync(artifact.output.srtPath, 'utf8')) };
         },
         request: async prompt => (await request('editorial-style-selection', prompt)).text,
@@ -50,15 +52,18 @@ async function applyStyles(results, context) {
             // Same complete body and public copy, new artifact hashes; final content/OP QA still required.
             return require('./actor_artifact_binding').bindActorArtifacts(current);
         },
-        precision: async (baseline, reason) => {
+        precision: async (baseline, reason, contextDanmakuAt) => {
             if (rootConfig.ai?.text?.enabled === false || config.ai?.enabled === false) throw new Error('AI is disabled');
             const precisionExperiment = { version: 1, selected: true, reason, selectionMode: 'editorial_style' };
             const clip = { ...baseline.copy, ...(context.clips?.[baseline.window.index - 1] || {}), ...baseline.window,
                 attributionRequired: baseline.attributionRequired, attributionReview: baseline.attributionReview,
                 grounding: baseline.grounding, precisionExperiment };
             const precisionConfig = { ...config, enhancements: { ...settings, enabled: true, workflow: 'creative' } };
+            const contextQuestion = contextDanmakuAt === undefined ? undefined
+                : loadWorkflow('clipping/creativeContext').contextQuestion(contextDanmakuAt, danmaku, baseline.window);
             let current = await require('./creative_runner').runCreativeEnhancement({ ...baseline, precisionExperiment }, {
-                config: precisionConfig, info, parsed, danmaku, source: baseline.source, options: { ...options, config: rootConfig }, topic, clip,
+                config: precisionConfig, info, parsed, danmaku, source: baseline.source,
+                options: { ...options, config: rootConfig, creativeContextQuestion: contextQuestion }, topic, clip,
                 subtitleEvidence: context.evidence || require('./subtitle_evidence').buildSubtitleEvidence(parsed.segments),
                 execution: { withMedia }
             }, { requestStage: require('./enhancement_runner').requestStage,

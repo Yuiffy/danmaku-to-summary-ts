@@ -5,6 +5,7 @@ import { safeEvidenceText } from './CommentContext';
 import { BILIBILI_WEB_UA, readVideoTranscript } from './CommentVideoText';
 import { CommentFeedError } from './CommentPolling';
 import { createAudienceReader } from './CommentAudience';
+import { commentFeedResponse } from './CommentFeedDiagnostics';
 
 /** Preserve 64-bit notification/dynamic IDs before JSON.parse can round them. */
 export function parseBilibiliJson(text: string): any {
@@ -136,7 +137,7 @@ export class CommentApi {
         headers, redirect: 'error', timeout: 15000, size: 1024 * 1024
       });
       if (!response.ok) throw new CommentFeedError([408, 500, 502, 503, 504].includes(response.status),
-        { feed: kind, reason: 'http', httpStatus: response.status });
+        { feed: kind, reason: 'http', ...commentFeedResponse(response.status, response.headers?.get('content-type')) });
       text = await response.text();
     } catch (error) {
       if (error instanceof CommentFeedError) throw error;
@@ -149,14 +150,18 @@ export class CommentApi {
     }
     let body;
     try { body = parseBilibiliJson(text); }
-    catch { throw new CommentFeedError(false, { feed: kind, reason: 'payload' }); }
+    catch { throw new CommentFeedError(false, { feed: kind, reason: 'payload', payloadStage: 'json',
+      ...commentFeedResponse(response.status, response.headers?.get('content-type'), text) }); }
+    const diagnostic = commentFeedResponse(response.status, response.headers?.get('content-type'), text, body);
     if (body?.code !== 0) throw new CommentFeedError(false, { feed: kind, reason: 'platform',
-      ...(Number.isSafeInteger(body?.code) ? { code: body.code } : {}) });
-    if (!Array.isArray(body.data?.items) || body.data.items.length > 100 ||
-        typeof body.data?.cursor?.is_end !== 'boolean') throw new CommentFeedError(false, { feed: kind, reason: 'payload' });
+      ...diagnostic, ...(Number.isSafeInteger(body?.code) ? { code: body.code } : {}) });
+    if (!Array.isArray(body.data?.items) || body.data.items.length > 100) throw new CommentFeedError(false,
+      { feed: kind, reason: 'payload', payloadStage: 'items', ...diagnostic });
+    if (typeof body.data?.cursor?.is_end !== 'boolean') throw new CommentFeedError(false,
+      { feed: kind, reason: 'payload', payloadStage: 'cursor', ...diagnostic });
     const cursorData = body.data.cursor;
     if (!cursorData.is_end && (!positiveId(cursorData.id) || !Number.isSafeInteger(cursorData.time) || cursorData.time <= 0)) {
-      throw new CommentFeedError(false, { feed: kind, reason: 'payload' });
+      throw new CommentFeedError(false, { feed: kind, reason: 'payload', payloadStage: 'pagination', ...diagnostic });
     }
     return { items: body.data.items, cursor: { is_end: cursorData.is_end, id: positiveId(cursorData.id), time: cursorData.time } };
   }

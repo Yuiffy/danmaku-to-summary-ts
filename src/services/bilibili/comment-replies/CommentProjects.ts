@@ -7,8 +7,7 @@ import { CommentProject, safeEvidenceText } from './CommentContext';
 /** Operator-approved public files only. Public comments cannot select paths or sections. */
 export function createProjectReader(root: string, sources: NonNullable<CommentReplyConfig['projectSources']>) {
   const fixed = sources.map(source => ({ ...source, path: path.resolve(root, source.path) }));
-  return async (query: string, signal: AbortSignal): Promise<CommentProject[]> => {
-    const selected = fixed.filter(source => source.keywords.some(word => query.toLowerCase().includes(word.toLowerCase()))).slice(0, 3);
+  const readSelected = async (selected: typeof fixed, signal: AbortSignal, maxChars = 280): Promise<CommentProject[]> => {
     const evidence: CommentProject[] = [];
     for (const source of selected) {
       signal.throwIfAborted();
@@ -30,8 +29,8 @@ export function createProjectReader(root: string, sources: NonNullable<CommentRe
         const next = source.section?.startsWith('#') ? tail.findIndex(line => /^#{1,6} /u.test(line)) : -1;
         const candidates = (next >= 0 ? tail.slice(0, next) : tail).map((line, index) => ({ line,
           index, score: source.keywords.filter(word => line.toLowerCase().includes(word.toLowerCase())).length }));
-        if (candidates.some(item => item.score)) candidates.sort((a, b) => b.score - a.score || a.index - b.index);
-        const text = candidates.map(item => safeEvidenceText(item.line, 280)).filter(Boolean).join(' ').slice(0, 280);
+        if (maxChars === 280 && candidates.some(item => item.score)) candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+        const text = candidates.map(item => safeEvidenceText(item.line, maxChars)).filter(Boolean).join(' ').slice(0, maxChars);
         if (text) evidence.push({ source: source.id, label: source.label, kind: source.kind,
           revision: createHash('sha256').update(raw).digest('hex').slice(0, 12), text });
       } catch { signal.throwIfAborted(); /* An unavailable optional source is not proof of capability. */ }
@@ -39,4 +38,13 @@ export function createProjectReader(root: string, sources: NonNullable<CommentRe
     }
     return evidence;
   };
+  return Object.assign((query: string, signal: AbortSignal) => readSelected(fixed.filter(source =>
+    source.keywords.some(word => query.toLowerCase().includes(word.toLowerCase()))).slice(0, 3), signal), {
+    catalog: fixed.map(({ id, label, kind }) => ({ id, label, kind })),
+    read: (ids: string[], signal: AbortSignal) => {
+      if (!Array.isArray(ids) || !ids.length || ids.length > 3 || new Set(ids).size !== ids.length ||
+          ids.some(id => !fixed.some(source => source.id === id))) throw new Error('Invalid public project IDs');
+      return readSelected(fixed.filter(source => ids.includes(source.id)), signal, 500);
+    }
+  });
 }

@@ -51,6 +51,11 @@ throttled, atomic telemetry sidecar beside the first uploaded media file. It has
 no authorization or queue writes. `clip_upload_status.py` joins this observed
 progress into `show`/`queue` output without persisting it into registry records.
 Media transfer reaching 100% is separate from the successful submission receipt.
+`scripts/clip_upload_cancel.py` owns per-ID cancellation under the existing short
+queue lock, cooperative SDK transfer abort and the durable final-submit gate.
+The worker acknowledges cancellation before releasing an ID for editing; stale
+worker snapshots preserve operator requests. Admin cancellation bypasses long
+operator jobs through the same fixed registry CLI. See [Web cancellation](web-admin.md#全局投稿进度).
 
 The uploaders pin the SDK's official BDA2 line. This avoids automatic speed tests selecting an
 unhealthy alternate CDN. TLS verification stays enabled, and failures still
@@ -89,7 +94,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
-| `services/qqbot`, `tools/qqbot` | authenticated QQ mention admission, fixed private guidance, bounded Agents SDK question/tool loop, room-scoped recording evidence and local tool traces, reference-based image generation through a dedicated key and account receipts; see [QQ bot guide](qqbot.md) | ordinary group chatter/history, arbitrary agent tools or paths, Bilibili publication/credentials, shared media queues or automatic activation |
+| `services/qqbot`, `tools/qqbot` | authenticated QQ mention admission, fixed private guidance, bounded Agents SDK loop selecting recording and image tools, room-scoped evidence and local tool traces, server-bound source/reference images with one paid image attempt and account receipts; see [QQ bot guide](qqbot.md) | ordinary group chatter/history, arbitrary agent tools or paths, Bilibili publication/credentials, shared media queues or automatic activation |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
 | `questions/RecordingBrowser`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, previews of maintained highlights/clip subtitles and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or broadcast starts |
@@ -98,7 +103,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `questions/RecordingFtsIndex`, `RecordingFtsMaintenance`, `tools/live-vote/recordingIndex` | shared read-only SQLite FTS5 recall, atomic source replacement, independent incremental polling of trusted SRT/XML roots; source hashes verified by `RecordingEvidence` before citation | answer generation, recorder mutation, publication, embedding dependencies, agent-controlled paths |
 | `live-vote/question-lab`, `questions/EvidenceQuery`, `tools/live-vote/recordingQuery` | loopback question/evidence UI, read-only CLI retrieval, independent local test admission | Bilibili sending, comment publication, bot authorization changes, index mutation |
 | `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
-| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded single-call text/preview-image agent, target-video subtitles and contact sheets through fixed APIs/credential-free allowlisted CDN with asset/timeline checks, source-dated read-only room FTS/clip evidence, durable fair queue, quotas, token/send gates and explicit live CLI | desktop agent tools, arbitrary URLs/paths, full-video download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
+| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded text/preview agent with optional model-selected current-video/public-project tools, fixed APIs/CDN and timeline checks, room FTS/clip evidence, durable fair queue, quotas, token/send gates, safe feed diagnostics and persisted pause-alert attempts through the configured WeChat destination | desktop tools, arbitrary URLs/paths, full-video download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
 | `comment-replies/CommentVisibility`, `tools/bilibili/inspectComment` | bounded read-only anonymous/account comparison of exact reply IDs through fixed comment-list GETs; upstream selection is documented in `docs/bilibili-api-upstreams.md` | publication, model calls, state/queue writes, automatic retries or interpreting absence as permission to repost |
 | `comment-replies/CommentAudience`, `CommentProjects` | fixed signed UID-bound profile/medal catalogue reads; bounded operator-approved public project file excerpts with revisions | inferring badges from names/ownership, arbitrary model-selected paths, private configuration, model tools or publication |
 | `comment-replies/CommentFeedback`, `CommentFeedbackStore`, `admin/AdminCommentFeedback` | verified own-video mention feedback extracted in the existing answer call, immutable independent archive and read-only admin listing | scanning ordinary comments, additional classification calls, media queue writes or automatic editing |
@@ -124,6 +129,13 @@ must be updated before using the new task-list/cancellation adapter.
 dedupe receipts. `admin/AdminQQRecords` exposes a bounded read-only date/filter listing;
 `core/admin/qqRecords` owns the shared schema. Neither page reads provider credentials
 nor initiates model calls or QQ publication. See [QQ bot guide](qqbot.md).
+
+`qqbot/QQImageJobs` owns the QQ process's durable background image attempts under
+the existing account owner lock. Generation has an independent bounded deadline;
+only a new authenticated mention from the same user/group authorizes delivery.
+Persist attempt intent before provider IO and pickup intent before platform IO;
+never replay interrupted generation or ambiguous delivery. Deployment preserves
+this journal and artifacts and waits for both reply and image work to become idle.
 
 `questions/LiveOverview` reads fixed generated overview artifacts under trusted recording
 roots, preserving the dated session separately from newer observed recording fragments.

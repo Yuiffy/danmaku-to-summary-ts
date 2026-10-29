@@ -75,3 +75,33 @@ test('payload, credential, storage and unclassified failures escape the read ret
     await expect(poller.tick()).rejects.toBe(error);
   }
 });
+
+test.each([
+  ['items', { code: 0, data: { items: null, cursor: { is_end: true } } }, { itemsType: 'null' }],
+  ['cursor', { code: 0, data: { items: [], cursor: { is_end: 'false' } } }, { endType: 'string' }],
+  ['pagination', { code: 0, data: { items: [], cursor: { is_end: false, id: 1, time: '123' } } }, { timeType: 'string' }]
+])('payload diagnosis identifies %s without retaining notification contents', async (payloadStage, body, shape) => {
+  const raw = JSON.stringify({ ...body as object, message: cookie });
+  const transport = jest.fn().mockResolvedValue({ status: 200, ok: true, headers: { get: () => 'application/json; charset=utf-8' }, text: async () => raw });
+  const api = new CommentApi('99', () => cookie, transport as unknown as typeof fetch);
+  try { await api.feed('reply'); throw new Error('must fail'); }
+  catch (error) {
+    expect(error).toBeInstanceOf(CommentFeedError);
+    const diagnostic = (error as CommentFeedError).diagnostic;
+    expect(diagnostic).toMatchObject({ httpStatus: 200, contentType: 'json', payloadStage, bodyFormat: 'json',
+      bodyBytes: Buffer.byteLength(raw), bodySha256: expect.stringMatching(/^[a-f0-9]{64}$/u), ...shape as object });
+    expect(JSON.stringify(diagnostic)).not.toContain(cookie);
+  }
+});
+
+test('HTTP 200 HTML is distinguished from explicit HTTP frequency control without logging the page', async () => {
+  const html = `<html>private notification ${cookie}</html>`;
+  const transport = jest.fn().mockResolvedValue({ status: 200, ok: true, headers: { get: () => 'text/html' }, text: async () => html });
+  const api = new CommentApi('99', () => cookie, transport as unknown as typeof fetch);
+  try { await api.feed('at'); throw new Error('must fail'); }
+  catch (error) {
+    expect((error as CommentFeedError).diagnostic).toMatchObject({ payloadStage: 'json', httpStatus: 200,
+      contentType: 'html', bodyFormat: 'html', bodyBytes: Buffer.byteLength(html) });
+    expect(JSON.stringify((error as CommentFeedError).diagnostic)).not.toMatch(/SESSDATA|private/u);
+  }
+});

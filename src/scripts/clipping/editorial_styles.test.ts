@@ -19,7 +19,8 @@ function fixture(kind: string) {
             coverPath: put('cover.jpg', 'cover'), burnedSubtitles: true } };
     fs.writeFileSync(baseline.output.metadataPath, JSON.stringify(baseline));
     const io = { probe: jest.fn(async file => ({ duration: file === baseline.output.mediaPath ? 30 : file.endsWith('shikamochi-op.mp4') ? 6.487696 : 39.487696,
-        width: 1920, height: 1080, audio: true })), render: jest.fn(async (_file, out) => fs.writeFileSync(out, 'part')),
+        width: 1920, height: 1080, audio: true })), measureAudio: jest.fn(async () => ({ integrated: -24, truePeak: -3 })),
+        render: jest.fn(async (_file, out) => fs.writeFileSync(out, 'part')),
         concat: jest.fn(async (_file, out) => fs.writeFileSync(out, 'final')) };
     jest.spyOn(runtime.loadWorkflow('clipping/editorialMedia'), 'editorialMediaIO').mockReturnValue(io);
     jest.spyOn(require('./enhancement_runner'), 'requestStage').mockResolvedValue({ text: JSON.stringify({ choices: [{ id: 1, style: 'highlight_first',
@@ -65,7 +66,7 @@ test.each(['own', 'topic'].flatMap(kind => [0, .75].map(sample => [kind, sample]
         expect(result.style).toBe('highlight_first');
         expect(result.editorialTimeline.opManifest).toBe(selected);
         expect(result.editorialTimeline.op.id).toBe(manifest.id);
-        expect(f.io.render).toHaveBeenCalledWith(opMedia, expect.any(String), 0, manifest.duration, expect.any(Object));
+        expect(f.io.render).toHaveBeenCalledWith(opMedia, expect.any(String), 0, manifest.duration, expect.any(Object), -1);
         const receipt = editorialEvidenceDigest(result);
         random.mockReturnValue(sample === 0 ? .75 : 0);
         expect(editorialEvidenceDigest(result)).toBe(receipt);

@@ -11,6 +11,8 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "no clips found in upload json",
     "unsupported upload json shape",
     "无法读取上传 json",
+    "无法读取上传资料",
+    "上传资料校验失败",
     "上传 json 中未找到切片",
     "no such file or directory",
     "review.md not found",
@@ -50,6 +52,9 @@ def terminal_upload_error_reason(output: str) -> str:
     lowered = text.lower()
     for marker in TERMINAL_UPLOAD_ERROR_MARKERS:
         if marker.lower() in lowered:
+            if marker in ("无法读取上传资料", "上传资料校验失败"):
+                detail = next(line.strip() for line in text.splitlines() if marker in line)
+                return f"deterministic uploader error: {detail[:1000]}"
             return f"deterministic uploader error: {marker}"
     if re.search(r"文件缺失:\s*[1-9]\d*", text):
         return "deterministic uploader error: 文件缺失"

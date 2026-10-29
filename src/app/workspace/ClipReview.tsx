@@ -7,6 +7,7 @@ import { ActivityRevision } from './StreamWorkflows';
 import { subtitleRows } from '../../core/admin/subtitles';
 import { SourcePlayer } from './SourcePlayer';
 import { CoverEditor } from './CoverEditor';
+import { CancelUpload } from './CancelUpload';
 import { TitleChoiceRef, TitlePicker, TitleStatistics } from './TitlePicker';
 
 interface ClipList { clips: ClipSummary[]; total: number; page: number; counts: Record<string, number>; rooms: string[] }
@@ -46,7 +47,7 @@ export function ClipReview({ onJobs }: { onJobs: () => void }) {
         const job = feedbackJobs[clip.id], active = feedbackActive(job);
         const label = ['uploaded', 'queued', 'uploading'].includes(clip.status) ? statusText(clip.status)
           : active ? '已提交反馈，正在处理' : job?.status === 'failed' ? '反馈处理失败' : job?.status === 'interrupted' ? '处理已中断'
-          : job?.status === 'succeeded' && !['uploaded', 'uploading'].includes(clip.status) ? '已入队投稿' : statusText(clip.status);
+          : statusText(clip.status);
         return <button key={clip.id} className={selected === clip.id ? 'selected' : ''} onClick={() => setSelected(clip.id)}>
         <div className="clip-row-meta"><span className="mono">#{clip.id}</span><span className={`status status-${active ? 'queued' : clip.status}`}>{label}</span></div>
         <strong>{clip.reviewTitle || clip.title || '未命名视频'}</strong><small>{clip.streamerName || clip.roomId || '房间未标记'} <span>·</span> {clip.start && `源 ${clip.start} · `}{clip.duration || '时长待确认'}</small>
@@ -73,7 +74,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const feedback = useResource<{ job: AdminJob | null }>(`/clips/${id}/feedback`, 0, true);
   const polled = feedback.data?.job;
   const job = polled && (!currentFeedback || polled.createdAt > currentFeedback.createdAt || polled.id === currentFeedback.id && polled.updatedAt > currentFeedback.updatedAt) ? polled : currentFeedback;
-  const processing = busy || titleBusy || feedbackActive(job);
+  const processing = busy || titleBusy || feedbackActive(job) || !!detail?.uploadJob || detail?.clip.status === 'cancelling';
   const publicationComplete = !!detail && ['uploaded', 'queued', 'uploading'].includes(detail.clip.status);
   const feedbackFailed = !!job && ['failed', 'interrupted'].includes(job.status) && !publicationComplete;
   const restored = useRef(false);
@@ -141,7 +142,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
     {message && <div className="notice" role="status">{message}<button onClick={onJobs}>查看任务 ↗</button></div>}
     {feedback.error && <div className="notice error" role="alert">处理进度暂时无法读取：{feedback.error}</div>}
     {job && <div className={`notice${feedbackFailed ? ' error' : ''}`} role={feedbackFailed ? 'alert' : 'status'}>
-      <strong>{publicationComplete ? statusText(detail!.clip.status) : feedbackActive(job) ? '已提交，正在处理' : job.status === 'succeeded' ? '处理完成，已加入投稿队列' : `${statusText(job.status)} · ${job.phase || '等待处理'}`}</strong>
+      <strong>{publicationComplete ? statusText(detail!.clip.status) : feedbackActive(job) ? '已提交，正在处理' : job.status === 'succeeded' ? `上次处理完成 · 当前${statusText(detail?.clip.status || '')}` : `${statusText(job.status)} · ${job.phase || '等待处理'}`}</strong>
       {feedbackActive(job) && <p>{job.phase || '等待后台处理'}。可以继续选择其他切片，结果会自动更新。</p>}
       {feedbackFailed && <p>修改意见已保留，请根据下方原因补充意见后重试。</p>}
       <details><summary>查看处理过程和已保存的意见</summary><p>{job.note}</p><pre>{job.output || '等待执行…'}</pre></details>
@@ -175,9 +176,12 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
             : <p className="muted">成片制作完成后，可以拖动选帧并裁剪封面。</p>}</div></section>}
       {tab === 'evidence' && <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>}
       {tab === 'rebuild' && (detail.category === 'clip' ? <section className="inspector-section"><p className="muted">源时间使用整场录播的绝对秒数。重制准备修订，制作生成新视频；精剪会调用配置的 AI 流程。</p><div className="form-grid"><label>开始秒数<input value={start} onChange={event => setStart(event.target.value)} /></label><label>结束秒数<input value={end} onChange={event => setEnd(event.target.value)} /></label></div><label className="check-label"><input type="checkbox" checked={allowLong} onChange={event => setAllowLong(event.target.checked)} />保留完整的长话题</label>{allowLong && <label>完整话题说明<input value={durationNote} onChange={event => setDurationNote(event.target.value)} /></label>}<div className="button-row"><button disabled={processing} onClick={() => void act('rebuild')}>准备重制修订</button><button disabled={processing} onClick={() => void act('precision')}>AI 精剪</button></div></section> : detail.category === 'activity' ? <ActivityRevision busy={processing} kind={detail.evidence.kind} act={act} /> : <p className="muted inspector-section">完整游戏包保留连续内容，可逐 P 预览、审核和整包投稿。</p>)}
-      <footer className="review-actions"><label>修改意见（可选）<textarea value={note} disabled={processing || publicationComplete || job?.status === 'succeeded'} onChange={event => changeNote(event.target.value)} placeholder="没有问题直接点下方投稿。有修改再填写，例如：把字幕“建功”改成“建构”，标题保留。" rows={3} maxLength={1000} /></label>
+      {detail.uploadJob && (detail.uploadJob.cancelling ? <p role="status">正在取消，后台停止后可修改并重新投稿。</p>
+        : detail.uploadJob.submissionStarted ? <p role="status">已进入最终提交，请核对投稿回执。</p>
+        : <CancelUpload clipId={id} onCancelled={resource.refresh} />)}
+      <footer className="review-actions"><label>修改意见（可选）<textarea value={note} disabled={processing || publicationComplete} onChange={event => changeNote(event.target.value)} placeholder="没有问题直接点下方投稿。有修改再填写，例如：把字幕“建功”改成“建构”，标题保留。" rows={3} maxLength={1000} /></label>
         <p className="muted">无需填写确认语。点击即授权投稿；有修改意见则先按意见修改，尚无成片或有待制作修订则先制作。进度与失败原因会显示在这里。</p>
-        <button className="primary" disabled={processing || job?.status === 'succeeded' || publicationComplete} onClick={() => void act('feedback-publish', {}, note.trim() || '投')}>{detail.clip.status === 'uploaded' ? '已投稿' : publicationComplete ? '已加入投稿队列' : busy ? '正在提交…' : feedbackActive(job) ? '已提交，正在处理' : job?.status === 'succeeded' ? '已加入投稿队列' : note.trim() ? feedbackFailed ? '按补充意见重试并投稿' : '按意见修改并投稿' : !detail.media || detail.pendingRebuild ? '按当前内容制作并投稿' : '没问题，直接投稿'}</button>
+        <button className="primary" disabled={processing || publicationComplete} onClick={() => void act('feedback-publish', {}, note.trim() || '投')}>{detail.clip.status === 'uploaded' ? '已投稿' : publicationComplete ? '已加入投稿队列' : busy ? '正在提交…' : feedbackActive(job) ? '已提交，正在处理' : note.trim() ? feedbackFailed ? '按补充意见重试并投稿' : '按意见修改并投稿' : !detail.media || detail.pendingRebuild ? '按当前内容制作并投稿' : '没问题，直接投稿'}</button>
         <details><summary>高级操作</summary><div className="button-row">{detail.category === 'clip' && <button disabled={processing} onClick={() => void act('cut')}>只制作成片</button>}<button disabled={processing || !detail.media} onClick={() => void act('approve-review')}>只保存审核</button><button disabled={processing || detail.clip.status === 'uploaded'} onClick={() => void act('enqueue')}>只入队投稿</button>{detail.category === 'clip' && <button className="danger-link" disabled={processing || detail.clip.status === 'uploaded'} onClick={() => void act('exclude')}>排除</button>}</div></details>
       </footer>
     </>}

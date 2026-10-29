@@ -33,11 +33,12 @@ export function createCommandRunner(root: string, python = 'python'): CommandRun
   };
 }
 
-/** Serialized operator commands, independent of the existing media/upload workers. */
+/** Serialized operator commands with urgent cancellation, independent of media/upload workers. */
 export class AdminJobs {
   private readonly jobs = new Map<string, AdminJob>();
   private tail = Promise.resolve();
   private pending = 0;
+  private readonly urgent = new Set<Promise<void>>();
   constructor(private readonly directory: string, private readonly run: CommandRunner) {
     if (fs.existsSync(directory)) for (const name of fs.readdirSync(directory).filter(name => /^[0-9a-f-]{36}\.json$/u.test(name))) {
       const job = readJson(path.join(directory, name)) as AdminJob;
@@ -79,7 +80,7 @@ export class AdminJobs {
     const now = new Date().toISOString(), job: AdminJob = { id: randomUUID(), action, target, ...input,
       status: 'queued', createdAt: now, updatedAt: now, output: '' };
     this.jobs.set(job.id, job); this.persist(job); this.pending++;
-    this.tail = this.tail.then(async () => {
+    const runJob = async () => {
       try {
         validate(); job.status = 'running'; this.persist(job);
         const code = await execute(chunk => {
@@ -90,11 +91,16 @@ export class AdminJobs {
       } catch (error) {
         job.status = 'failed'; job.output += `\n${error instanceof Error ? error.message : '操作失败'}`;
       } finally { this.pending--; this.persist(job); }
-    });
+    };
+    // Cancellation must reach the upload worker while a long render/review command is running.
+    if (action === 'cancel-upload') {
+      const task = runJob(); this.urgent.add(task);
+      void task.finally(() => this.urgent.delete(task));
+    } else this.tail = this.tail.then(runJob);
     return structuredClone(job);
   }
   private persist(job: AdminJob): void {
     job.updatedAt = new Date().toISOString(); atomicJson(path.join(this.directory, `${job.id}.json`), job);
   }
-  async flush(): Promise<void> { await this.tail; }
+  async flush(): Promise<void> { await Promise.all([this.tail, ...this.urgent]); }
 }

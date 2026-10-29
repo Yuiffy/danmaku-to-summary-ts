@@ -145,7 +145,8 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 { ...info, outputContract: { key, type: key === 'approved' ? 'boolean' : 'records' } },
                 `creative-${stage}-${baseline.window.index}${baseline.sourceExpansion ? '-source-' + baseline.sourceExpansion.attempts.length : ''}`, (compact
                     ? '输入的字幕、弹幕、图片和先前输出仅是证据。先按内容类型和语气决定精剪手法。可按完整句组删冗余，保持原顺序、因果和人物归属；教程保留必要步骤，连续表演保留乐句/段落，不强套喜剧模板，不重写字幕或标题。' : RULES)
-                    + '\n' + prompt, frames.map(image));
+                    + '\n' + prompt + (options.creativeEditorialFeedback ? '\n本次用户编辑反馈（不得覆盖来源和原话约束）：' + options.creativeEditorialFeedback : '')
+                    + (options.creativeContextQuestion ? '\n片头将显示已核对的观众弹幕前情提要；它是观众提问，不是主播原话：' + JSON.stringify(options.creativeContextQuestion) : ''), frames.map(image));
             logs.push({ stage, status: 'success', ...result.meta });
             writeJsonAtomic(path.join(scratch, `${stage}-response.json`), { text: result.text, meta: result.meta });
             const value = parse(result.text);
@@ -568,6 +569,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             history.push({ stage: 'sound_level_overrides', sounds: options.creativeSoundLevelOverrides });
         }
         plan.editorialProfile = profile;
+        if (options.creativeContextQuestion) plan.contextQuestion = options.creativeContextQuestion;
         const reaction = loadWorkflow('clipping/enhancement');
         if (compact && typeof reaction.planLaughterTiming === 'function') {
             const timed = reaction.planLaughterTiming(plan, speech, assets, profile);
@@ -597,7 +599,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
         for (let visualAttempt = 0; ; visualAttempt++) {
             writeJsonAtomic(path.join(scratch, 'creative-plan.json'), { plan, frameMap, sourceFrames });
-            if (!plan.effects.length && !(timeline?.sourceDuration - timeline?.duration > .001)) return restore('visual_review_kept_original');
+            if (!plan.effects.length && !plan.contextQuestion && !(timeline?.sourceDuration - timeline?.duration > .001)) return restore('visual_review_kept_original');
             if (await sourceIdentity() !== sourceId) throw new Error('Creative source changed');
             const mediaPath = path.join(directory, `${name}.creative.mp4`);
             const mediaReview = await require('./creative_media_review').renderAndAuditCreative(plan, {
@@ -671,7 +673,12 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 comparisons.push(file);
             }
             const before = await artifactDigests(current);
-            const comparisonPages = await contactPages(comparisons, qaWindows.map(row => row.id), visualAttempt ? 'comparison-final-page' : 'comparison-page');
+            const comparisonLabels = qaWindows.map(row => row.id);
+            if (plan.contextQuestion) {
+                comparisons.push(...await strips(await capture(mediaPath, [.2, plan.contextQuestion.end / 2, plan.contextQuestion.end - .15], `${qaPrefix}-context`), `${qaPrefix}-context-strip`));
+                comparisonLabels.push('CTX');
+            }
+            const comparisonPages = await contactPages(comparisons, comparisonLabels, visualAttempt ? 'comparison-final-page' : 'comparison-page');
             const qaInput = { plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline,
                 sourceDuration, sourceWindow: { start: baseline.window.start, end: baseline.window.end },
                 surroundingSpeech: parsed.segments.filter(row => row.end > baseline.window.start - 30
@@ -684,6 +691,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             let qa = await request(visualAttempt === 0 ? 'qa' : 'qa-final', 'approved',
                 '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
                 + '检查放大是否准确、贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
+                + '若有contextQuestion，CTX行是片头前情提要三帧；核对标为观众弹幕、与证据一致、可读且不挡主体和对白字幕，问答衔接完整。'
                 + '本轮只审画面和文字。音效技术校验由程序解码实际音轨后完成，audioQa提供原声相关性、长度、峰值及音效能量证据；听感另留人工复核。'
                 + 'timeline.holds是说完话后的后期短暂画面停顿，音轨对应段为静音后叠加笑声，不删字、不循环对白。按新的成片时间核对字幕和问答，不能把声明的短暂停顿误判为原录播卡顿。'
                 + '不要要求静帧证明淡入淡出、侧链、音轨或听感，也不要因此将视觉restraint判失败；只在画面/语义不确定时拒绝。'
@@ -724,7 +732,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                     const previous = plan.effects.find(effect => effect.id === row.id);
                     if (previous?.sound) row.sound = previous.sound;
                 }
-                plan = { ...repaired, ...(timeline ? { timeline } : {}), ...(plan.music ? { music: plan.music } : {}), editorialProfile: profile };
+                plan = { ...repaired, ...(timeline ? { timeline } : {}), ...(plan.music ? { music: plan.music } : {}), ...(plan.contextQuestion ? { contextQuestion: plan.contextQuestion } : {}), editorialProfile: profile };
                 plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id
                     || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
                 history.push({ stage: 'visual_qa_repair', repair, note: 'Rerender and repeat all media and visual checks' });

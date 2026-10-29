@@ -7,13 +7,14 @@ import { AdminError, digest, readJson, readText } from './AdminFiles';
 import { sourceWindowSubtitles } from '../../core/admin/subtitles';
 import { campaignShortlistPolicy, shortlistCampaignCandidates } from '../../core/admin/campaignCandidates';
 import { campaignCandidatePath } from '../../workflows/clipping/campaignCandidate';
+import { checkCampaignContent } from '../../workflows/clipping/ownCampaign';
 
 type Data = Record<string, any>;
 type Entry = { summary: CampaignCandidate; media: string; srt: string; state: string; row: Data };
 const mediaExtensions = ['.flv', '.mp4', '.mkv', '.ts', '.webm'];
 const normalize = (file: string) => path.resolve(file).toLowerCase();
 
-/** Read-only browsing of deferred campaign selections, including sessions with no upload IDs. */
+/** Read-only browsing of Sui and campaign selections, including sessions with no upload IDs. */
 export class AdminCampaignCandidates {
   private cached?: { at: number; entries: Map<string, Entry> };
   constructor(private readonly clips: AdminClipStore, private readonly roots: () => string[], private readonly campaigns: () => Data[]) {}
@@ -24,6 +25,20 @@ export class AdminCampaignCandidates {
   private directories(directory: string): string[] {
     try { return fs.readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isDirectory() && !entry.isSymbolicLink()).map(entry => path.join(directory, entry.name)); }
     catch { return []; }
+  }
+  private legacyCampaign(metadata: Data, plan: Data, campaigns: Data[]): boolean {
+    const source = { ...plan.source, ...metadata.source };
+    const mediaPath = this.checked(source.mediaPath, mediaExtensions);
+    const srtPath = this.checked(source.srtPath, ['.srt']), xmlPath = this.checked(source.xmlPath, ['.xml']);
+    if (!mediaPath || !srtPath || !xmlPath) return false;
+    const base = path.join(path.dirname(mediaPath), path.parse(mediaPath).name);
+    const liveContentSummaryPath = this.checked(`${base}_LIVE_CONTENT.json`, ['.json']);
+    const fullLiveContextPath = this.checked(`${base}_FULL_LIVE_CONTEXT.json`, ['.json']);
+    if (!liveContentSummaryPath || !fullLiveContextPath) return false;
+    // Old PLAN files omitted the gate. Reuse actual-play admission, never infer it from overview text.
+    return campaigns.some(campaign => (campaign.roomIds || []).map(String).includes(String(metadata.roomId))
+      && checkCampaignContent({ campaignContentGate: campaign }, { mediaPath, srtPath, xmlPath,
+        roomId: metadata.roomId, liveContentSummaryPath, fullLiveContextPath }).allowed);
   }
   private states(): string[] {
     const files = new Set<string>();
@@ -36,11 +51,15 @@ export class AdminCampaignCandidates {
       } catch { /* An absent/archived batch does not hide the remaining sessions. */ }
     };
     // Fixed room/date/batch layout only; never recursively scan recording media or arbitrary paths.
-    for (const campaign of this.campaigns().filter(item => item.requiredGames?.includes('芙娅之魂'))) {
-      const rooms = new Set((campaign.roomIds || []).map(String));
+    const scopes = this.campaigns().filter(item => item.requiredGames?.includes('芙娅之魂')).flatMap(campaign => {
       const first = String(campaign.startsAt || '').slice(0, 10).replace(/-/gu, '_');
       const last = String(campaign.endsAt || '').slice(0, 10).replace(/-/gu, '_');
-      if (!/^\d{4}_\d{2}_\d{2}$/u.test(first) || !/^\d{4}_\d{2}_\d{2}$/u.test(last)) continue;
+      if (!/^\d{4}_\d{2}_\d{2}$/u.test(first) || !/^\d{4}_\d{2}_\d{2}$/u.test(last)) return [];
+      return [{ rooms: new Set<string>((campaign.roomIds || []).map(String)), first, last }];
+    });
+    // Ordinary Sui recalls are independent of campaign dates and game titles.
+    scopes.push({ rooms: new Set(['25788785']), first: '0000_00_00', last: '9999_99_99' });
+    for (const { rooms, first, last } of scopes) {
       for (const root of this.roots()) {
         const roomDirectories = rooms.has(path.basename(root).split('_')[0]) ? [root] : this.directories(root);
         for (const room of roomDirectories.filter(file => rooms.has(path.basename(file).split('_')[0]))) {
@@ -66,9 +85,13 @@ export class AdminCampaignCandidates {
       const campaigns = this.campaigns().filter(item => item.requiredGames?.includes('芙娅之魂'));
       const namedGame = campaigns.some(item => [...(item.requiredGames || []), ...(item.earlyTrigger?.titleKeywords || [])]
         .some(name => String(metadata.streamTitle || '').includes(name)));
-      const planFile = !namedGame && this.checked(metadata.planPath, ['.json']);
-      const plan = planFile ? readJson(planFile, {}) : {};
-      if (!namedGame && !campaigns.some(item => plan.config?.campaignContentGate?.id === item.id)) continue;
+      const planFile = (!namedGame || !metadata.source?.mediaPath || !metadata.source?.srtPath) && this.checked(metadata.planPath, ['.json']);
+      let plan: Data = {};
+      try { if (planFile) plan = readJson(planFile, {}); } catch { /* Legacy summary evidence can still be available. */ }
+      if (plan.source) metadata = { ...metadata, source: { ...plan.source, ...metadata.source } };
+      if (String(metadata.roomId) !== '25788785' && !namedGame
+        && !campaigns.some(item => plan.config?.campaignContentGate?.id === item.id)
+        && !this.legacyCampaign(metadata, plan, campaigns)) continue;
       for (const row of deferredSelectionRows(metadata)) {
         const media = String(row.sourceMediaPath || ''), srt = String(row.sourceSrtPath || '');
         if (!media || !srt) continue;

@@ -10,7 +10,7 @@ test('repeat builds and failed builds clean their staging files without activati
       'clipping/activityStages', 'clipping/activityRecovery', 'clipping/activityWatchContext', 'clipping/activityAudio', 'clipping/activityTitles', 'clipping/activityPublication', 'clipping/ownTimingRecovery',
       'clipping/watchBlackPolicy', 'clipping/watchBlackRuntime', 'clipping/watchMovieCadence', 'clipping/songResearchRuntime', 'clipping/activityNativeSegments', 'clipping/watchPublicNames',
       'clipping/reviewDigest', 'clipping/reviewSelectionHistory', 'clipping/ownSourceReview', 'clipping/ownCampaign', 'clipping/clipIntent',
-      'clipping/editorialStyle', 'clipping/editorialSelection', 'clipping/editorialRuntime', 'clipping/editorialMedia',
+      'clipping/editorialStyle', 'clipping/editorialSelection', 'clipping/editorialRuntime', 'clipping/editorialMedia', 'clipping/creativeContext',
       'clipping/ownPublicationRepair', 'clipping/ownBoundaryRepair', 'clipping/ownRequiredReview', 'clipping/subtitleWindowEvidence', 'clipping/ownPublicationRecheck',
       'clipping/ownSubtitleRepairRuntime',
       'clipping/gameOpening', 'clipping/gameEditorial', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',

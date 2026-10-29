@@ -1,4 +1,4 @@
-import { clipStyle, composeTimeline, parseSrt, projectCues, writeSrt } from './editorialStyle';
+import { clipStyle, composeTimeline, parseSrt, projectCues, writeSrt, validateHookBudget } from './editorialStyle';
 const cues = [{ start: 0, end: 3, text: '开场' }, { start: 8, end: 11, text: '反转' }, { start: 15, end: 19, text: '解释' }];
 const plan = (highlights: Array<{ start: number; end: number }>, repetition?: 'auto' | 'keep' | 'omit_prefix') =>
     ({ version: 1 as const, reason: '保留完整原话及后文解释', highlights, repetition });
@@ -30,4 +30,11 @@ test.each([
 test('three explicit modes and unknown mode rejection', () => {
     expect(['普通', '重点前置', '精切'].map(clipStyle)).toEqual(['ordinary', 'highlight_first', 'precision']);
     expect(() => clipStyle('other')).toThrow();
+});
+test('new short clips reject excessive repeated answers while historical timelines remain auditable', () => {
+    const answer = [{ start: 15, end: 25.5, text: '完整答案' }];
+    const p = plan([{ start: 15, end: 25.5 }]);
+    expect(() => validateHookBudget(36.8, p, answer)).toThrow(/Repeated teaser/);
+    expect(composeTimeline(36.8, 3.2, p, answer).hookSeconds).toBe(10.5);
+    expect(() => validateHookBudget(36.8, plan([{ start: 0, end: 10.5 }]), [{ start: 0, end: 10, text: '提问' }])).not.toThrow();
 });

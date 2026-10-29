@@ -18,6 +18,33 @@ def _file_digest(value):
 
 
 def validate_metadata_qa(metadata):
+    return _validate_metadata_qa(metadata)
+
+
+def validate_precision_metadata_qa(metadata, baseline):
+    """Check a manual precision revision and its fully reviewed baseline separately.
+
+    This grants no publication authority. The precision command requires a separate
+    user preview approval; automatic queue validation still uses validate_metadata_qa.
+    """
+    revision = metadata.get("precisionRevision") or {}
+    required = ("qaRequired", "attributionRequired", "humanReviewRequired", "automaticPublicationRequired")
+    if (revision.get("status") != "pending_review" or (metadata.get("creativeResult") or {}).get("status") != "edited"
+            or metadata.get("qaRequired") is not True
+            or any(baseline.get(key) is True and metadata.get(key) is not True for key in required)):
+        raise ValueError("manual precision review requires a current revision and preserved publication gates")
+    validate_metadata_qa(baseline)
+    audio = metadata.get("audioQa") or {}
+    creative = metadata.get("creativeResult") or {}
+    if (metadata.get("preRenderHold") or metadata.get("sourceExpansionRequest") or metadata.get("storyRepairRequest")
+            or "source_window_incomplete" in str(creative.get("reason") or "")
+            or any(row.get("stage") == "source_window_incomplete" for row in creative.get("history", []) if isinstance(row, dict))
+            or audio and (audio.get("status") != "passed" or audio.get("issues"))):
+        raise ValueError("manual precision source or audio review is unresolved")
+    return _validate_metadata_qa(metadata, automatic=False)
+
+
+def _validate_metadata_qa(metadata, *, automatic=True):
     if metadata.get("type") == "social_post_video":
         try:
             from .social_post_review import validate_social_post_review
@@ -69,7 +96,7 @@ def validate_metadata_qa(metadata):
     if metadata.get("ownStreamHumanReview"):
         validate_human_review(metadata)
         return
-    if metadata.get("automaticPublicationRequired"):
+    if automatic and metadata.get("automaticPublicationRequired"):
         validate_publication_review(metadata)
     if metadata.get("mode") == "own_stream_fun_review" and metadata.get("uploadReady") is False:
         raise ValueError("own-stream clip is not upload ready")

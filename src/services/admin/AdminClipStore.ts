@@ -132,6 +132,7 @@ export class AdminClipStore {
     delete revisionClip.updatedAt;
     return {
       clip: this.presentation(clip, metadata), revision: digest(JSON.stringify({ clip: revisionClip, metadata, subtitles, source, fingerprints, subtitleFingerprints })),
+      uploadJob: this.activeUploadJob(id),
       mediaRevision: digest(JSON.stringify({ media: fingerprints.filter(entry => [clip.mediaPath, metadata.output?.mediaPath,
         ...parts.map((part: any) => part.mediaPath)].includes(entry.file)), subtitleFingerprints })),
       sourceRevision: digest(JSON.stringify({ source, media: fingerprints.filter(entry => entry.file === (metadata.source?.mediaPath || clip.sourceMediaPath)) })),
@@ -187,9 +188,19 @@ export class AdminClipStore {
     atomicJson(file, data); return file;
   }
   hasActiveUpload(id: string): boolean {
+    return !!this.activeUploadJob(id);
+  }
+  private activeUploadJob(id: string): ClipDetail['uploadJob'] {
     const queue = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });
-    return queue.jobs.some((job: any) => ['pending', 'queued', 'running', 'uploading', 'processing'].includes(job.status)
-      && job.clipIds?.includes(Number(id)));
+    const job = queue.jobs.find((job: any) => ['pending', 'queued', 'retry_wait', 'blocked', 'running', 'uploading', 'processing'].includes(job.status)
+      && job.clipIds?.includes(Number(id)) && !job.cancellationAcknowledgedIds?.includes(Number(id)));
+    return job ? { id: job.id, cancelling: !!job.cancellationRequests?.[id], submissionStarted: !!job.submissionStartedClipIds?.includes(Number(id)) } : undefined;
+  }
+  uploadJob(id: string): any {
+    const queue = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });
+    const job = queue.jobs.find((job: any) => job.id === id);
+    if (!job) throw new AdminError('队列任务不存在', 404);
+    return job;
   }
   uploadStatus() {
     const now = Date.now();

@@ -2,7 +2,7 @@ export {};
 const fs = require('fs'), os = require('os'), path = require('path'), sharp = require('sharp');
 const { runCreativeEnhancement } = require('./creative_runner');
 
-test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent', 'focus_qa_repaired', 'content_only', 'content_only_discarded_moments', 'content_only_topic_plan'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
+test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent', 'focus_qa_repaired', 'content_only', 'content_only_discarded_moments', 'content_only_topic_plan', 'context_only'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
     const contentOnly = outcome.startsWith('content_only');
     const topicPlan = outcome === 'content_only_topic_plan';
     const profileCase = contentOnly || ['tutorial', 'performance'].includes(outcome);
@@ -28,7 +28,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                     const samples = new Float32Array(60 * 16000 * 2), rendered = args.at(-1).includes('audio-rendered');
                     for (let i = 0; i < samples.length; i++) {
                         const t = Math.floor(i / 2) / 16000;
-                        samples[i] = .1 * Math.sin(2 * Math.PI * 200 * t) + (rendered && t >= 5.2 && t < 7 ? .015 * Math.sin(2 * Math.PI * 900 * t) : 0);
+                        samples[i] = .1 * Math.sin(2 * Math.PI * 200 * t) + (rendered && outcome !== 'context_only' && t >= 5.2 && t < 7 ? .015 * Math.sin(2 * Math.PI * 900 * t) : 0);
                     }
                     fs.writeFileSync(args.at(-1), Buffer.from(samples.buffer));
                 }
@@ -38,7 +38,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 expect(window).toEqual(original.window);
                 if (profileCase) { expect(srt).toContain('.edited.srt'); expect(options.creativePlan.music).toBeUndefined(); }
                 else expect(srt).toBe(output.srtPath);
-                expect(options.creativePlan.effects).toHaveLength(contentOnly ? 0 : outcome === 'many_moments' ? 8 : 1);
+                expect(options.creativePlan.effects).toHaveLength(contentOnly || outcome === 'context_only' ? 0 : outcome === 'many_moments' ? 8 : 1);
                 if (outcome === 'crop_repaired') {
                     expect(options.creativePlan.effects[0].zoom).toBeUndefined();
                     expect(options.creativePlan.effects[0].filter).toBe('monochrome');
@@ -97,10 +97,15 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 action, role: index === 2 ? 'closing' : 'setup', reason: '原始选材计划' })), continuation: 'source_end', nextCueId: '', closingReason: '源录播话题结束'
         }, { start: 100, end: 157, startCueId: 'G1', endCueId: 'G3' }, context.subtitleEvidence);
     }
+    if (outcome === 'context_only') {
+        context.options.creativeContextQuestion = { version: 1, kind: 'audience_question', time: 90, text: '你喜欢什么题材？', end: 6 };
+        context.options.creativeEditorialFeedback = '原观众提问补前情，不重复回答';
+    }
     const stages: string[] = [];
     const dependencies = {
         requestStage: jest.fn(async (_config, _budget, info, phase, prompt, images) => {
             stages.push(phase);
+            if (outcome === 'context_only') expect(prompt).toContain('原观众提问补前情，不重复回答');
             let value;
             if (phase.includes('story-qa')) value = { approved: true, issues: [] };
             else if (phase.includes('story')) value = { profile: { kind: contentOnly ? 'tutorial' : outcome, tone: 'neutral', density: 'light', preserveContinuity: outcome === 'performance',
@@ -136,7 +141,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 if (profileCase) value.effects[0] = { momentId: 'M1', frameIds: ['M1F0', 'M1F1', 'M1F2'], visualConfirmed: true, reason: '关键细节保持上下文',
                     focusInset: { target: outcome === 'tutorial' ? 'chat' : 'detail', shape: 'rectangle', placement: 'source',
                         sourceBox: { x: .2, y: .2, width: .2, height: .1 }, magnification: 1.5, clearOfAction: true } };
-                if (contentOnly) value.effects = [];
+                if (contentOnly || outcome === 'context_only') value.effects = [];
                 if (spatialCase) {
                     if (repair) {
                         expect(prompt).toContain('M1: Focus leaves no readable subtitle area');
@@ -192,10 +197,17 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
     };
     try {
         const result = await runCreativeEnhancement(original, context, dependencies);
+        if (outcome === 'context_only' && result.creativeResult.status !== 'edited') throw new Error(result.creativeResult.reason);
         if (outcome.startsWith('visual_qa_')) expect(result.creativeResult.history.filter(row => row.stage === 'error')).toEqual([]);
-        if (contentOnly || spatialCase || ['passed', 'sound_plan', 'crop_repaired', 'many_moments', 'tutorial', 'performance', 'cover_allowed', 'cover_protected', 'visual_qa_repaired', 'focus_qa_repaired'].includes(outcome)) {
+        if (contentOnly || spatialCase || ['passed', 'sound_plan', 'crop_repaired', 'many_moments', 'tutorial', 'performance', 'cover_allowed', 'cover_protected', 'visual_qa_repaired', 'focus_qa_repaired', 'context_only'].includes(outcome)) {
             expect(result.creativeResult.status).toBe('edited'); expect(result.qaResult.status).toBe('passed');
             expect(result.qaResult.digests.video).toMatch(/^[a-f0-9]{64}$/);
+            if (outcome === 'context_only') {
+                expect(result.creativePlan.contextQuestion).toEqual(context.options.creativeContextQuestion);
+                expect(result.audioQa.status).toBe('passed');
+                expect(result.copy.description).toContain('前情提要（原直播观众弹幕提问）');
+                expect(context.topic.runFfmpeg.mock.calls.filter(([args]) => /qa-context-\d+\.jpg$/.test(args.at(-1)))).toHaveLength(3);
+            }
             if (contentOnly) {
                 expect(result.editPlan.removed.length).toBeGreaterThan(0);
                 const qaInput = JSON.parse(fs.readFileSync(path.join(dir, 'temp/clip-creative/qa-input.json'), 'utf8'));

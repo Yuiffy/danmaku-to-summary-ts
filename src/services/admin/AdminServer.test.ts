@@ -160,6 +160,27 @@ it('requires explicit publication and passes exact subtitle replacement text thr
   expect(() => clipCommand(1, { action: 'worker' })).toThrow('不支持');
 });
 
+it('cancels an individual upload through the existing CLI without requiring a stale review revision or publication authorization', async () => {
+  const f = fixture(), queuePath = path.join(f.root, 'data/runtime/clip_upload_queue.json');
+  atomicJson(queuePath, { jobs: [{ id: 'active', status: 'running', clipIds: [1] }] });
+  expect(f.clips.detail('1').uploadJob).toEqual({ id: 'active', cancelling: false, submissionStarted: false });
+  await request(f.app).post('/clips/1/actions').send({ action: 'cancel-upload', note: '人工撤回' }).expect(403);
+  await request(f.app).post('/clips/1/actions').set(headers).send({ action: 'cancel-upload', note: '人工撤回', revision: 'old' }).expect(202);
+  await f.jobs.flush();
+  expect(f.run.mock.calls[0][0].args).toEqual(['src/scripts/clip_upload_registry.py', 'cancel', '--ids', '1', '--note', '人工撤回']);
+  expect(f.run.mock.calls[0][0].args).not.toContain('--enqueue');
+  await request(f.app).post('/clips/99/actions').set(headers).send({ action: 'cancel-upload', note: '撤回' }).expect(404);
+  // A waiting job can be older than the historical 200-row display limit.
+  atomicJson(queuePath, { jobs: [{ id: 'old', status: 'retry_wait', clipIds: [1] },
+    ...Array.from({ length: 205 }, (_, i) => ({ id: `done-${i}`, status: 'done', clipIds: [] }))] });
+  expect(f.clips.hasActiveUpload('1')).toBe(true);
+  await request(f.app).post('/queues/actions').set(headers).send({ action: 'cancel-upload', id: 'old', note: '撤回旧任务' }).expect(202);
+  await f.jobs.flush();
+  expect(f.run.mock.calls[1][0].args).toContain('old');
+  atomicJson(queuePath, { jobs: [{ id: 'old', status: 'running', clipIds: [1], cancellationRequests: { 1: {} }, cancellationAcknowledgedIds: [1] }] });
+  expect(f.clips.hasActiveUpload('1')).toBe(false);
+});
+
 it('applies web reminder edits in the bot without resetting receipts, and acknowledges rejected commands', async () => {
   const f = fixture(), state = initialReminderState();
   state.receipts.push({ day: '2026-10-10', id: 'medicine', at: Date.parse('2026-10-10T12:00:00Z'), text: '按医嘱吃药', status: 'sent', notified: true });

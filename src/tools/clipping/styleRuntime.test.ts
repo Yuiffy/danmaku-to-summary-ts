@@ -21,6 +21,7 @@ function setup() {
     const output = path.join(dir, 'revision');
     const io: StyleIO = { probe: jest.fn(async file => ({ duration: file === media ? 30 : file.endsWith('op.mp4') ? 6 : 39,
         width: 1920, height: 1080, audio: true })),
+        measureAudio: jest.fn(async file => ({ integrated: file.endsWith('op.mp4') ? -12 : -24, truePeak: -3 })),
         render: jest.fn(async (_file, out) => { fs.writeFileSync(out, 'part'); }),
         concat: jest.fn(async (_file, out) => { fs.writeFileSync(out, 'render'); }) };
     return { media, metadata, opManifest, output, io, plan: { version: 1 as const, highlights: [{ start: 8, end: 11 }], reason: '重点' } };
@@ -33,6 +34,9 @@ test('rendered revision has repeated teaser subtitles, source bindings and fresh
     expect(result).not.toHaveProperty('publicationReview');
     expect(fs.readFileSync(f.metadata, 'utf8')).toBe(original);
     expect(f.io.render).toHaveBeenCalledTimes(3);
+    expect(f.io.render).toHaveBeenNthCalledWith(2, path.join(dir, 'op.mp4'), path.join(f.output, 'part-1.mp4'), 0, 6,
+        expect.any(Object), -13);
+    expect(result.editorialTimeline.audioMix.status).toBe('passed');
     expect(fs.readFileSync(result.output.srtPath, 'utf8').match(/重点/g)).toHaveLength(2);
     expect(result.editorialTimeline.binding.media).toBe(sha('baseline'));
     await expect(renderHighlightFirst(f, f.io)).rejects.toThrow();
@@ -56,4 +60,10 @@ test('plan bindings also reject a replaced baseline and revised subtitles', asyn
     await expect(renderHighlightFirst({ ...f, plan: { ...f.plan, baselineMediaSha256: sha('other') } }, f.io)).rejects.toThrow(/different baseline/);
     await expect(renderHighlightFirst({ ...f, plan: { ...f.plan, baselineSubtitlesSha256: sha('other') } }, f.io)).rejects.toThrow(/subtitles/);
     expect(f.io.render).not.toHaveBeenCalled();
+});
+test('loud rendered OP fails the revision instead of receiving pending success metadata', async () => {
+    const f = setup();
+    f.io.measureAudio = jest.fn(async file => ({ integrated: file === f.media ? -24 : -10, truePeak: -2 }));
+    await expect(renderHighlightFirst(f, f.io)).rejects.toThrow(/louder/);
+    expect(fs.existsSync(path.join(f.output, 'highlight_first.json'))).toBe(false);
 });

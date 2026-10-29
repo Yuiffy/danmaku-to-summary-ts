@@ -2,12 +2,13 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { openCommentOwnerLock } from '../bilibili/comment-replies/CommentOwnerLock';
 import { QQ_LIMITS } from './QQPolicy';
+import { QQ_IMAGE_LIMITS } from './QQImagePolicy';
 
 export interface QQReceipt { at: number; status: 'accepted' | 'generating' | 'sending' | 'sent' | 'unknown' | 'skipped' }
 export interface QQState {
   version: 1; appId: string; paused: boolean; day: string; tokens: number; lastSendAt: number; starts: number[];
   images?: number; lastImageAt?: number;
-  users: Record<string, { count: number; starts: number[]; privateAt?: number; noticeUntil?: number; images?: number }>;
+  users: Record<string, { count: number; starts: number[]; privateAt?: number; noticeUntil?: number; images?: number; imageStarts?: number[] }>;
   receipts: Record<string, QQReceipt>;
 }
 export const newQQState = (appId: string): QQState => ({ version: 1, appId, paused: false, day: '', tokens: 0,
@@ -26,6 +27,7 @@ export function validateQQState(value: QQState, appId: string): void {
   for (const [key, user] of Object.entries(value.users)) if (!digest(key) || !user || !time(user.count) ||
     !Array.isArray(user.starts) || user.starts.length > QQ_LIMITS.userWindowReplies || user.starts.some(at => !time(at)) ||
     user.privateAt !== undefined && !time(user.privateAt) || user.images !== undefined && !time(user.images) ||
+    user.imageStarts !== undefined && (!Array.isArray(user.imageStarts) || user.imageStarts.length > QQ_IMAGE_LIMITS.userWindowImages || user.imageStarts.some(at => !time(at))) ||
     user.noticeUntil !== undefined && !time(user.noticeUntil)) throw new Error('Invalid QQ user state');
   for (const [key, receipt] of Object.entries(value.receipts)) if (!digest(key) || !receipt || !time(receipt.at) ||
     !['accepted', 'generating', 'sending', 'sent', 'unknown', 'skipped'].includes(receipt.status)) throw new Error('Invalid QQ receipt');

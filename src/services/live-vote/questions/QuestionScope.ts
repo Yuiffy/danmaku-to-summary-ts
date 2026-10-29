@@ -12,7 +12,8 @@ export function configuredQuestionRooms(config: LiveQuestionConfig): QuestionRoo
 }
 
 /** Only explicit configured identities select other rooms; no paths or model-generated room IDs. */
-export function questionScope(config: LiveQuestionConfig, current: string, question: string): QuestionRoom[] {
+export function questionScope(config: LiveQuestionConfig, current: string, question: string, maxRooms = 3): QuestionRoom[] {
+  if (!Number.isInteger(maxRooms) || maxRooms < 1 || maxRooms > 8) throw new Error('Invalid question room limit');
   const rooms = configuredQuestionRooms(config), local = rooms.find(room => room.roomId === current);
   if (!local) throw new Error('Question room is outside the configured corpus');
   const normalized = question.normalize('NFKC').toLowerCase();
@@ -23,7 +24,8 @@ export function questionScope(config: LiveQuestionConfig, current: string, quest
   }) || new RegExp(`(?:房间|直播间)\\s*${room.roomId}(?!\\d)`, 'u').test(normalized));
   if (!selected.length) return [local];
   if (/(?:我|你|咱|本|这里|这边).{0,5}(?:和|跟|比)|(?:和|跟|比).{0,5}(?:我|你|咱|本直播间|这里|这边)/u.test(normalized) && !selected.includes(local)) selected.unshift(local);
-  if (selected.length > 3) throw new Error('At most three explicitly named rooms per question');
+  if (selected.length > maxRooms) throw new Error(maxRooms === 3 ? 'At most three explicitly named rooms per question' :
+    `At most ${maxRooms} explicitly named rooms per question`);
   return selected;
 }
 

@@ -42,8 +42,8 @@ export function CampaignFeedback({ id, detail, onRefresh }: { id: string; detail
     finally { submitting.current = false; setBusy(false); }
   }
   return <section className="inspector-section"><h3>制作并投稿</h3>
-    <label>投稿标题（可直接填写）<input aria-label="芙娅之魂投稿标题" maxLength={300} placeholder="留空则按修改意见和原片内容拟定" value={title} disabled={busy || active || complete} onChange={event => draft(event.target.value, note)} /></label>
-    <label>修改意见（可选）<textarea aria-label="芙娅之魂修改意见" rows={4} maxLength={1000} placeholder="例如：标题突出这次翻车，开头保留铺垫，结尾不要截断。也可以只填标题直接投稿。" value={note} disabled={busy || active || complete} onChange={event => draft(title, event.target.value)} /></label>
+    <label>投稿标题（可直接填写）<input aria-label="候补切片投稿标题" maxLength={300} placeholder="留空则按修改意见和原片内容拟定" value={title} disabled={busy || active || complete} onChange={event => draft(event.target.value, note)} /></label>
+    <label>修改意见（可选）<textarea aria-label="候补切片修改意见" rows={4} maxLength={1000} placeholder="例如：标题突出这次翻车，开头保留铺垫，结尾不要截断。也可以只填标题直接投稿。" value={note} disabled={busy || active || complete} onChange={event => draft(title, event.target.value)} /></label>
     <p className="muted">点击即授权按意见制作并投稿到 B 站。手填标题优先保留；后台补齐文案、制作字幕和封面，再加入现有投稿队列。</p>
     {(error || feedback.error) && <p className="notice error" role="alert">{error || feedback.error}</p>}
     {job && <div className={`notice${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>

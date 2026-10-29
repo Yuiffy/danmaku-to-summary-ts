@@ -425,7 +425,7 @@ def enqueue_automatic(args, api):
         reserved = {}
         for existing in registry.get("clips", {}).values():
             if (int(existing["id"]) in active or existing.get("status") == "uploading"
-                    or api.clip_candidate_queue.is_published(existing) or existing.get("editorialExclusion")):
+                    or api.clip_candidate_queue.is_published(existing) or existing.get("editorialExclusion") or existing.get("uploadCancellation")):
                 identity = _record_identity(existing)
                 if identity:
                     reserved[identity] = existing
@@ -440,7 +440,7 @@ def enqueue_automatic(args, api):
                 elif clip_id in active or clip.get("status") == "uploading":
                     result["status"] = "already_queued"
                 else:
-                    if clip.get("editorialExclusion") or clip.get("status") == "cancelled":
+                    if clip.get("editorialExclusion") or clip.get("uploadCancellation") or clip.get("status") == "cancelled":
                         raise ValueError("clip is manually excluded or cancelled")
                     if clip.get("pendingCut") or clip.get("pendingRebuild") or clip.get("reviewPending") and not prior_metadata:
                         raise ValueError("clip needs review or rendering before automatic publication")

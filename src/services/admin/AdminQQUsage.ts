@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { QQAccountUsage, QQQuotaStatus } from '../../core/admin/qqRecords';
 import { QQ_LIMITS } from '../qqbot/QQPolicy';
+import { QQ_IMAGE_LIMITS } from '../qqbot/QQImagePolicy';
 import { QQState, validateQQState } from '../qqbot/QQState';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 
@@ -37,11 +38,15 @@ export function qqUserQuota(snapshot: QQUsageSnapshot, userId: string, scope: 'g
   if (!policy.images?.enabled) return { text };
   const imageReasons: QQQuotaStatus['reasons'] = [...paused];
   const images = today ? user?.images || 0 : 0;
+  const imageStarts = recent(user?.imageStarts || [], now, QQ_IMAGE_LIMITS.userWindowMs);
   if (images >= policy.images.userDailyLimit) imageReasons.push({ code: 'user_images', label: '个人每日生图额度已满', until: nextMidnight(now) });
+  if (imageStarts.length >= QQ_IMAGE_LIMITS.userWindowImages) imageReasons.push({ code: 'user_image_window', label: '个人五小时生图额度已满', until: Math.min(...imageStarts) + QQ_IMAGE_LIMITS.userWindowMs });
   if ((today ? state.images || 0 : 0) >= policy.images.dailyLimit) imageReasons.push({ code: 'global_images', label: '全局每日生图额度已满', until: nextMidnight(now) });
-  if (state.lastImageAt !== undefined && state.lastImageAt + 60000 > now) imageReasons.push({ code: 'image_cooldown', label: '全局生图间隔', until: state.lastImageAt + 60000 });
+  if (state.lastImageAt !== undefined && state.lastImageAt + QQ_IMAGE_LIMITS.intervalMs > now) imageReasons.push({ code: 'image_cooldown', label: '全局生图间隔', until: state.lastImageAt + QQ_IMAGE_LIMITS.intervalMs });
   return { text, image: { status: state.paused ? 'paused' : imageReasons.length ? 'limited' : 'available', used: images,
-    limit: policy.images.userDailyLimit, remaining: Math.max(0, policy.images.userDailyLimit - images), reasons: imageReasons } };
+    limit: policy.images.userDailyLimit, remaining: Math.max(0, policy.images.userDailyLimit - images),
+    window: { used: imageStarts.length, limit: QQ_IMAGE_LIMITS.userWindowImages,
+      remaining: Math.max(0, QQ_IMAGE_LIMITS.userWindowImages - imageStarts.length), windowMs: QQ_IMAGE_LIMITS.userWindowMs }, reasons: imageReasons } };
 }
 
 export function qqAccountUsage(appId: string, snapshot: QQUsageSnapshot, now: number): QQAccountUsage {
@@ -72,7 +77,7 @@ export function readQQUsage(root: string, appId: string, budget = { remaining: 3
     snapshot.policy = { dailyTokenBudget: config.dailyTokenBudget };
     if (config.images?.enabled) {
       const { dailyLimit, userDailyLimit } = config.images;
-      if (![dailyLimit, userDailyLimit].every(value => Number.isInteger(value) && value >= 1 && value <= 100) || userDailyLimit > dailyLimit) throw new Error('Invalid QQ image quota');
+      if (![dailyLimit, userDailyLimit].every(value => Number.isInteger(value) && value >= 1 && value <= 300) || userDailyLimit > dailyLimit) throw new Error('Invalid QQ image quota');
       snapshot.policy.images = { enabled: true, dailyLimit, userDailyLimit };
     }
   } catch { snapshot.policy = undefined; }

@@ -4,7 +4,7 @@ import { readJsonObject } from '../../core/config/ConfigLayers';
 import { getProjectRoot } from '../../core/config/ProjectPaths';
 import { questionProviderSettings } from '../../services/live-vote/questions/DaiyuQuestionClient';
 import { readQuestionRuntime } from '../../services/live-vote/questions/EvidenceQuery';
-import { QQConfig, QQ_MODEL, validateQQConfig } from '../../services/qqbot/QQPolicy';
+import { QQConfig, QQ_MODEL, QQ_LIMITS, validateQQConfig } from '../../services/qqbot/QQPolicy';
 import { QQState, QQStateStore, validateQQState } from '../../services/qqbot/QQState';
 import { QQWorker } from '../../services/qqbot/QQWorker';
 import { createQQAnswerer } from '../../services/qqbot/QQAgent';
@@ -15,6 +15,10 @@ import { readQQSecrets } from '../../services/qqbot/QQSecrets';
 import { createQQImageGenerator } from '../../services/qqbot/QQImage';
 import { qqImageCharacters } from '../../services/qqbot/QQImageCatalog';
 import { validateQQImageConfig } from '../../services/qqbot/QQImagePolicy';
+import { QQImageInputs } from '../../services/qqbot/QQImageInputs';
+import { createQQImageTools } from '../../services/qqbot/QQImageTools';
+import { QQImageJobs } from '../../services/qqbot/QQImageJobs';
+import { qqDiagnostic } from '../../services/qqbot/QQDiagnostics';
 
 type QQMode = 'check' | 'live' | 'status' | 'resume';
 export function parseQQArgs(args: string[]): { config: string; mode: QQMode } {
@@ -72,11 +76,12 @@ export async function runQQBot(args: string[]): Promise<void> {
   let stopping = false;
   let bot: InstanceType<typeof QQBot> | undefined;
   let worker: QQWorker | undefined;
-  const report = (event: { event: string; scope?: string }) => {
-    console.info(JSON.stringify({ ...event, appId, at: new Date().toISOString() }));
+  let imageJobs: QQImageJobs | undefined;
+  const report = (event: import('../../services/qqbot/QQWorker').QQLogEvent) => {
+    console.info(JSON.stringify({ ...event, appId, at: new Date().toISOString(), diagnosticsVersion: 1, pid: process.pid }));
     if (state.paused) bot?.stop();
   };
-  const stop = () => { stopping = true; worker?.stop(); bot?.stop(); };
+  const stop = () => { stopping = true; worker?.stop(); imageJobs?.stop(); bot?.stop(); };
   const onMessage = (value: unknown) => { if (value === 'shutdown') stop(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop); process.on('message', onMessage);
   try {
@@ -86,13 +91,41 @@ export async function runQQBot(args: string[]): Promise<void> {
       baseUrl: 'https://api.bot.qq.com', tokenBaseUrl: 'https://api.bot.qq.com',
       userAgent: 'shikamochi-qqbot/0.1', reconnect: { maxAttempts: 10 }, logger: { info: () => {}, error: () => {} } });
     const records = new QQRecords(root, appId);
-    worker = new QQWorker(config, state, { now: Date.now, save: value => store.save(value), record: (request, update) => records.write(request, update),
-      answer: createQQAnswerer(settings, knowledge, undefined, (request, agent) => records.write(request, { status: 'generating', agent })),
-      image: config.images?.enabled ? createQQImageGenerator(root, appId, config.images, settings) : undefined,
+    const imageInputs = new QQImageInputs(root, appId);
+    const generate = config.images?.enabled ? createQQImageGenerator(root, appId, config.images, settings, undefined, imageInputs) : undefined;
+    if (generate && config.images?.background) {
+      imageJobs = new QQImageJobs(root, appId, config.images.timeoutMs, { generate, now: Date.now, report,
+        fatal: async error => {
+          state.paused = true;
+          try { report({ event: 'qq_state_failure', failure: qqDiagnostic(error, 'state', 'state_failed') }); await store.save(state); }
+          finally { stop(); }
+        } });
+      await imageJobs.open();
+    }
+    const workerConfig = config.images?.enabled ? { ...config, images: { ...config.images, characters } } : config;
+    worker = new QQWorker(workerConfig, state, { now: Date.now, save: value => store.save(value), record: (request, update) => records.write(request, update),
+      answer: async (request, signal, executeImage) => {
+        let tokens = QQ_LIMITS.reservation as number;
+        const answer = createQQAnswerer(settings, knowledge, undefined, async (question, agent) => {
+          tokens = Math.min(QQ_LIMITS.reservation, Math.max(1, agent.inputTokens + agent.outputTokens));
+          report({ event: 'qq_agent_trace', requestId: question.key, scope: question.scope, agent });
+          await records.write(question, { status: 'generating', agent });
+        }, config.images?.enabled && executeImage ? createQQImageTools(request, { ...config.images, characters },
+          () => imageInputs.load(request, signal), executeImage, count => report({ event: 'qq_image_sources_loaded',
+            requestId: request.key, scope: request.scope, imageSourceCount: count })) : undefined);
+        return { text: await answer(request, signal), tokens };
+      },
+      image: generate,
+      pendingImage: imageJobs ? request => imageJobs!.pending(request) : undefined,
+      imageAdmission: imageJobs ? request => imageJobs!.admission(request) : undefined,
+      enqueueImage: imageJobs ? (request, command) => imageJobs!.enqueue(request, command) : undefined,
+      waitImage: imageJobs ? (request, signal, waitMs) => imageJobs!.wait(request, signal, waitMs) : undefined,
       send: async (request, answer, image) => {
         const target = { scope: request.scope, targetId: request.targetId, msgId: request.msgId };
         const result = image ? (await bot!.sendImage(target, { localPath: image.file }, { content: answer })).message : await bot!.sendText(target, answer);
         if (!result?.id) throw new Error('QQ send receipt missing');
+        await imageJobs?.delivered(request);
+        if (image) await imageInputs.remember(request, image, result);
       }, sleep: (ms, signal) => sleep(ms, undefined, { signal }), report });
     bot.on('ready', (data: any) => {
       if (typeof data?.user?.id === 'string') worker!.setBotId(data.user.id);
@@ -102,14 +135,14 @@ export async function runQQBot(args: string[]): Promise<void> {
     bot.on('disconnected', () => report({ event: 'qq_disconnected' }));
     bot.on('error', () => report({ event: 'qq_gateway_error' }));
     bot.on('message', (_ctx, message) => {
-      if (worker!.receive(message)) report({ event: 'qq_request_accepted', scope: message.kind });
+      worker!.receive(message);
     });
     report({ event: 'qq_starting' });
     await bot.start();
     if (state.paused) process.exitCode = 2;
     else if (!stopping) throw new Error('QQ gateway stopped unexpectedly');
   } finally {
-    stop(); await worker?.idle();
+    stop(); await worker?.idle(); await imageJobs?.close();
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('message', onMessage);
     await store.close();
   }

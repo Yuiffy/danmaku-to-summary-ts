@@ -5,6 +5,17 @@ const at = (delta: number) => new Date(now + delta).toISOString();
 const job = (id: string, extra = {}) => ({ id, status: 'pending', clipIds: [Number(id)], ...extra });
 const event = (id: number, delta: number) => ({ at: at(delta), bvid: `BV${id}`, title: `视频 ${id}` });
 
+it('shows cancellation acknowledgement and final submission separately, excluding withdrawn clips from waiting counts', () => {
+  const result = uploadQueueStatus({ jobs: [job('1', { status: 'running', clipIds: [1, 2, 3],
+    cancellationRequests: { 1: { reason: '撤回' }, 2: { reason: '撤回' } },
+    cancellationAcknowledgedIds: [2], submissionStartedClipIds: [3] })] }, {}, now);
+  expect(result.queuedClips).toBe(1);
+  expect(result.queue[0].clips[0]).toMatchObject({ cancelled: true, cancelling: true });
+  expect(result.queue[0].clips[1]).toMatchObject({ cancelled: true, cancelling: false });
+  expect(result.queue[0].clips[2]).toMatchObject({ submissionStarted: true });
+  expect(result.lastSubmission).toBeUndefined();
+});
+
 it('combines both account constraints and job retries, skipping later retries like the worker scan', () => {
   const queue = { jobs: [job('1', { status: 'retry_wait', retryAt: at(4 * hour) }), job('2')],
     accountRollingUploadGuard: { events: Array.from({ length: 90 }, (_, i) => event(i, -22 * hour)), lastRemoteSyncAt: at(-hour) },

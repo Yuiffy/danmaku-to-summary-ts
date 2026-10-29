@@ -13,6 +13,9 @@ test('only selected public sections reach the model with source revision, never 
     const read = createProjectReader(root, [{ id: 'video', label: '视频流程', path: 'workflow.md', keywords: ['方式'], section: '## Public', kind: 'guide' }]);
     const signal = new AbortController().signal;
     expect(await read('你好', signal)).toEqual([]);
+    expect(read.catalog).toEqual([{ id: 'video', label: '视频流程', kind: 'guide' }]);
+    expect(await read.read(['video'], signal)).toEqual([expect.objectContaining({ source: 'video', text: '先逐镜头超分,再烧字幕。' })]);
+    expect(() => read.read(['C:/private/config.json'], signal)).toThrow('Invalid public project IDs');
     const projects = await read('这套方式我们能用不', signal);
     expect(projects).toEqual([{ source: 'video', label: '视频流程', kind: 'guide', revision: expect.stringMatching(/^[a-f\d]{12}$/u), text: '先逐镜头超分,再烧字幕。' }]);
     const messages = fitCommentContext('这套方式我们能用不', '比较方法', { anchorDay: '2026-10-24', coverage: 'partial', clues: [], projects });
@@ -21,4 +24,12 @@ test('only selected public sections reach the model with source revision, never 
     expect(await read('方式', signal)).toEqual([]);
     expect(() => validateCommentConfig({ ...example, projectSources: [{ id: 'bad', label: 'x', path: 'x.md', keywords: [], kind: 'guide' }] })).toThrow();
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('the configured clipping baseline is readable by ID even when a short mention has no technical keywords', async () => {
+  const reader = createProjectReader(process.cwd(), example.projectSources as any);
+  const evidence = await reader.read(['shikamochi-clipping'], new AbortController().signal);
+  expect(evidence).toEqual([expect.objectContaining({ source: 'shikamochi-clipping', kind: 'guide' })]);
+  expect(evidence[0].text).toContain('选材'); expect(evidence[0].text).toContain('字幕');
+  expect(evidence[0].text).toContain('独立评估'); expect(JSON.stringify(evidence)).not.toContain('docs/');
 });

@@ -4,14 +4,24 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
-from src.scripts.precision_publish import validate_revision, precision_public_copy, select_precision
+from src.scripts.precision_publish import validate_revision, precision_public_copy, select_precision, render_precision, publish_precision
 from types import SimpleNamespace
 from src.scripts import replace_video as transport
 
 
 class PrecisionPublicationTests(unittest.TestCase):
+    def test_context_question_timestamp_is_forwarded_without_granting_publication(self):
+        run = Mock(return_value=SimpleNamespace(returncode=0))
+        api = SimpleNamespace(REGISTRY_PATH=Path('registry.json'), PROJECT_ROOT=Path('.'), subprocess=SimpleNamespace(run=run))
+        args = SimpleNamespace(id=17, note='补原观众提问', context_danmaku_at=90.12, allow_cover_face_overlap=False)
+        self.assertEqual(render_precision(args, api), 0)
+        command = run.call_args.args[0]
+        self.assertIn('--context-danmaku-at', command)
+        self.assertEqual(command[command.index('--context-danmaku-at') + 1], '90.12')
+        self.assertNotIn('--enqueue', command)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -62,6 +72,60 @@ class PrecisionPublicationTests(unittest.TestCase):
         Path(metadata['source']['srtPath']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'source subtitles changed'):
             validate_revision(record, directory)
+
+    def test_manual_precision_checks_current_qa_and_baseline_without_reusing_automatic_media_hashes(self):
+        record, directory, metadata = self.fixture()
+        baseline = {"automaticPublicationRequired": True}
+        metadata['automaticPublicationRequired'] = True
+        metadata['audioQa']['listeningReview'] = 'pending_human_review'
+        metadata['publicationReview'] = {'status': 'passed', 'digests': {'video': 'old baseline'}}
+        original = Path(record['metadataPath'])
+        original.write_text(json.dumps(baseline), encoding='utf-8')
+        (directory / 'original.json').write_bytes(original.read_bytes())
+        (directory / 'clip.json').write_text(json.dumps(metadata), encoding='utf-8')
+        with patch('src.scripts.clip_qa.validate_metadata_qa') as validate_baseline:
+            validate_revision(record, directory, manual_replacement=True)
+            validate_baseline.assert_called_once_with(baseline)
+        from src.scripts.clip_qa import validate_metadata_qa
+        with self.assertRaises(ValueError):
+            validate_metadata_qa({**metadata, 'uploadReady': True})
+        Path(metadata['output']['mediaPath']).write_bytes(b'changed')
+        with patch('src.scripts.clip_qa.validate_metadata_qa'):
+            with self.assertRaisesRegex(ValueError, 'changed after AI'):
+                validate_revision(record, directory, manual_replacement=True)
+
+    def test_manual_precision_preserves_baseline_gates_and_rejects_unresolved_audio_or_source(self):
+        from src.scripts.clip_qa import validate_precision_metadata_qa
+        record, directory, metadata = self.fixture()
+        with self.assertRaisesRegex(ValueError, 'preserved publication gates'):
+            validate_precision_metadata_qa(metadata, {'automaticPublicationRequired': True})
+        with self.assertRaisesRegex(ValueError, 'preserved publication gates'):
+            validate_precision_metadata_qa({**metadata, 'qaRequired': False}, {})
+        with self.assertRaisesRegex(ValueError, 'preserved publication gates'):
+            validate_precision_metadata_qa(metadata, {'attributionRequired': True})
+        with patch('src.scripts.clip_qa.validate_metadata_qa', side_effect=ValueError('baseline failed')):
+            with self.assertRaisesRegex(ValueError, 'baseline failed'):
+                validate_precision_metadata_qa(metadata, {})
+        for extra in [{'audioQa': {'status': 'failed'}}, {'sourceExpansionRequest': {'reason': 'missing ending'}}]:
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(ValueError, 'source or audio review'):
+                    validate_precision_metadata_qa({**metadata, **extra}, {})
+
+    def test_replacement_dry_run_requires_preview_and_saves_no_user_approval(self):
+        record, directory, metadata = self.fixture()
+        record.update(status='uploaded', uploadState={'bvid': 'BVfixture'})
+        api = SimpleNamespace(REGISTRY_PATH=self.root / 'registry.json',
+            load_json=Mock(return_value={'clips': {'17': record}}), default_registry=Mock(return_value={}),
+            save_json=Mock(), now_iso=Mock(side_effect=AssertionError('dry run cannot date an approval')))
+        args = SimpleNamespace(id=17, revision=str(directory), review_note='等待成片预览确认', dry_run=True)
+        with patch('src.scripts.precision_publish.precision_public_copy', return_value=metadata['copy']), patch('builtins.print') as output:
+            self.assertEqual(publish_precision(args, api), 0)
+        preview = json.loads(output.call_args.args[0])
+        self.assertTrue(preview['requiresFinalPreviewApproval'])
+        self.assertNotIn('authority', preview)
+        self.assertNotIn('approvedAt', preview)
+        api.save_json.assert_not_called()
+        self.assertFalse((directory / 'PUBLICATION_APPROVAL.json').exists())
 
     def test_select_unpublished_revision_preserves_id_and_original_and_rejects_queue_or_publication(self):
         from src.scripts import clip_upload_registry as api

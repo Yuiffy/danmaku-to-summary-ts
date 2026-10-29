@@ -175,7 +175,8 @@ function stickerAss(plan, width, height) {
             : require('./face_inset').insetBorderDrawing(row.faceInset, width, height);
         return `Dialogue: 0,${assTime(row.start)},${assTime(row.end)},Accent,,0,0,0,,{\\an7\\pos(${b.x},${b.y})\\p1\\bord${b.border}\\shad0\\1a&HFF&\\3c&HFFFFFF&}${b.path}`;
     });
-    return header + [...symbols, ...borders].join('\n') + '\n';
+    const context = plan.contextQuestion ? require('../workflow-runtime').loadWorkflow('clipping/creativeContext').contextAss(plan.contextQuestion, width, height) : null;
+    return header + [...symbols, ...borders, ...(context ? [context] : [])].join('\n') + '\n';
 }
 
 const escapePath = file => String(file).replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
@@ -189,8 +190,9 @@ function assertRenderPlan(plan, duration, rawSettings, assets = {}, allowEmpty =
     }
     if (![1, 2].includes(plan?.version) || plan.workflow !== 'creative' || !finite(plan.duration, .6, 86400)
         || Math.abs(plan.duration - duration) > .001 || !Array.isArray(plan.effects)
-        || (!allowEmpty && !plan.effects.length && !(plan.timeline?.sourceDuration - plan.timeline?.duration > .001))
+        || (!allowEmpty && !plan.effects.length && !plan.contextQuestion && !(plan.timeline?.sourceDuration - plan.timeline?.duration > .001))
         || plan.effects.length > limits.maxMoments) throw new Error('Invalid creative render plan');
+    if (plan.contextQuestion) require('../workflow-runtime').loadWorkflow('clipping/creativeContext').contextAss(plan.contextQuestion, 1920, 1080);
     for (const [index, row] of plan.effects.entries()) {
         if (!finite(row.start, 0, duration) || !finite(row.end, row.start + .6 - 1e-6, Math.min(duration, row.start + limits.maxEffectSeconds + 1e-6))
             || (index && round(row.start - plan.effects[index - 1].end) < limits.minGapSeconds)

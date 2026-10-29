@@ -4,6 +4,30 @@ import * as path from 'path';
 import { AdminJobs, createCommandRunner } from './AdminJobs';
 import { atomicJson, readJson } from './AdminFiles';
 
+it('executes cancellation immediately while an earlier media operation is still running', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-cancel-'));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started: string[] = [];
+  const jobs = new AdminJobs(directory, async command => {
+    started.push(command.action);
+    if (command.action === 'cut') await gate;
+    return 0;
+  });
+  try {
+    jobs.submit({ executable: 'python', args: [], action: 'cut', target: '2' });
+    await Promise.resolve();
+    jobs.submit({ executable: 'python', args: [], action: 'enqueue', target: '2' });
+    jobs.submit({ executable: 'python', args: [], action: 'cancel-upload', target: '1' });
+    await Promise.resolve();
+    expect(started).toEqual(['cut', 'cancel-upload']);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(jobs.latest('cancel-upload', '1')?.status).toBe('succeeded');
+    release(); await jobs.flush();
+    expect(started).toEqual(['cut', 'cancel-upload', 'enqueue']);
+  } finally { release(); await jobs.flush(); fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 it('accepts 200 unfinished operations in order, rejects overflow without saving it, and frees capacity after failure', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-capacity-'));
   let release!: () => void;

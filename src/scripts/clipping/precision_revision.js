@@ -124,6 +124,8 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         if (!subtitles.length || subtitles.some(cue => cue.start < 0 || cue.end <= cue.start
             || cue.end > original.window.duration + .001)) throw new Error('Invalid baseline subtitle timeline');
         const danmaku = await own.parseDanmakuXml(original.source.xmlPath);
+        const contextQuestion = options.contextDanmakuAt === undefined ? undefined
+            : loadWorkflow('clipping/creativeContext').contextQuestion(Number(options.contextDanmakuAt), danmaku, original.window);
         const parent = path.join(path.dirname(metadataPath), 'precision_revisions', String(id));
         fs.mkdirSync(parent, { recursive: true });
         directory = fs.mkdtempSync(path.join(parent, 'r-'));
@@ -148,6 +150,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             originalMetadataPath: metadataPath, originalDigests: registeredDigests, baselineDigests: digests,
             sourceSnapshot: snapshot, style: config.enhancements.creative?.style || 'accent',
             avatarMode: config.enhancements.creative?.avatarMode || 'auto',
+            ...(contextQuestion ? { contextQuestion } : {}),
             ...(options.allowCoverFaceOverlap ? { coverFaceOverlapApproved: true } : {}),
             ...(resumeDirectory ? { resumeFrom: resumeDirectory } : {}), uploadAuthorized: false };
         const baseline = { ...original, uploadId: id, reviewIndex: record.reviewIndex,
@@ -174,6 +177,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             sessionId: directory, selectionCacheDirectory: path.join(directory, 'temp') }, parsed, danmaku,
             source: { kind: 'video', mediaPath: original.source.mediaPath }, options: { ...original.source, config: rootConfig,
                 creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan, creativeSoundLevelOverrides: soundLevelOverrides,
+                creativeContextQuestion: contextQuestion, creativeEditorialFeedback: String(options.note || ''),
                 creativeCoverTextPosition: options.coverTextPosition,
                 creativeAllowCoverFaceOverlap: options.allowCoverFaceOverlap === true },
             topic, clip, subtitleEvidence: evidence, execution });
@@ -211,9 +215,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
 
 module.exports = { renderPrecisionRevision };
 if (require.main === module) {
-    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' }, 'context-danmaku-at': { type: 'string' } } });
     renderPrecisionRevision({ id: values.id, registryPath: values.registry, note: values.note, style: values.style,
-        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'] })
+        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'], contextDanmakuAt: values['context-danmaku-at'] })
         .then(result => { console.log('PRECISION_RESULT: ' + JSON.stringify(result)); if (result.status !== 'pending_review') process.exitCode = 1; })
         .catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 }

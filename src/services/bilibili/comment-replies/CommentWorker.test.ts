@@ -1,4 +1,4 @@
-import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, QUOTA_NOTICE, SAFETY_NOTICE, shanghaiDay } from './CommentPolicy';
+import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, COMMENT_TOOL_LIMITS, QUOTA_NOTICE, SAFETY_NOTICE, shanghaiDay } from './CommentPolicy';
 import { newCommentState } from './CommentState';
 import { CommentWorker } from './CommentWorker';
 
@@ -14,6 +14,36 @@ function setup(overrides: Partial<CommentReplyConfig> = {}) {
     root: id, parent: id, text, createdAt: now, trigger: 'mention' });
   return { worker, state, save, answer, send, event, advance: (ms = 5000) => { now += ms; }, now: () => now };
 }
+
+test('tool mode reserves all turns before IO and preserves the global five-start ceiling after failure', async () => {
+  const f = setup({ agentTools: true });
+  f.answer.mockImplementation(async () => {
+    expect(f.state.days[shanghaiDay(f.now())].tokens).toBe(COMMENT_TOOL_LIMITS.tokenReservation);
+    expect(f.state.starts).toHaveLength(COMMENT_TOOL_LIMITS.turns);
+    expect(f.save).toHaveBeenCalled();
+    throw new Error('provider failed after tool selection');
+  });
+  await f.worker.admit(f.event('1', '1')); await f.worker.admit(f.event('2', '2'));
+  await f.worker.tick();
+  expect(f.state.jobs[0].status).toBe('failed');
+  await f.worker.tick(); expect(f.answer).toHaveBeenCalledTimes(1);
+  f.advance(60001);
+  f.answer.mockResolvedValueOnce('关键资料不足,建议核对字幕后再评估。');
+  await f.worker.tick(); expect(f.answer).toHaveBeenCalledTimes(2);
+  expect(f.state.days[shanghaiDay(f.now())].tokens).toBe(2 * COMMENT_TOOL_LIMITS.tokenReservation);
+});
+
+test('successful tool answers settle usage but invalid settlement cannot release a reservation', async () => {
+  for (const tokens of [3200, -1, 0, Number.NaN, COMMENT_TOOL_LIMITS.tokenReservation + 1]) {
+    const f = setup({ agentTools: true });
+    const answer = jest.fn(async () => ({ reply: '值得做同素材对照,暂不替换现有流程。', tokens }));
+    const worker = new CommentWorker({ ...config, agentTools: true }, f.state,
+      { save: f.save, answer, send: f.send, now: f.now });
+    await worker.admit(f.event('1', '1')); await worker.tick();
+    expect(f.state.days[shanghaiDay(f.now())].tokens).toBe(tokens === 3200 ? 3200 : COMMENT_TOOL_LIMITS.tokenReservation);
+    expect(f.state.jobs[0].status).toBe('sent');
+  }
+});
 
 test('likes once before generation, persists progress and spaces the reply from the like', async () => {
   const f = setup(), like = jest.fn(async () => {

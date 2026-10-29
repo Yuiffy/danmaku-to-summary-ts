@@ -17,6 +17,8 @@ function publication(body: any): void {
 }
 export function clipCommand(idValue: unknown, body: any): OperatorCommand {
   const id = numberId(idValue), action = text(body, 'action', 40), args = ['src/scripts/clip_upload_registry.py'];
+  if (action === 'cancel-upload') return { executable: 'python', args: [...args, 'cancel', '--ids', id,
+    '--note', text(body, 'note', 1000)], action, target: id };
   if (action === 'cover') {
     let selection;
     try { selection = coverSelection(body.selection); } catch (error) { throw new AdminError((error as Error).message); }

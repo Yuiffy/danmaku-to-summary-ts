@@ -18,7 +18,7 @@ import { useResource } from './client';
 type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq';
 const navigation: { id: View; mark: string; name: string; caption: string }[] = [
   { id: 'review', mark: '▷', name: '视频审核', caption: '素材 · 字幕 · 投稿' },
-  { id: 'fuya', mark: '◇', name: '芙娅之魂', caption: '逐场备选 · 原片预览' },
+  { id: 'fuya', mark: '◇', name: '候补切片', caption: '逐场候补 · 原片审核' },
   { id: 'config', mark: '≡', name: '配置', caption: '处理流程与房间规则' },
   { id: 'login', mark: '◎', name: 'B 站登录', caption: '状态检查 · 恢复登录' },
   { id: 'comments', mark: '↔', name: '评论回复', caption: '处理进度 · 回复记录' },

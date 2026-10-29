@@ -16,7 +16,11 @@
   "maxUserQueue": 10,
   "pollIntervalMs": 30000,
   "videoVision": true,
+  "agentTools": true,
   "projectSources": [
+    { "id": "shikamochi-clipping", "label": "鹿饼切片能力与技术评估边界", "kind": "guide",
+      "path": "docs/clipping-capabilities.md", "section": "## 公开能力摘要",
+      "keywords": ["切片", "剪辑", "视频", "技术", "学习", "方案"] },
     { "id": "ai-video-enhancement", "label": "AI Video Workflow 超分流程", "kind": "guide",
       "path": "../ai-video-workflow/docs/video-enhancement.md", "section": "## 公开流程摘要",
       "keywords": ["超分", "NVIDIA", "放大", "去噪", "补帧", "HDR"] },

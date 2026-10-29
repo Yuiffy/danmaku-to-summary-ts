@@ -190,3 +190,8 @@ body {
 .login-recovery textarea, .login-recovery input { width: 100%; }
 .login-recovery textarea { -webkit-text-security: disc; }
 .login-recovery p { line-height: 1.7; }
+.cancel-upload { margin: 10px 0; font-size: 13px; }
+.cancel-upload summary { cursor: pointer; color: #a34236; }
+.cancel-upload summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cancel-upload label { display: grid; gap: 6px; margin: 10px 0; }
+.cancel-upload textarea { width: 100%; min-width: 180px; }

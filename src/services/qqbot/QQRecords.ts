@@ -4,7 +4,7 @@ import { QQRecord, validQQRecord } from '../../core/admin/qqRecords';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 import { QQRequest, qqDigest } from './QQPolicy';
 
-export type QQRecordUpdate = Pick<QQRecord, 'status'> & Partial<Pick<QQRecord, 'answer' | 'model' | 'error' | 'image' | 'agent'>>;
+export type QQRecordUpdate = Pick<QQRecord, 'status'> & Partial<Pick<QQRecord, 'answer' | 'model' | 'error' | 'image' | 'agent' | 'failure' | 'sendFailure' | 'queuedMs'>>;
 
 /** Independent long-lived transcripts; atomic checkpoints precede provider and QQ IO. */
 export class QQRecords {

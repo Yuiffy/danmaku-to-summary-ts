@@ -2,7 +2,7 @@ export interface UploadQueueItem {
   id: string;
   status: string;
   phase: string;
-  clips: { id: number; title: string; done: boolean; excluded: boolean }[];
+  clips: { id: number; title: string; done: boolean; excluded: boolean; cancelled?: boolean; cancelling?: boolean; submissionStarted?: boolean }[];
   createdAt?: string;
   updatedAt?: string;
   retryAt?: string;

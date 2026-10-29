@@ -24,6 +24,13 @@ export function clipStyle(value: string): ClipStyle {
 const valid = (s: Span, duration: number) => Number.isFinite(s.start) && Number.isFinite(s.end)
     && s.start >= 0 && s.end > s.start && s.end <= duration + .001;
 
+/** Admission for new renders only; historical timelines remain verifiable. */
+export function validateHookBudget(duration: number, plan: HookPlan, cues: Cue[]): void {
+    const timeline = composeTimeline(duration, 3.2, plan, cues);
+    if (timeline.repetition === 'keep' && timeline.hookSeconds > Math.min(6, duration * .15) + .001)
+        throw new Error('Repeated teaser exceeds 6 seconds or 15% of the body; use a shorter complete line, a chronological opening, ordinary or precision');
+}
+
 export function composeTimeline(duration: number, opDuration: number, plan: HookPlan, cues: Cue[]): {
     pieces: Piece[]; duration: number; repetition: 'keep' | 'omit_prefix'; hookSeconds: number;
 } {

@@ -116,6 +116,20 @@ describe('own-stream subtitle revisions', () => {
       expect(load().renderedSubtitles).toBeUndefined();
     });
 
+  test('own rebuild forces its required actor review even when optional room attribution is disabled', async () => {
+    metadata.roomId = 'own-room'; delete metadata.ownStreamHumanReview; save();
+    const publication = require('./clipping/own_automatic_publication');
+    const actor = jest.spyOn(publication, 'reviewArtifactCopy').mockImplementation(async (value, _issues, context) => {
+      expect(context.config.attribution).toMatchObject({ enabled: true });
+      expect(context.config.attribution.roomIds).toContain('own-room');
+      return { ...value, attributionReview: { status: 'passed' } };
+    });
+    jest.spyOn(publication, 'reviewFinals').mockImplementation(async values => values);
+    await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config);
+    await renderRevision(file, { ...options, automaticReview: 'yes' }, config);
+    expect(actor).toHaveBeenCalledTimes(1);
+  });
+
   test.each([false, true])('keyword rebuild uses fresh topic review and preserves required attribution=%s', async required => {
     metadata.mode = 'local_review'; metadata.publicationKind = 'keyword_topic'; metadata.status = 'success';
     metadata.roomId = 'another-room'; metadata.attributionRequired = required;

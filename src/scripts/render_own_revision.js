@@ -373,7 +373,7 @@ async function renderRevision(metadataPath, options, config = require('./config-
             const keywordTopic = updated.publicationKind === 'keyword_topic';
             if (!keywordTopic || updated.attributionRequired) {
                 // A mandatory review cannot be skipped by the optional room allowlist.
-                const requiredContext = keywordTopic ? { ...context, config: { ...context.config,
+                const requiredContext = updated.attributionRequired ? { ...context, config: { ...context.config,
                     attribution: { ...context.config.attribution, enabled: true,
                         roomIds: [...new Set([...(context.config.attribution?.roomIds || []), String(updated.roomId)])] } } } : context;
                 approved = await publication.reviewArtifactCopy(approved,

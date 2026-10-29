@@ -605,6 +605,7 @@ async def upload_video(
     streamer_name: Optional[str] = None,
     room_id: Optional[str] = None,
     pacing=None,
+    queue_job=None,
 ):
     """上传视频到 B 站。"""
     if not os.path.exists(video_path):
@@ -678,6 +679,10 @@ async def upload_video(
     from clip_upload_pacing import paced_uploader_type, PreuploadRateLimited, UploadPaused, http_status
     uploader_type = (paced_uploader_type(video_uploader.VideoUploader, pacing, [page])
                      if pacing else video_uploader.VideoUploader)
+    from clip_upload_cancel import UploadControl, UploadCancelled
+    control = UploadControl(queue_job, video_path) if queue_job else None
+    if control:
+        uploader_type = control.uploader_type(uploader_type)
     uploader = uploader_type(
         pages=[page],
         meta=meta,
@@ -692,7 +697,10 @@ async def upload_video(
                                           'submit' if name == 'PRE_SUBMIT' else 'page', part_index=index)
     ) if pacing else None)
     try:
-        result = await progress.run(uploader)
+        result = await control.run(uploader, progress) if control else await progress.run(uploader)
+    except UploadCancelled as error:
+        print(str(error), flush=True)
+        return None
     except Exception as error:
         if pacing and not isinstance(error, (PreuploadRateLimited, UploadPaused)):
             pacing.record('upload_failed', progress.failure_stage or 'unknown', http_status(error))
@@ -745,6 +753,7 @@ def main():
     parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
     parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由')
     parser.add_argument('--collection-series-id', type=int, default=None, help='投稿后自动加入的合集 section_id（兼容旧参数名）')
+    parser.add_argument('--queue-job', default=None, help='Queue job for cooperative cancellation')
 
     args = parser.parse_args()
     tags = [t.strip() for t in args.tags.split(',') if t.strip()]
@@ -783,6 +792,7 @@ def main():
             streamer_name=args.streamer_name,
             room_id=room_id,
             pacing=pacing,
+            queue_job=args.queue_job,
         )
     )
 

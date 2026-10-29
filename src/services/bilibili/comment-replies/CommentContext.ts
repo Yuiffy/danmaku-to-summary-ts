@@ -27,11 +27,12 @@ export const visualCommentQuestion = (text: string) => /画面|屏幕|镜头|出
 // A deictic tool-cost question refers to the mentioned video's tool, not the bot's own usage.
 const videoToolCostQuestion = (text: string) => /这(?:个|套|种)?\s*(?:插件|技能|skill)/iu.test(text) &&
   /tokens?|费用|成本|花费|收费|耗|省|贵|便宜|多少钱/iu.test(text);
-export const projectComparisonQuestion = (text: string) => /我们[^。！？!?]{0,12}(?:能用|用得上|适合|支持)|这(?:套|种|个)(?:方式|方法|方案|流程|技术)|(?:对比|比较)[^。！？!?]{0,20}(?:代码|skill|流程|项目)|(?:代码|skill|工作流)[^。！？!?]{0,20}(?:支持|对比)/iu.test(text);
+export const projectComparisonQuestion = (text: string) => /(?:来|能|值得|需要)?学(?:习)?(?:一下|下)|能否吸收|借鉴|我们[^。！？!?]{0,12}(?:能用|用得上|适合|支持)|这(?:套|种|个)(?:方式|方法|方案|流程|技术)|(?:对比|比较)[^。！？!?]{0,20}(?:代码|skill|流程|项目|切片)|(?:代码|skill|工作流)[^。！？!?]{0,20}(?:支持|对比)/iu.test(text);
 export const commentHelpQuestion = (text: string) => /你(?:能|会|可以)(?:做|干)(?:些|点)?(?:什么|啥)|你(?:能|会|可以)帮(?:我|我们)?(?:做)?(?:什么|啥)|怎么(?:用|叫|问)你|(?:你|鹿饼)(?:有|的)(?:什么功能|使用方法|使用说明)/u.test(text);
 export function implicitVideoRequest(text: string): boolean {
   const request = text.replace(/@[^\s，,:：。！？!?]+/gu, '').replace(/^回复\s*[:：]?/u, '').trim();
   return /@/u.test(text) && !request ||
+    /^(?:看看|看下|看一下)(?:这个|这段|这期)?(?:咋样|怎么样|如何)?[~～!！。.?？]*$/u.test(request) ||
     /^(?:(?:你虽然不是[^,，]{1,12}[,，]\s*)?你也过来|(?:你也?|鹿饼)?(?:过来|来)(?:看看|点评)(?:一下|下)?)[~～!！。.?？]*$/u.test(request);
 }
 export const needsCommentEvidence = (text: string, type?: number) => !commentHelpQuestion(text) && (type === 1 && (implicitVideoRequest(text) || videoToolCostQuestion(text)) ||
@@ -111,13 +112,13 @@ function videoCuePriority(cues: VideoCue[], question: string, includeRest = fals
 }
 
 /** Choose by relevance first, then restore source order. Never truncate an original cue. */
-export function videoExcerpts(cues: VideoCue[], question: string): VideoCue[] {
+export function videoExcerpts(cues: VideoCue[], question: string, maxChars = 700, includeRest = false): VideoCue[] {
   let size = 0;
   const chosen = new Map<number, VideoCue>();
-  for (const i of videoCuePriority(cues, question)) {
+  for (const i of videoCuePriority(cues, question, includeRest)) {
     if (Array.from(cues[i].text).length > 180) continue;
     const text = safeEvidenceText(cues[i].text, 180);
-    if (!text || size + text.length > 700) continue;
+    if (!text || size + text.length > maxChars) continue;
     size += text.length; chosen.set(i, { at: cues[i].at, text });
   }
   return [...chosen.entries()].sort(([a], [b]) => a - b).map(([, cue]) => cue);

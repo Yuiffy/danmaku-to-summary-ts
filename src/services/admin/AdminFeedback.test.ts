@@ -137,6 +137,24 @@ it('uses explicit feedback acceptance for an existing video without rerendering 
   expect(f.planner).not.toHaveBeenCalled();
 });
 
+it('accepts a new feedback submission after an earlier successful upload job was cancelled and acknowledged', async () => {
+  const f = fixture({}, undefined, true);
+  const first = f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  const queuePath = path.join(f.root, 'data/runtime/clip_upload_queue.json');
+  atomicJson(queuePath, { jobs: [{ id: 'upload-test', status: 'running', clipIds: [3354],
+    cancellationRequests: { 3354: { reason: '人工撤回' } } }] });
+  expect(() => f.feedback.submit('3354', f.input('投'))).toThrow('已在投稿队列');
+  const record = readJson(f.registryPath); record.clips['3354'].status = 'review';
+  record.clips['3354'].uploadCancellation = { jobId: 'upload-test', reason: '人工撤回' };
+  atomicJson(f.registryPath, record);
+  atomicJson(queuePath, { jobs: [{ id: 'upload-test', status: 'cancelled', clipIds: [3354], cancellationAcknowledgedIds: [3354] }] });
+  const retry = f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(retry.id).not.toBe(first.id);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'approve-review', 'enqueue']);
+});
+
 it('keeps queued feedback valid when another clip refreshes the batch registration timestamp', async () => {
   const f = fixture({}, undefined, true);
   let release!: () => void;

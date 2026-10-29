@@ -37,6 +37,8 @@ export interface CommentState {
   rotation: string[];
   lastSentAt: number;
   paused: boolean;
+  pauseAlertAt?: number;
+  pauseReason?: 'like_unconfirmed' | 'publication_unconfirmed' | 'platform_blocked';
   userWindows?: Record<string, { starts: number[]; noticeUntil?: number }>;
 }
 export const newCommentState = (botUid: string): CommentState => ({ version: 1, botUid, jobs: [],
@@ -48,7 +50,9 @@ function validateState(state: CommentState, botUid: string): void {
       !state.feeds?.reply || !state.feeds?.at || !state.days || typeof state.days !== 'object' || Array.isArray(state.days) ||
       !Array.isArray(state.starts) || state.starts.length > LIMITS.startsPerMinute || state.starts.some(at => !timestamp(at)) ||
       !Array.isArray(state.rotation) || state.rotation.some(uid => !positiveId(uid)) || new Set(state.rotation).size !== state.rotation.length ||
-      typeof state.paused !== 'boolean' || !timestamp(state.lastSentAt)) throw new Error('Invalid comment state schema/account');
+      typeof state.paused !== 'boolean' || !timestamp(state.lastSentAt) ||
+      state.pauseAlertAt !== undefined && !timestamp(state.pauseAlertAt) ||
+      state.pauseReason !== undefined && !['like_unconfirmed', 'publication_unconfirmed', 'platform_blocked'].includes(state.pauseReason)) throw new Error('Invalid comment state schema/account');
   for (const checkpoint of Object.values(state.feeds)) {
     if (typeof checkpoint !== 'object' || checkpoint.head !== undefined && checkpoint.head !== '0' && !positiveId(checkpoint.head) ||
         checkpoint.scan && (!positiveId(checkpoint.scan.head) || !positiveId(checkpoint.scan.id) || !timestamp(checkpoint.scan.time))) throw new Error('Invalid comment feed checkpoint');
@@ -120,8 +124,8 @@ export class CommentStateStore {
         state.starts = state.starts.map(() => Date.now());
       }
       for (const job of state.jobs) {
-        if (job.likeStatus === 'pending') { job.likeStatus = 'unknown'; state.paused = true; }
-        if (job.status === 'sending') { job.status = 'unknown'; state.paused = true; }
+        if (job.likeStatus === 'pending') { job.likeStatus = 'unknown'; state.paused = true; state.pauseReason = 'like_unconfirmed'; }
+        if (job.status === 'sending') { job.status = 'unknown'; state.paused = true; state.pauseReason = 'publication_unconfirmed'; }
         if (job.status === 'generating') job.status = 'failed'; // Budget already charged; never repeat uncertain calls.
       }
       await this.save(state);

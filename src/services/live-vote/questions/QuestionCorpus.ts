@@ -27,8 +27,8 @@ export class QuestionCorpus implements QuestionEvidence {
   private readonly lexicalReader = new SubtitleLexicalReader();
 
   constructor(private readonly config: LiveQuestionConfig, private readonly request: Pick<QuestionRequest, 'roomId' | 'question' | 'askedAt'>,
-    private readonly signal: AbortSignal, botUid?: string, private readonly makeEmbedder?: () => Embedder) {
-    this.rooms = questionScope(config, request.roomId, request.question);
+    private readonly signal: AbortSignal, botUid?: string, private readonly makeEmbedder?: () => Embedder, maxRooms = 3) {
+    this.rooms = questionScope(config, request.roomId, request.question, maxRooms);
     this.scopeDescription = `本次查询资料范围：${JSON.stringify(this.rooms.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`;
     this.embeddingStatus = config.semantic?.enabled ? 'unavailable' : 'disabled';
     this.corpora = this.rooms.map(room => {

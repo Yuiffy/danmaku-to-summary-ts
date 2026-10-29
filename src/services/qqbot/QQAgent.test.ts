@@ -27,6 +27,8 @@ test('help is an agent decision and can answer without unnecessary tool executio
   const reply = await createQQAnswerer(settings, knowledge, transport as any)({ ...request, text: '你能做什么' }, signal());
   expect(reply).toContain('群里艾特'); expect(reply).toContain('最新直播梗概');
   expect(reply).not.toMatch(/当前视频|生图/u); expect(knowledge).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(1);
+  const system = JSON.parse((transport.mock.calls as any)[0][1].body).messages[0].content;
+  expect(system).not.toMatch(/未启用资料检索|可读当前视频|无工具/u);
 });
 test('keeps evidence as untrusted data and honors cancellation before network IO', async () => {
   const read = jest.fn(async () => ({ evidenceId: 'ev1', date: '2026-10-27', time: '00:12:34', text: '明天继续玩' }));

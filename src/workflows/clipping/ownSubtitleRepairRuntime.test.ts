@@ -94,6 +94,21 @@ test('inconclusive editing returns bound diagnosis to final review without rewri
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('a rebuilt QA-required baseline may diagnose audio but never auto-adopts subtitle edits', async () => {
+    const f = await fixture();
+    try {
+        f.artifact.qaRequired = true;
+        f.artifact.renderedSubtitles = { version: 1, revision: 0, edits: [] };
+        const result = await repairOwnSubtitles(f.artifact, policy, { qaRequired: true }, f.io);
+        expect(f.io.runAudio).toHaveBeenCalledTimes(1);
+        expect(f.io.render).not.toHaveBeenCalled();
+        expect(f.io.reviewFinal).toHaveBeenCalledTimes(1);
+        expect(result.qaRequired).toBe(true);
+        expect(result.output).toBe(f.artifact.output);
+        expect(result.automaticSubtitleRepairAttempt.status).toBe('inconclusive');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('source mutation, audio hash tampering and legacy required QA stop a repair before rendering', async () => {
     for (const kind of ['source', 'audio', 'qa']) {
         const f = await fixture();

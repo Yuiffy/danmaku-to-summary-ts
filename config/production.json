@@ -417,6 +417,20 @@
       }
     },
     "streamerRegistry": {
+      "azusa": {
+        "displayName": "阿梓从小就很可爱",
+        "roomIds": [
+          "80397"
+        ],
+        "aliases": [
+          "阿梓",
+          "梓神"
+        ],
+        "referenceImages": [
+          "public/reference_images/azusa_standing.png"
+        ],
+        "characterDescription": "阿梓从小就很可爱（紫发豆豆眉双马尾的可爱少女），粉丝是小孩梓（一群Q版形象的狂热粉丝/阿伟）"
+      },
       "mit3uri": {
         "displayName": "三理Mit3uri",
         "uid": "2030198123",

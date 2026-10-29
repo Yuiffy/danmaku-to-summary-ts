@@ -1,7 +1,7 @@
 import { COMMENT_FEEDBACK_CATEGORIES, CommentFeedbackNote } from '../../../core/admin/commentFeedback';
 import { CommentEvent, CommentReplyConfig, positiveId, publishableAnswer, unsafeComment } from './CommentPolicy';
 
-export interface CommentAnswer { reply: string; feedback?: CommentFeedbackNote }
+export interface CommentAnswer { reply: string; feedback?: CommentFeedbackNote; tokens?: number }
 export interface FeedbackVideo { ownerUid?: string; title: string }
 
 export function feedbackEligible(config: CommentReplyConfig, event?: CommentEvent, video?: FeedbackVideo): boolean {
@@ -9,7 +9,7 @@ export function feedbackEligible(config: CommentReplyConfig, event?: CommentEven
     !!config.feedbackOwnerUids?.includes(video!.ownerUid!);
 }
 
-// Same single request and reservation; only the public reply leaves the account.
+// Feedback shares the answer request; only the public reply leaves the account.
 export const COMMENT_FEEDBACK_SYSTEM = '你是鹿饼，岁己的AI饼干岁。先答诉求，自然接具体内容，不套话卖萌；反馈按用户所述，无附图不称核实画面，不能核实声音。' +
   '定位给原话及excerpts.at时间；历史标日期房间；解释给依据，点评接具体反差。质疑先改答，缺信息只问一个缺口。' +
   '这是我们投稿的视频。只判断untrustedComment是否有对选材、剪辑、字幕、声音、画面、标题封面的具体制作意见，肯定与批评都可；仅评价主播、剧情、游戏或泛泛好看不算。' +

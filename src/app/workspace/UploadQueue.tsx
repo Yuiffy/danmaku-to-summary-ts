@@ -2,6 +2,7 @@
 import { UploadQueueStatus } from '../../core/admin/uploadStatus';
 import { dateText, statusText, useResource } from './client';
 import { UploadObservation } from './UploadObservation';
+import { CancelUpload } from './CancelUpload';
 
 function waitText(at: string | undefined, observedAt: string) {
   if (!at) return '时间待定';
@@ -73,7 +74,8 @@ export function UploadQueue() {
       <p className="muted">执行中优先展示，其余按当前可尝试时间推算顺序。处理时会跳过未到重试时间的任务；一项任务可含多个视频。</p>
       <div className="table-scroll upload-queue-table"><table><thead><tr><th>顺序 / 任务</th><th>视频</th><th>状态 / 原因</th><th>最早可尝试</th></tr></thead><tbody>{status.queue.map((entry, index) => <tr key={entry.id}>
         <td>{index + 1}<small className="mono">{entry.id}</small></td>
-        <td>{entry.clips.map(clip => <p key={clip.id}>#{clip.id} {clip.title || '未记录标题'}{clip.done ? '（已投稿）' : clip.excluded ? '（制作失败，已跳过）' : ''}</p>)}</td>
+        <td>{entry.clips.map(clip => <div key={clip.id}><p>#{clip.id} {clip.title || '未记录标题'}{clip.done ? '（已投稿）' : clip.cancelling ? '（正在取消）' : clip.cancelled ? '（已取消，可修改再投）' : clip.excluded ? '（制作失败，已跳过）' : clip.submissionStarted ? '（最终提交中）' : ''}</p>
+          {!clip.done && !clip.cancelled && !clip.excluded && !clip.submissionStarted && <CancelUpload clipId={clip.id} onCancelled={resource.refresh} />}</div>)}</td>
         <td><span className={`status status-${entry.status}`}>{statusText(entry.status)}</span><p>{entry.reason}</p><small>更新于 {dateText(entry.updatedAt)}</small></td>
         <td>{entry.status === 'running' ? '正在执行' : entry.eligibleAt ? dateText(entry.eligibleAt) : '需要人工核对'}{entry.retryAt && <small>任务重试：{dateText(entry.retryAt)}</small>}</td>
       </tr>)}</tbody></table>{!status.queue.length && <div className="empty">暂无待处理投稿任务</div>}</div>

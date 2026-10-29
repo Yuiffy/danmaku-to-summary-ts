@@ -18,8 +18,8 @@ import { campaignCandidatePath } from '../../workflows/clipping/campaignCandidat
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'campaign-feedback-')); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
-function fixture() {
-  const recordings = path.join(root, 'recordings'), directory = path.join(recordings, '100_主播', '2026_10_24');
+function fixture(roomId = '100') {
+  const recordings = path.join(root, 'recordings'), directory = path.join(recordings, `${roomId}_主播`, '2026_10_24');
   fs.mkdirSync(directory, { recursive: true });
   const media = path.join(directory, 'source.mp4'), srt = path.join(directory, 'source.srt');
   fs.writeFileSync(media, 'source media');
@@ -27,7 +27,7 @@ function fixture() {
   const topic = require('../../scripts/topic_clipper'), { buildSubtitleEvidence } = require('../../scripts/clipping/subtitle_evidence');
   const sourceSha256 = buildSubtitleEvidence(topic.parseTopicSrt(srt).segments).sourceSha256;
   const statePath = path.join(directory, 'own_stream_fun_clips/REVIEW_STATE.json');
-  const metadata = { roomId: '100', streamerName: '主播甲', recordedAt: '2026-10-24 12:00:00', streamTitle: '玩芙娅之魂', source: { mediaPath: media, srtPath: srt },
+  const metadata = { roomId, streamerName: roomId === '25788785' ? '岁己SUI' : '主播甲', recordedAt: '2026-10-24 12:00:00', streamTitle: roomId === '25788785' ? '普通杂谈' : '玩芙娅之魂', source: { mediaPath: media, srtPath: srt },
     aiStatus: { ranking: { sourceSha256, skipped: [{ candidateIndex: 1, start: 10, end: 20, title: '翻车话题', reason: 'score' }, { candidateIndex: 2, start: 10, end: 20, title: '另一个话题' }] } } };
   atomicJson(statePath, { type: 'own_stream_review_state', metadata });
   const clips = new AdminClipStore(root, () => [recordings]), registryPath = path.join(root, 'data/runtime/clip_upload_registry.json');
@@ -90,6 +90,16 @@ it('accepts title-only publication and retains the exact requested title over ge
   const f = fixture(); f.feedback.submit(f.id, f.input({ title: '直接输入的标题' })); await f.jobs.flush();
   expect(f.jobs.list()[0]).toMatchObject({ note: '投', status: 'succeeded' });
   expect(f.clips.record('51').title).toBe('直接输入的标题');
+});
+it('uses the same reviewed feedback flow for ordinary Sui recalls with Sui upload settings and no campaign tags', async () => {
+  const f = fixture('25788785');
+  await request(f.app).post(`/campaign-candidates/${f.id}/actions`).set(f.headers)
+    .send(f.input({ title: '岁己的候补标题', note: '保留完整铺垫' })).expect(202);
+  await f.jobs.flush();
+  expect(f.jobs.list()[0]).toMatchObject({ status: 'succeeded', plan: { clipId: '51', title: '岁己的候补标题' } });
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['register-campaign-candidate', 'import-campaign-candidate', 'rebuild', 'cut', 'enqueue']);
+  expect(f.clips.record('51')).toMatchObject({ roomId: '25788785', prefix: '【小岁】', title: '岁己的候补标题', status: 'queued' });
+  expect(readJson(f.metadataPath).upload.tags).toEqual(['小岁', '虚拟主播', '直播切片', '岁AI切片', 'AI切片']);
 });
 it('keeps the submitted campaign title when registration succeeds but planning fails and the user retries on the numeric clip', async () => {
   const f = fixture();

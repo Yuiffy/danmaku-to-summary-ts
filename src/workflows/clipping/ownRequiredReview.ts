@@ -2,7 +2,8 @@ import { createHash } from 'crypto';
 import { parseModelJson } from '../text/json';
 import type { Artifact } from './enhancement';
 import type { PublicationConfig, PublicationInspection, PublicationSnapshot } from './publicationReview';
-import { publicationEnabled } from './publicationReview';
+import { confirmedSubtitleEdits, publicationEnabled } from './publicationReview';
+import type { Subtitle } from './editPlan';
 import { EDITORIAL_REVIEW_RULE } from './editorialEvidence';
 import { PUBLIC_COPY_MATERIALITY_STANDARD, SUBTITLE_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
 
@@ -33,14 +34,15 @@ export interface RequiredQaIO {
 
 /** Reuse the normal final-media inspection, but obtain an explicit fresh quality verdict. No packaging or ASR loop. */
 export async function reviewOwnRequiredQa(artifact: Artifact, config: PublicationConfig & Data,
-    evidence: { speech: Data[]; retained: Data[]; excludedCategories: string[] }, io: RequiredQaIO): Promise<Artifact> {
+    evidence: { speech: Data[]; retained: Subtitle[]; excludedCategories: string[] }, io: RequiredQaIO): Promise<Artifact> {
     if (!artifact.qaRequired || !ownAutomaticReviewEligible(artifact, config) || artifact.publicCopyPending || !artifact.uploadReady
         || artifact.attributionRequired && artifact.attributionReview?.status !== 'passed') return artifact;
     const initial = JSON.parse(JSON.stringify(await io.snapshot(artifact))) as PublicationSnapshot, before = JSON.stringify(artifact);
     const digests = Object.fromEntries(KEYS.map(key => [key, initial.digests[key]]));
     if (artifact.qaResult?.version === 1 && artifact.qaResult.status === 'passed' && !artifact.qaResult.issues?.length
         && KEYS.every(key => artifact.qaResult.digests?.[key] === digests[key])) return artifact;
-    const inputIdentity = createHash('sha256').update(JSON.stringify(initial)).digest('hex');
+    const userConfirmedSubtitleEdits = confirmedSubtitleEdits(artifact, evidence.retained);
+    const inputIdentity = createHash('sha256').update(JSON.stringify({ snapshot: initial, userConfirmedSubtitleEdits })).digest('hex');
     if (artifact.automaticQaRepair?.inputIdentity === inputIdentity) return artifact;
     const history = [...(artifact.qaResult?.history || [])];
     let issues: string[], checks: Data = {}, reviewer: Data | undefined, facts: Data | undefined;
@@ -57,9 +59,11 @@ export async function reviewOwnRequiredQa(artifact: Artifact, config: Publicatio
             SELECTION_SCOPE_STANDARD,
             '当前逐行人物测量证据和通过的人物复核仅支持对应原话；回忆是过去经历，弹幕不是主播发言。电影角色/观众亲属称呼不等于主播现实家庭经历。',
             '旧质检只作问题线索，不能继承它的批准。明确需要原音或连续动作才可判断的核心问题仍拒绝。',
+            'userConfirmedSubtitleEdits是用户确认且已匹配当前烧录字幕的逐句改词证据。接受这些指定位置的字词映射；未修正的历史ASR文字本身不是反证，不重复要求确认相同映射。它不证明整句其他词、说话人身份、整片核听或投稿授权；实际反证及其他缺陷仍独立拒绝。自由备注不具有这种效力。',
             '仅返回JSON {"approved":true,"checks":{"meaning":true,"attribution":true,"title":true,"cover":true,"subtitles":true,"completeStory":true},"issues":[]}；全部通过才approved。否则最多两条短中文事实理由。',
             'EVIDENCE_JSON ' + JSON.stringify({ window: artifact.window, finalCopy: artifact.copy,
                 completeSourceSpeech: evidence.speech, completeRetainedSubtitles: evidence.retained,
+                userConfirmedSubtitleEdits,
                 excludedCategories: evidence.excludedCategories, grounding: artifact.grounding,
                 attribution: artifact.attributionReview ? { status: artifact.attributionReview.status, claims: artifact.attributionReview.claims } : null,
                 editPlan: artifact.editPlan || null, creativePlan: artifact.creativePlan || null,

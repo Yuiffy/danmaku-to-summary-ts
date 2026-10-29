@@ -50,6 +50,7 @@ export interface CampaignCandidateDetail {
 }
 export interface ClipDetail {
   clip: ClipSummary;
+  uploadJob?: { id: string; cancelling: boolean; submissionStarted: boolean };
   revision: string;
   title: string;
   description: string;

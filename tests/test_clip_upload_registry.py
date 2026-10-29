@@ -263,7 +263,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
             "roomId": "1820703922",
             "streamerName": "花礼 Harei",
         }
-        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1,
+        job = {"id": "upload-test", "delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1,
                "collectionSectionId": 9974272}
         completed = subprocess.CompletedProcess([], 0, stdout="uploaded")
         with patch.object(registry.subprocess, "run", return_value=completed) as run:
@@ -273,6 +273,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--manifest", command)
         self.assertIn(clip["manifestPath"], command)
+        self.assertEqual(command[command.index("--queue-ids") + 1], "1")
         self.assertNotIn("--review", command)
         self.assertEqual(command[command.index("--collection-section-id") + 1], "9974272")
 
@@ -1046,6 +1047,86 @@ class ClipUploadRegistryTests(unittest.TestCase):
             queue = registry.load_json(fixture["queue_path"], {})
             self.assertEqual(queue["jobs"][0]["status"], "cancelled")
 
+    def test_cancel_one_running_clip_preserves_siblings_and_concurrent_enqueue(self):
+        fixture = self.make_fixture(count=3)
+        fixture['queue']['jobs'][0].update(clipIds=[1, 2], batchSize=1)
+        seen = []
+
+        def run_batch(group, job):
+            seen.extend(c['id'] for c in group)
+            if group[0]['id'] == 1:
+                args = registry.build_parser().parse_args(['cancel', '--ids', '1', '--note', '人工撤回'])
+                self.assertEqual(registry.cancel_job(args), 0)
+                # The upload process still owns this ID until it has actually stopped.
+                queue = registry.load_json(fixture['queue_path'], {})
+                self.assertIn(1, registry.clip_candidate_queue.active_ids(queue))
+                registry.enqueue(registry.build_parser().parse_args(['enqueue', '--ids', '3']))
+                return subprocess.CompletedProcess([], 0, stdout='[UPLOAD_CANCELLED]')
+            self.write_done(fixture, [2])
+            return subprocess.CompletedProcess([], 0, stdout='ok')
+
+        saved, queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(seen, [1, 2])
+        self.assertEqual(saved['clips']['1']['status'], 'review')
+        self.assertEqual(saved['clips']['2']['status'], 'uploaded')
+        self.assertEqual(saved['clips']['3']['status'], 'queued')
+        self.assertEqual(queue['jobs'][0]['status'], 'done')
+        self.assertEqual(queue['jobs'][0]['cancellationRequests']['1']['reason'], '人工撤回')
+        self.assertNotIn(1, registry.clip_candidate_queue.active_ids(queue))
+        self.assertEqual(queue['jobs'][-1]['clipIds'], [3])
+
+    def test_cancel_entire_running_job_does_not_upload_later_groups(self):
+        fixture = self.make_fixture(count=2)
+        fixture['queue']['jobs'][0]['batchSize'] = 1
+        seen = []
+
+        def run_batch(group, job):
+            seen.extend(c['id'] for c in group)
+            self.assertEqual(registry.cancel_job(registry.build_parser().parse_args([
+                'cancel', '--job', job['id'], '--note', '撤回整批'])), 0)
+            return subprocess.CompletedProcess([], 0, stdout='[UPLOAD_CANCELLED]')
+
+        saved, queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(seen, [1])
+        self.assertEqual(queue['jobs'][0]['status'], 'cancelled')
+        self.assertTrue(all(c['status'] == 'review' for c in saved['clips'].values()))
+
+    def test_stale_worker_snapshots_cannot_revive_cancelled_clip(self):
+        fixture = self.make_fixture(count=2)
+
+        def run_batch(group, job):
+            snapshot = registry.load_json(fixture['registry_path'], {})
+            stale_queue = registry.load_json(fixture['queue_path'], {})
+            self.assertEqual(registry.cancel_job(registry.build_parser().parse_args([
+                'cancel', '--ids', '1', '--note', '撤回'])), 0)
+            registry.clip_upload_state.commit_worker_statuses(registry, snapshot, [1, 2])
+            registry.commit_queue_snapshot(stale_queue, job_ids=[job['id']])
+            self.assertEqual(registry.load_json(fixture['registry_path'], {})['clips']['1']['status'], 'cancelling')
+            self.assertIn('1', registry.load_json(fixture['queue_path'], {})['jobs'][0]['cancellationRequests'])
+            self.write_done(fixture, [2])
+            return subprocess.CompletedProcess([], 0, stdout='ok')
+
+        saved, _ = self.run_job_with(fixture, run_batch)
+        self.assertEqual(saved['clips']['1']['status'], 'review')
+
+    def test_cancel_rejects_started_submission_and_does_not_change_siblings(self):
+        fixture = self.make_fixture(count=2)
+
+        def run_batch(group, job):
+            with registry.queue_transaction() as queue:
+                queue['jobs'][0]['submissionStartedClipIds'] = [1]
+            before = fixture['queue_path'].read_bytes()
+            self.assertEqual(registry.cancel_job(registry.build_parser().parse_args([
+                'cancel', '--job', job['id'], '--note', '太晚了'])), 2)
+            self.assertEqual(fixture['queue_path'].read_bytes(), before)
+            self.assertNotIn('uploadCancellation', registry.load_json(fixture['registry_path'], {})['clips']['2'])
+            self.write_done(fixture, [1, 2])
+            return subprocess.CompletedProcess([], 0, stdout='ok')
+
+        saved, queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(queue['jobs'][0]['status'], 'done')
+        self.assertTrue(all(c['status'] == 'uploaded' for c in saved['clips'].values()))
+
     def test_cancelled_job_clips_can_be_enqueued_again(self):
         fixture = self.make_fixture(count=2)
         for clip in fixture["registry"]["clips"].values():
@@ -1094,7 +1175,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
                 )
             )
             self.assertEqual(registry.enqueue(enqueue_args), 0)
-            release_lock.assert_called_once()
+            release_lock.assert_not_called()
 
         resumed_registry = registry.load_json(fixture["registry_path"], {})
         resumed_queue = registry.load_json(fixture["queue_path"], {})
@@ -1104,8 +1185,8 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(resumed_queue["jobs"][-1]["status"], "pending")
         self.assertEqual(resumed_queue["jobs"][-1]["clipIds"], [1, 2])
 
-    def test_cancel_blocked_job_preserves_uploaded_clip_and_rejects_running_job(self):
-        for status, expected in (("blocked", 0), ("running", 2)):
+    def test_cancel_blocked_or_running_job_preserves_uploaded_clip(self):
+        for status, expected in (("blocked", 0), ("running", 0)):
             with self.subTest(status=status):
                 fixture = self.make_fixture(count=2)
                 fixture["queue"]["jobs"][0].update(status=status, attempts=3,
@@ -1132,7 +1213,9 @@ class ClipUploadRegistryTests(unittest.TestCase):
                         self.assertEqual(registry.cancel_job(args), 0)
                     else:
                         self.assertEqual(saved["status"], "running")
-                        self.assertEqual(clips["1"]["status"], "needs_retry")
+                        self.assertEqual(clips["1"]["status"], "cancelling")
+                        registry.clip_upload_cancel.acknowledge(registry, "upload-test", [1])
+                        self.assertEqual(registry.load_json(fixture["queue_path"], {})["jobs"][0]["status"], "cancelled")
                     self.assertEqual(clips["2"]["status"], "uploaded")
                     self.assertEqual(clips["2"]["bvid"], "BV-fixture")
 

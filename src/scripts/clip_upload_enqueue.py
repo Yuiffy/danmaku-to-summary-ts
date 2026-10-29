@@ -209,6 +209,7 @@ def enqueue(args: argparse.Namespace, api) -> int:
             clip = registry["clips"][str(clip_id)]
             if clip.get("status") != "uploaded" or args.force:
                 clip["status"] = "queued"
+                clip.pop("uploadCancellation", None)
                 clip.pop("automaticPublicationAuthorization", None)
                 clip.pop("failureReason", None)
                 clip["updatedAt"] = api.now_iso()

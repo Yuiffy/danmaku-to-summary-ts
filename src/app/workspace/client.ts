@@ -37,7 +37,7 @@ export function useResource<T>(endpoint: string, interval = 0, preserveOnRefresh
 export function statusText(status: string): string {
   return ({ review: '待审核', needs_review: '待核对', pending_preflight: '待预审', pending_cut: '待制作', pending_review: '待审核',
     pending_upload: '待投稿', queued: '已排队', running: '执行中', processing: '执行中', uploaded: '已投稿', upload_queued: '投稿队列中',
-    succeeded: '已完成', completed: '已完成', failed: '失败', interrupted: '已中断', cancelled: '已取消', excluded: '已排除',
+    succeeded: '已完成', completed: '已完成', failed: '失败', interrupted: '已中断', cancelled: '已取消', cancelling: '正在取消', excluded: '已排除',
     pending: '排队中', retry_wait: '等待重试', blocked: '已阻塞', done: '已完成',
     needs_retry: '待重试', pending_rebuild: '待重制', uploading: '投稿中', sent: '已发送', attempted: '发送未确认' } as Record<string, string>)[status] || status;
 }

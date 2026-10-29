@@ -3,7 +3,8 @@ import { QQ_QUOTA_REPLY } from '../qqbot/QQPolicy';
 import { QQUsageSnapshot, qqUserQuota } from './AdminQQUsage';
 
 export const qqIdentity = (appId: string, hash: string) => `${appId}:${hash}`;
-export const qqQuotaNotice = (record: QQRecord) => record.answer === QQ_QUOTA_REPLY || /^生图需要歇一会儿～每人每天最多\d+张，请稍后再试。$/u.test(record.answer);
+export const qqQuotaNotice = (record: QQRecord) => record.answer === QQ_QUOTA_REPLY ||
+  /^生图需要歇一会儿～(?:(?:每人每天|每人每5小时|全局每天)最多\d+张，请(?:稍后|明天)再试。|全局生图间隔至少1分钟，请稍后再试。)$/u.test(record.answer);
 
 export function summarizeQQRecords(records: QQRecord[]): QQRecordStats {
   return { records: records.length, replied: records.filter(row => row.status === 'sent').length,

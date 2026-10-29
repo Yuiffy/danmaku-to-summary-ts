@@ -9,7 +9,7 @@ const now = Date.parse('2026-10-28T00:30:00+08:00'), userId = 'a'.repeat(64);
 function fixture() {
   const state = newQQState('900000001'); state.day = '2026-10-28';
   state.users[userId] = { count: 200, starts: [] };
-  return { state, policy: { dailyTokenBudget: 40960000, images: { enabled: true, dailyLimit: 20, userDailyLimit: 3 } } };
+  return { state, policy: { dailyTokenBudget: 40960000, images: { enabled: true, dailyLimit: 300, userDailyLimit: 30 } } };
 }
 
 test('shows personal five-hour capacity across midnight and expiry, without treating notice suppression as a limit', () => {
@@ -38,11 +38,22 @@ test('distinguishes global minute/token gates from personal use and leaves indep
 
 test('image daily counts reset independently of the rolling one-minute image cooldown', () => {
   const snapshot = fixture(); snapshot.state.day = '2026-10-27';
-  snapshot.state.images = 20; snapshot.state.users[userId].images = 3; snapshot.state.lastImageAt = now - 1000;
+  snapshot.state.images = 300; snapshot.state.users[userId].images = 30; snapshot.state.lastImageAt = now - 1000;
   expect(qqUserQuota(snapshot, userId, 'group', now).image).toMatchObject({ status: 'limited', used: 0,
     reasons: [{ code: 'image_cooldown', until: now + 59000 }] });
   snapshot.state.day = '2026-10-28';
   expect(qqUserQuota(snapshot, userId, 'group', now).image?.reasons.map(reason => reason.code)).toEqual(['user_images', 'global_images', 'image_cooldown']);
+});
+
+test('image window projects independent five-hour usage across midnight and at exact expiry', () => {
+  const snapshot = fixture(); snapshot.state.day = '2026-10-27';
+  snapshot.state.users[userId].images = 30;
+  snapshot.state.users[userId].imageStarts = Array(10).fill(now - 3600000);
+  expect(qqUserQuota(snapshot, userId, 'group', now).image).toMatchObject({ status: 'limited', used: 0, limit: 30, remaining: 30,
+    window: { used: 10, limit: 10, remaining: 0, windowMs: 5 * 3600000 },
+    reasons: [{ code: 'user_image_window', until: now + 4 * 3600000 }] });
+  expect(qqUserQuota(snapshot, userId, 'group', now + 4 * 3600000).image).toMatchObject({ status: 'available',
+    window: { used: 0, limit: 10, remaining: 10 }, reasons: [] });
 });
 
 test('private guidance cooldown, pause and missing data are never shown as unrestricted text chat', () => {

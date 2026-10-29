@@ -159,6 +159,10 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.post('/clips/:id/actions', (req, res) => {
     const id = req.params.id, revision = req.body.revision;
+    if (req.body.action === 'cancel-upload') {
+      adapters.clips.record(id);
+      res.status(202).json(adapters.jobs.submit(clipCommand(id, req.body))); return;
+    }
     const prepared = adapters.titles?.prepare(id, req.body);
     req.body = prepared?.body || { ...req.body, titleChoice: undefined };
     if (req.body.action === 'feedback-publish') {
@@ -173,7 +177,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
       ? { ...req.body, mediaPath: metadata.source?.mediaPath, srtPath: metadata.source?.srtPath, xmlPath: metadata.source?.xmlPath, kind: metadata.kind } : req.body;
     for (const [key, extensions] of workflowInputs) if (input[key]) adapters.clips.checkedInput(input[key], extensions);
     if (input.action === 'cover') {
-      if (['queued', 'uploading', 'uploaded', 'excluded', 'cancelled'].includes(detail.clip.status) || detail.pendingRebuild || detail.clip.pendingCut) throw new AdminError('请在成片制作完成且未入队时修改封面', 409);
+      if (detail.uploadJob || ['queued', 'uploading', 'cancelling', 'uploaded', 'excluded', 'cancelled'].includes(detail.clip.status) || detail.pendingRebuild || detail.clip.pendingCut) throw new AdminError('请在成片制作完成且未入队时修改封面', 409);
       const command = clipCommand(id, input);
       if (!adapters.clips.asset(id, 'media', input.selection.part)) throw new AdminError('成片不存在', 404);
       res.status(202).json(adapters.jobs.submit(command, validate)); return;
@@ -236,8 +240,8 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
     res.json(adapters.asr.history(req.query.page, req.query.pageSize, { streamer: req.query.streamer, date: req.query.date }));
   });
   app.post('/queues/actions', (req, res) => {
-    const queues = adapters.clips.queues(), list = req.body.action === 'cancel-upload' ? queues.uploads : queues.manual;
-    if (!list.some((job: any) => job.id === req.body.id)) throw new AdminError('队列任务不存在', 404);
+    if (req.body.action === 'cancel-upload') adapters.clips.uploadJob(req.body.id);
+    else if (!adapters.clips.queues().manual.some((job: any) => job.id === req.body.id)) throw new AdminError('队列任务不存在', 404);
     const validate = req.body.action === 'approve-manual' ? () => {
       if (adapters.clips.manualDetail(req.body.id).revision !== req.body.revision) throw new AdminError('手工视频已变化，请重新审核', 409);
     } : () => {};

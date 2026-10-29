@@ -1,6 +1,8 @@
 import { createHash } from 'crypto';
+import { QQ_AGENT_LIMITS } from '../../core/admin/qqDiagnostics';
 import { CommentReplyConfig, LIMITS, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
 import { QQImageConfig, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
+import { QQImageEnvelope, QQImageInput, qqImageInput } from './QQImageInputPolicy';
 
 export const QQ_MODEL = 'gpt-6-luna';
 export const QQ_PRIVATE_REPLY = '鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～';
@@ -9,7 +11,7 @@ export const QQ_FAILURE_REPLY = '鹿饼这次没能顺利回答，请稍后再�
 export const QQ_QUOTA_REPLY = '鹿饼今天有点困困了，歇一会儿再来叫我吧～';
 export const QQ_LIMITS = { maxAgeMs: 240000, retentionMs: 86400000, maxReceipts: 10000,
   startsPerMinute: 5, userWindowMs: 18000000, userWindowReplies: 100, sendIntervalMs: 5000,
-  timeoutMs: 90000, privateIntervalMs: 600000, reservation: 65536, agentTurns: 5 } as const;
+  timeoutMs: 90000, privateIntervalMs: 600000, reservation: 262144, agentTurns: QQ_AGENT_LIMITS.modelCalls } as const;
 
 export interface QQConfig {
   secretConfigPath?: string;
@@ -22,7 +24,7 @@ export interface QQConfig {
   knowledge?: NonNullable<CommentReplyConfig['knowledge']> & { allConfiguredRooms?: boolean };
   images?: QQImageConfig;
 }
-export interface QQInbound {
+export interface QQInbound extends QQImageEnvelope {
   kind: string; rawEventType: string; senderId: string; senderName?: string; senderIsBot?: boolean;
   content: string; messageId: string; timestamp: string; groupOpenid?: string;
   mentions?: Array<{ is_you?: boolean }>;
@@ -30,6 +32,7 @@ export interface QQInbound {
 export interface QQRequest {
   key: string; user: string; scope: 'group' | 'c2c'; targetId: string; msgId: string;
   text: string; createdAt: number; senderName?: string;
+  imageInput?: QQImageInput;
 }
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[\w.-]{1,256}$/u.test(value);
 export const qqDigest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -68,14 +71,15 @@ export function qqRequest(message: QQInbound, now: number, botId?: string): QQRe
   if (Array.from(text).length > LIMITS.inputChars) return;
   const senderName = typeof message.senderName === 'string' ? Array.from(message.senderName.normalize('NFC')
     .replace(/[\p{Cc}\p{Cf}]/gu, '').trim()).slice(0, 80).join('') : '';
+  const imageInput = scope === 'group' ? qqImageInput(message) : undefined;
   return { key: qqDigest(JSON.stringify([scope, targetId, message.messageId])),
     user: qqDigest(JSON.stringify([scope, message.senderId])), scope, targetId, msgId: message.messageId, text, createdAt,
-    ...(senderName ? { senderName } : {}) };
+    ...(senderName ? { senderName } : {}), ...(imageInput ? { imageInput } : {}) };
 }
 
 export function qqFixedReply(request: QQRequest, config: QQConfig): string | undefined {
   if (request.scope === 'c2c') return config.privateReply;
   if (!request.text) return '我在～在艾特后面写上想聊的话，或者带上主播、原话和日期来提问吧。';
-  if (qqImageRequested(request.text) && !config.images?.enabled) return QQ_IMAGE_REPLY;
+  if (qqImageRequested(request.text, request.imageInput) && !config.images?.enabled) return QQ_IMAGE_REPLY;
   return undefined;
 }

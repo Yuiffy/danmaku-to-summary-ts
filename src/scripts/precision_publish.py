@@ -20,9 +20,9 @@ def precision_public_copy(metadata, public_copy=None):
 def render_precision(args, api):
     script = Path(__file__).parent / 'clipping' / 'precision_revision.js'
     command = ['node', str(script), '--id', str(args.id), '--registry', str(api.REGISTRY_PATH), '--note', args.note]
-    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position'):
-        if getattr(args, field, None):
-            command.extend(['--' + field.replace('_', '-'), getattr(args, field)])
+    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position', 'context_danmaku_at'):
+        if getattr(args, field, None) is not None:
+            command.extend(['--' + field.replace('_', '-'), str(getattr(args, field))])
     if args.allow_cover_face_overlap:
         command.append('--allow-cover-face-overlap')
     return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
@@ -32,6 +32,7 @@ def register_commands(sub, api):
     p = sub.add_parser('precision', help='Render a separate creative revision by ID; preserves original and uploaded clips')
     p.add_argument('--id', required=True, type=int)
     p.add_argument('--note', default='')
+    p.add_argument('--context-danmaku-at', type=float, default=None, help='Original XML timestamp for a preceding audience question shown as context')
     p.add_argument('--style', choices=('accent', 'compact'), default=None)
     p.add_argument('--avatar-mode', choices=('auto', 'circle', 'closeup'), default=None)
     p.add_argument('--inset-plan', default=None, help='Source-bound editorial layout; final media QA still runs')
@@ -98,11 +99,11 @@ def select_precision(args, api):
         api.release_queue_mutation_lock(handle)
 
 
-def validate_revision(record, revision_path):
+def validate_revision(record, revision_path, *, manual_replacement=False):
     try:
-        from .clip_qa import validate_metadata_qa, _file_digest
+        from .clip_qa import validate_metadata_qa, validate_precision_metadata_qa, _file_digest
     except ImportError:
-        from clip_qa import validate_metadata_qa, _file_digest
+        from clip_qa import validate_metadata_qa, validate_precision_metadata_qa, _file_digest
     directory = Path(revision_path).resolve()
     metadata_path = directory / 'clip.json'
     metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
@@ -130,7 +131,14 @@ def validate_revision(record, revision_path):
     checked = copy.deepcopy(metadata)
     checked['uploadReady'] = True
     checked.pop('ownStreamHumanReview', None)
-    validate_metadata_qa(checked)
+    # Automatic policy approves the ordinary baseline. This explicit manual path
+    # validates the new precision QA without inheriting its old media hashes or
+    # claiming that technical audio checks constitute human listening.
+    if manual_replacement:
+        baseline = json.loads((directory / 'original.json').read_text(encoding='utf-8'))
+        validate_precision_metadata_qa(checked, baseline)
+    else:
+        validate_metadata_qa(checked)
     return metadata, directory
 
 
@@ -144,15 +152,17 @@ def publish_precision(args, api):
     bvid = (record.get('uploadState') or {}).get('bvid')
     if record.get('status') != 'uploaded' or not bvid:
         raise ValueError('This edit command requires an existing uploaded BV; use the normal registry upload flow for a new submission')
-    metadata, directory = validate_revision(record, args.revision)
+    metadata, directory = validate_revision(record, args.revision, manual_replacement=True)
     preview = precision_public_copy(metadata)
+    if args.dry_run:
+        print(json.dumps({'action': 'replace_existing_bv', 'clipId': args.id, 'bvid': bvid,
+                         'qaDigests': metadata['qaResult']['digests'], 'metadataPath': str(directory / 'clip.json'),
+                         'requiresFinalPreviewApproval': True, 'precisionCopyPreview': preview,
+                         'copyPolicy': 'Keep the online title without the legacy precision suffix; disclose rendered edits in the description'}, ensure_ascii=False, indent=2))
+        return 0
     approval = {'version': 1, 'clipId': args.id, 'bvid': bvid, 'authority': 'user',
                 'note': args.review_note, 'approvedAt': api.now_iso(), 'qaDigests': metadata['qaResult']['digests'],
                 'metadataPath': str(directory / 'clip.json')}
-    if args.dry_run:
-        print(json.dumps({'action': 'replace_existing_bv', **approval, 'precisionCopyPreview': preview,
-                         'copyPolicy': 'Keep the online title without the legacy precision suffix; disclose rendered edits in the description'}, ensure_ascii=False, indent=2))
-        return 0
     approval_path = directory / 'PUBLICATION_APPROVAL.json'
     if approval_path.exists():
         previous = json.loads(approval_path.read_text(encoding='utf-8'))
@@ -165,7 +175,7 @@ def publish_precision(args, api):
     except ImportError:
         from replace_video import replace_video
     result = asyncio.run(replace_video(bvid, metadata['output']['mediaPath'], cover_path=metadata['output']['coverPath'],
-        receipt_path=directory / 'REPLACEMENT_RECEIPT.json', before_submit=lambda: validate_revision(record, directory),
+        receipt_path=directory / 'REPLACEMENT_RECEIPT.json', before_submit=lambda: validate_revision(record, directory, manual_replacement=True),
         copy_transform=lambda current: precision_public_copy(metadata, current)))
     if result.get('status') != 'submitted' or result.get('bvid') != bvid:
         raise RuntimeError('No confirmed replacement submission was returned')

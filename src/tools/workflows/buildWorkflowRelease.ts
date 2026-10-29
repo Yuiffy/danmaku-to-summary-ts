@@ -10,6 +10,7 @@ const entries = {
   'clipping/editorialSelection': 'workflows/clipping/editorialSelection.js',
   'clipping/editorialRuntime': 'workflows/clipping/editorialRuntime.js',
   'clipping/editorialMedia': 'workflows/clipping/editorialMedia.js',
+  'clipping/creativeContext': 'workflows/clipping/creativeContext.js',
   'clipping/radioDanmaku': 'workflows/clipping/radioDanmaku.js',
   'clipping/speakerIdentity': 'workflows/clipping/speakerIdentity.js',
   'clipping/stage': 'workflows/clipping/stage.js',

@@ -54,6 +54,7 @@ def update_record(clip, result, api):
 def active_ids(queue, published_id=None):
     return {int(i) for job in queue.get("jobs", []) if job.get("status") in ("pending", "running", "retry_wait")
             for i in job.get("clipIds", [])
+            if int(i) not in job.get("cancellationAcknowledgedIds", [])
             if not (int(i) == published_id and job.get("status") != "running"
                     and not job.get("allowDuplicateTitle"))}
 
@@ -305,6 +306,9 @@ def render_for_job(api, registry, queue, job, pending_ids):
         registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
         queue = api.load_json(api.QUEUE_PATH, api.default_queue())
         job = api.find_queue_job(queue, job["id"]) or job
+        candidates = [i for i in candidates if i not in api.clip_upload_cancel.requested_ids(job)]
+        if job.get("status") == "cancelled":
+            return registry, queue
         api.mark_job(job, "running", phase="rendering", startedAt=api.now_iso())
         for clip_id in candidates:
             registry["clips"][str(clip_id)]["status"] = "rendering"
@@ -313,6 +317,10 @@ def render_for_job(api, registry, queue, job, pending_ids):
     finally:
         api.release_queue_mutation_lock(handle)
     for clip_id in candidates:
+        current = api.find_queue_job(api.load_json(api.QUEUE_PATH, api.default_queue()), job["id"]) or job
+        if clip_id in api.clip_upload_cancel.requested_ids(current):
+            api.clip_upload_cancel.acknowledge(api, job["id"], [clip_id])
+            continue
         result = api.cut_candidates(argparse.Namespace(ids=str(clip_id),
             review_note=job.get("note") or "User requested upload by candidate ID", require_approval=True,
             candidate_subtitles=job.get("candidateSubtitles", {}), timeout_seconds=job.get("timeoutSeconds", 1800)))
@@ -335,6 +343,7 @@ def render_for_job(api, registry, queue, job, pending_ids):
             api.save_json(api.QUEUE_PATH, queue)
         finally:
             api.release_queue_mutation_lock(handle)
+        api.clip_upload_cancel.acknowledge(api, job["id"], [clip_id])
     registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
     queue = api.load_json(api.QUEUE_PATH, api.default_queue())
     current = api.find_queue_job(queue, job["id"]) or job
@@ -345,7 +354,8 @@ def render_for_job(api, registry, queue, job, pending_ids):
 
 def uploadable_job_ids(job):
     failures = job.get("renderFailures", {})
-    return [int(i) for i in job.get("clipIds", []) if str(i) not in failures]
+    return [int(i) for i in job.get("clipIds", []) if str(i) not in failures
+            and str(i) not in job.get("cancellationRequests", {})]
 
 
 def finish_job(api, registry, job, **extra):

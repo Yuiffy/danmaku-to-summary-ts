@@ -7,6 +7,7 @@ import { clipStyle, composeTimeline, HookPlan, parseSrt, STYLE_LABELS } from '..
 import { renderHighlightFirst, StyleIO } from './styleRuntime';
 import { parseModelJson } from '../../workflows/text/json';
 import { chooseOpManifest } from '../../workflows/clipping/editorialSelection';
+import { editorialMediaIO } from '../../workflows/clipping/editorialMedia';
 
 const exec = promisify(execFile);
 const root = path.resolve(__dirname, '../../..');
@@ -74,22 +75,10 @@ export async function main(args = process.argv.slice(2)) {
     const ffprobePath = own.ffprobePath || 'ffprobe';
     const run = async (parameters: string[]) => {
         const lease = await scheduler.acquire();
-        try { await runFfmpeg(parameters, { ffmpegPath, threads: lease.profile.ffmpegThreads, stage: '重点前置合成' }); }
+        try { return await runFfmpeg(parameters, { ffmpegPath, threads: lease.profile.ffmpegThreads, stage: '重点前置合成' }); }
         finally { lease.release(); }
     };
-    const io: StyleIO = {
-        probe: file => probeMedia(file, ffprobePath),
-        render: async (file, out, start, end, size) => {
-            const encode = (encoder: string) => run(['-y', '-ss', String(start), '-i', file, '-t', String(end - start),
-                '-map', '0:v:0', '-map', '0:a:0', '-vf', `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`,
-                '-af', 'aresample=48000,apad', '-c:v', encoder,
-                ...(encoder === 'h264_nvenc' ? ['-preset', own.subtitleVideoPreset || 'p4', '-cq', String(own.subtitleVideoCq || 23)] : ['-preset', 'fast', '-crf', String(own.subtitleVideoCrf || 23)]),
-                '-video_track_timescale', '15360', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out]);
-            try { await encode(own.subtitleVideoEncoder || 'h264_nvenc'); }
-            catch (error) { if (own.subtitleVideoEncoder === 'libx264') throw error; await encode('libx264'); }
-        },
-        concat: (list, out) => run(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out])
-    };
+    const io: StyleIO = editorialMediaIO(own, ffprobePath, run);
     const result = await renderHighlightFirst({ metadata, plan: read(planPath) as HookPlan,
         opManifest: arg('--op') || path.resolve(root, chooseOpManifest(own.editorialStyles || {})), output }, io);
     console.log(JSON.stringify({ status: result.status, output: result.output, style: mode }, null, 2));

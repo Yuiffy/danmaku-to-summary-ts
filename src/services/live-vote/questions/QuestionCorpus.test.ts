@@ -29,7 +29,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(directory, { recursive: true, force: true }); });
 
-it('defaults to current room, routes explicit names/aliases and comparisons, and bounds the scope', () => {
+it('defaults to current room, routes explicit names/aliases and comparisons, and bounds the scope', async () => {
   expect(questionScope(config, '100', '这个月的舰礼是什么').map(r => r.roomId)).toEqual(['100']);
   expect(questionScope(config, '200', '小岁这个月的舰礼是什么').map(r => r.roomId)).toEqual(['100']);
   expect(questionScope(config, '100', '七海和你的舰礼有什么区别').map(r => r.roomId)).toEqual(['100', '200']);
@@ -37,6 +37,12 @@ it('defaults to current room, routes explicit names/aliases and comparisons, and
   expect(questionScope(config, '100', '直播间200的舰礼是什么').map(r => r.roomId)).toEqual(['200']);
   expect(() => questionScope(config, '999', '舰礼')).toThrow();
   expect(() => questionScope(config, '100', '岁己七海礼墨南町的舰礼')).toThrow();
+  expect(questionScope(config, '100', '岁己七海礼墨南町的舰礼', 8)).toHaveLength(4);
+  expect(() => questionScope(config, '100', '岁己', 9)).toThrow('Invalid question room limit');
+  expect(() => new QuestionCorpus(config, { roomId: '100', question: '岁己七海礼墨南町的舰礼' }, signal())).toThrow();
+  const expanded = new QuestionCorpus(config, { roomId: '100', question: '岁己七海礼墨南町的舰礼' }, signal(), undefined, undefined, 8);
+  expect(expanded.rooms).toHaveLength(4);
+  await expanded.close();
   expect(() => validateQuestionConfig({ ...config, giftCatalogs: { '999': path.join(directory, 'gifts.json') } })).toThrow();
   expect(() => validateQuestionConfig({ ...config, giftCatalogs: { '100': '../secret.json' } })).toThrow();
 });
@@ -172,7 +178,8 @@ it('recalls an old event beyond the recent 250-file scan without a date or an em
   await fs.writeFile(old, '1\n00:00:01,000 --> 00:00:03,000\n已经改成无关字幕\n');
   const next = new QuestionCorpus(config, request, signal());
   expect((await next.search({ terms: ['体检'], kind: 'subtitle', date: null })).hits).toEqual([]);
-});
+// This fixture writes 261 sources plus three index shards each; it is an IO integration case, not a latency check.
+}, 60000);
 
 it('uses indexed session membership for followups even when directory enumeration is unavailable', async () => {
   const root = config.recordingRoots['100'][0], base = '2024_01_01_20_00_00_旧场';

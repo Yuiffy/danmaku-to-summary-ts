@@ -5,6 +5,8 @@ import { QuestionRuntime } from '../live-vote/questions/EvidenceQuery';
 import { updateRecordingFts } from '../live-vote/questions/RecordingFtsMaintenance';
 import { createQQKnowledge, QQQuestionTools } from './QQKnowledge';
 import { QQRequest } from './QQPolicy';
+import { createQQAnswerer } from './QQAgent';
+import { createQQImageTools } from './QQImageTools';
 
 let directory: string, runtime: QuestionRuntime;
 const request: QQRequest = { key: 'receipt', user: 'hashed-user', scope: 'group', targetId: 'group', msgId: 'msg',
@@ -58,7 +60,24 @@ test('missing generated overviews still permit reading this broadcaster subtitle
   } finally { await session.close(); }
 });
 
-test('legacy scope remains opt-in, default questions stay local, and comparisons still select at most three rooms', async () => {
+test('historical topics remain searchable after a recent overview and listing, with dated source context', async () => {
+  const root = runtime.questions.recordingRoots['100'][0];
+  await fs.writeFile(path.join(root, '2024-08-30.srt'), '1\n00:00:01,000 --> 00:00:02,000\n今天继续玩泰坦陨落2\n');
+  await updateRecordingFts(runtime.questions.lexical!, '100', [root], signal(), undefined, undefined, Date.now() + 60000);
+  const session = createQQKnowledge(runtime, config)({ ...request, text: '岁己上次玩泰坦陨落2是什么时候' }, signal());
+  try {
+    await execute(session, 'read_live_overview', { date: null });
+    await execute(session, 'list_recordings', { ...listing, date: '2026-10-27' });
+    const found = await execute(session, 'search_recordings', { terms: ['泰坦陨落'], kind: 'subtitle', date: null,
+      query: null, withinEvidenceId: null, collection: 'recordings' });
+    expect(found.hits).toEqual([expect.objectContaining({ date: '2024-08-30', roomId: '100', excerpt: '今天继续玩泰坦陨落2' })]);
+    const context = await execute(session, 'read_context', { evidenceId: found.hits[0].evidenceId });
+    expect(context.hit).toMatchObject({ date: '2024-08-30', roomId: '100', kind: 'subtitle' });
+    expect(context.context.some((cue: any) => cue.text.includes('继续玩泰坦陨落2'))).toBe(true);
+  } finally { await session.close(); }
+});
+
+test('legacy scope remains opt-in, default questions stay local, and QQ comparisons allow more than three rooms', async () => {
   const legacy = createQQKnowledge(runtime, config)(request, signal());
   expect(legacy.scope).toContain('岁己SUI'); expect(legacy.scope).not.toContain('七海Nana7mi'); await legacy.close();
   const knowledge = createQQKnowledge(runtime, { ...config, allConfiguredRooms: true });
@@ -69,6 +88,45 @@ test('legacy scope remains opt-in, default questions stay local, and comparisons
     const result = await execute(comparison, 'search_recordings', { terms: ['咖喱饭'], kind: 'all', date: null });
     expect(new Set(result.hits.map((hit: any) => hit.roomId))).toEqual(new Set(['100', '200', '300']));
   } finally { await comparison.close(); }
-  expect(() => knowledge({ ...request, text: '岁己、七海、弥月、礼墨的情报' }, signal())).toThrow('At most three');
+  const four = knowledge({ ...request, text: '岁己、七海、弥月、礼墨的情报' }, signal());
+  try {
+    const result = await execute(four, 'search_recordings', { terms: ['咖喱饭'], kind: 'all', date: null });
+    expect(new Set(result.hits.map((hit: any) => hit.roomId))).toEqual(new Set(['100', '200', '300', '400']));
+  } finally { await four.close(); }
   expect(() => createQQKnowledge(runtime, { ...config, roomId: '999', allConfiguredRooms: true })).toThrow();
+});
+
+test('QQ permits eight configured rooms and rejects an excess only when a recording tool is selected', async () => {
+  const extra = ['额外甲', '额外乙', '额外丙', '额外丁', '额外戊'];
+  for (const [index, name] of extra.entries()) {
+    const id = String(500 + index * 100), root = path.join(directory, `${id}_${name}`);
+    await fs.mkdir(root); runtime.questions.recordingRoots[id] = [root];
+  }
+  const knowledge = createQQKnowledge(runtime, { ...config, allConfiguredRooms: true });
+  const names = ['岁己', '七海', '弥月', '礼墨', ...extra];
+  const eight = knowledge({ ...request, text: names.slice(0, 8).join('和') + '最近聊什么' }, signal());
+  try {
+    const result = await execute(eight, 'search_recordings', { terms: ['咖喱饭'], kind: 'all', date: null });
+    expect(result.coverage).toHaveLength(8);
+  } finally { await eight.close(); }
+  const excess = knowledge({ ...request, text: names.join('和') + '最近聊什么' }, signal());
+  expect(excess.scope).toContain('最多8位主播');
+  await expect(execute(excess, 'search_recordings', { terms: ['咖喱饭'], kind: 'all', date: null })).rejects.toThrow('At most 8');
+  await excess.close();
+});
+
+test('a multi-character drawing is not blocked by the unrelated recording room limit', async () => {
+  const question = { ...request, text: '生成岁己七海弥月礼墨在健身房锻炼的图' };
+  const knowledge = createQQKnowledge(runtime, { ...config, allConfiguredRooms: true });
+  const render = jest.fn(async () => ({ status: 'generated' as const, message: '图片生成完成。' }));
+  const load = jest.fn();
+  const response = (message: unknown, finish_reason = 'stop') => ({ ok: true, json: async () => ({ choices: [{ message, finish_reason }] }) });
+  const transport = jest.fn().mockResolvedValueOnce(response({ tool_calls: [{ id: 'draw', type: 'function',
+    function: { name: 'generate_image', arguments: JSON.stringify({ mode: 'create', instruction: question.text, characters: [] }) } }] }, 'tool_calls'))
+    .mockResolvedValueOnce(response({ content: JSON.stringify({ answer: '图片生成完成。', basis: 'general', evidenceIds: [] }) }));
+  const images = createQQImageTools(question, { enabled: true, model: 'gpt-image-2.5-sunburst', quality: 'high', dailyLimit: 300,
+    userDailyLimit: 30, timeoutMs: 180000, characters: [] }, load, render);
+  expect(await createQQAnswerer({ url: 'http://127.0.0.1:1/v1/chat/completions', apiKey: 'fake-key' },
+    knowledge, transport as any, undefined, images)(question, signal())).toBe('图片生成完成。');
+  expect(render).toHaveBeenCalledTimes(1); expect(load).not.toHaveBeenCalled(); expect(transport).toHaveBeenCalledTimes(2);
 });

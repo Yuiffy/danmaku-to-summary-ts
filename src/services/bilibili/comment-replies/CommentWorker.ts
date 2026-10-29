@@ -1,5 +1,5 @@
 import { CommentAudience, CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, positiveId, publishableAnswer,
-  SAFETY_NOTICE, shanghaiDay, unsafeComment, validateCommentConfig } from './CommentPolicy';
+  SAFETY_NOTICE, shanghaiDay, unsafeComment, validateCommentConfig, commentTokenReservation, commentTimeout, commentModelSlots } from './CommentPolicy';
 import { CommentJob, CommentState } from './CommentState';
 import { HOUR_MS, quotaExceeded, reserveCommentQuota } from './CommentQuota';
 import { CommentAnswer, validCommentFeedback } from './CommentFeedback';
@@ -49,8 +49,8 @@ export class CommentWorker {
     const queue = this.state.jobs.filter(job => job.status === 'queued' || job.status === 'ready');
     this.state.rotation = this.state.rotation.filter(uid => queue.some(job => job.event.uid === uid));
     const day = this.state.days[shanghaiDay(now)];
-    const modelAvailable = this.state.starts.length < LIMITS.startsPerMinute &&
-      (day?.tokens || 0) + LIMITS.tokenReservation <= this.config.dailyTokenBudget;
+    const modelAvailable = this.state.starts.length + commentModelSlots(this.config) <= LIMITS.startsPerMinute &&
+      (day?.tokens || 0) + commentTokenReservation(this.config) <= this.config.dailyTokenBudget;
     for (const uid of this.state.rotation) {
       const job = queue.find(job => job.event.uid === uid)!;
       if (job.status === 'ready' || modelAvailable || unsafeComment(job.event.text) ||
@@ -102,7 +102,7 @@ export class CommentWorker {
       const timeout = setTimeout(() => this.controller?.abort(), 5000);
       try { job.audience = await this.adapters.audience(job.event.uid, this.controller.signal); }
       catch (error) {
-        if (error instanceof CommentPlatformBlocked) { state.paused = true; await this.adapters.save(state); return; }
+        if (error instanceof CommentPlatformBlocked) { state.paused = true; state.pauseReason = 'platform_blocked'; await this.adapters.save(state); return; }
         job.audience = { status: 'unavailable' };
       } finally { clearTimeout(timeout); this.controller = undefined; }
       await this.adapters.save(state);
@@ -117,8 +117,8 @@ export class CommentWorker {
     }
     if (job.status === 'queued') {
       const unsafe = unsafeComment(job.event.text);
-      if (!quotaExceeded(this.config, state, job, now) && !unsafe && (state.starts.length >= LIMITS.startsPerMinute ||
-        day.tokens + LIMITS.tokenReservation > this.config.dailyTokenBudget)) return;
+      if (!quotaExceeded(this.config, state, job, now) && !unsafe && (state.starts.length + commentModelSlots(this.config) > LIMITS.startsPerMinute ||
+        day.tokens + commentTokenReservation(this.config) > this.config.dailyTokenBudget)) return;
       const quota = reserveCommentQuota(this.config, state, job, now);
       if (quota !== 'allowed') {
         if (quota === 'skip') {
@@ -128,19 +128,19 @@ export class CommentWorker {
       } else {
         if (unsafe) job.answer = SAFETY_NOTICE;
         else {
-          state.starts.push(now); day.tokens += LIMITS.tokenReservation;
+          state.starts.push(...Array<number>(commentModelSlots(this.config)).fill(now)); day.tokens += commentTokenReservation(this.config);
           job.status = 'generating'; job.processingAt = now;
           job.likeStatus = this.adapters.like && job.event.parent !== '0' ? 'pending' : 'skipped';
           await this.adapters.save(state); // Reserve quota/cost before the provider can see the request.
           this.controller = new AbortController();
-          const timeout = setTimeout(() => this.controller?.abort(), LIMITS.timeoutMs);
+          const timeout = setTimeout(() => this.controller?.abort(), commentTimeout(this.config));
           try {
             if (job.likeStatus === 'pending') {
               try {
                 await this.adapters.like!(job.event, this.controller.signal);
                 job.likeStatus = 'liked';
               } catch {
-                job.likeStatus = 'unknown'; state.paused = true;
+                job.likeStatus = 'unknown'; state.paused = true; state.pauseReason = 'like_unconfirmed';
                 throw new Error('Like unconfirmed');
               } finally { state.lastSentAt = this.adapters.now(); }
               await this.adapters.save(state);
@@ -148,11 +148,15 @@ export class CommentWorker {
             if (this.stopped || this.controller.signal.aborted) throw new Error('Comment stopped');
             const answer = await this.adapters.answer(job.event.text, this.controller.signal, job.event, job.audience);
             job.answer = this.controller.signal.aborted || this.stopped ? undefined : publishableAnswer(typeof answer === 'string' ? answer : answer.reply);
+            if (job.answer && typeof answer !== 'string' && Number.isSafeInteger(answer.tokens) &&
+                answer.tokens! > 0 && answer.tokens! <= commentTokenReservation(this.config)) {
+              day.tokens -= commentTokenReservation(this.config) - answer.tokens!;
+            }
             if (job.answer && typeof answer !== 'string' && validCommentFeedback(answer.feedback, job.event, this.config)) job.feedback = answer.feedback;
-          } catch (error) { if (error instanceof CommentPlatformBlocked) state.paused = true; job.answer = undefined; }
+          } catch (error) { if (error instanceof CommentPlatformBlocked) { state.paused = true; state.pauseReason = 'platform_blocked'; } job.answer = undefined; }
           finally {
             clearTimeout(timeout); this.controller = undefined;
-            state.starts[state.starts.length - 1] = this.adapters.now();
+            state.starts.fill(this.adapters.now(), -commentModelSlots(this.config));
           }
           if (!job.answer) {
             job.status = 'failed'; job.completedAt = this.adapters.now(); this.served(job);
@@ -182,7 +186,7 @@ export class CommentWorker {
     } catch {
       // Includes risk control, auth expiry, HTTP errors and ambiguous network outcomes.
       // Never automatically retry a POST or rotate credentials to bypass a restriction.
-      job.status = 'unknown'; state.paused = true;
+      job.status = 'unknown'; state.paused = true; state.pauseReason = 'publication_unconfirmed';
     } finally { clearTimeout(timeout); this.controller = undefined; }
     // Conservatively space from completion too: slow disk/HTTP cannot compress actual POST starts.
     state.lastSentAt = Math.max(state.lastSentAt, this.adapters.now());

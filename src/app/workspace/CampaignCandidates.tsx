@@ -36,20 +36,20 @@ export function CampaignCandidates() {
     <div className="toolbar"><div className="summary-line"><strong>{list.data?.total ?? '—'}</strong> 个{view === 'curated' ? '精选' : ''}备选 <span>·</span> 原始备选 {list.data?.unfilteredTotal ?? '—'} 条</div><button onClick={list.refresh}>刷新备选</button></div>
     <p className="muted">默认按评分精选，每场最多 {campaignShortlistPolicy.maxPerSession} 条备选；重叠达到较短片段一半时保留高分项，不凑数。可切换全部备选查漏。R 为重排备选，P 为发布备选；原编号保留，正式裁切边界仍需核对。</p>
     <div className="review-layout"><section className="clip-browser">
-      <div className="clip-filters"><input aria-label="搜索芙娅之魂备选" placeholder="搜索 R 编号、话题、主播或日期" value={search} onChange={event => setSearch(event.target.value)} />
-        <label>备选范围<select aria-label="芙娅之魂备选范围" value={view} onChange={event => changeFilter(() => setView(event.target.value))}><option value="curated">精选备选（去重）</option><option value="all">全部备选（含低分及重叠）</option></select></label>
+      <div className="clip-filters"><input aria-label="搜索候补切片" placeholder="搜索 R/P 编号、话题、主播或日期" value={search} onChange={event => setSearch(event.target.value)} />
+        <label>备选范围<select aria-label="候补切片范围" value={view} onChange={event => changeFilter(() => setView(event.target.value))}><option value="curated">精选备选（去重）</option><option value="all">全部备选（含低分及重叠）</option></select></label>
         <div className="filter-row"><select aria-label="备选主播" value={room} onChange={event => changeFilter(() => { setRoom(event.target.value); setSession(''); })}><option value="">全部主播</option>{list.data?.rooms.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
           <select aria-label="直播场次" value={session} onChange={event => changeFilter(() => setSession(event.target.value))}><option value="">全部场次</option>{list.data?.sessions.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></div>
-        <label>排序方式<select aria-label="芙娅之魂备选排序" value={sort} onChange={event => changeSort(event.target.value as CampaignCandidateSort)}>{campaignCandidateSorts.map(value => <option key={value} value={value}>{sortLabels[value]}</option>)}</select></label>
+        <label>排序方式<select aria-label="候补切片排序" value={sort} onChange={event => changeSort(event.target.value as CampaignCandidateSort)}>{campaignCandidateSorts.map(value => <option key={value} value={value}>{sortLabels[value]}</option>)}</select></label>
       </div>
       {list.error && <div className="notice error" role="alert">{list.error}</div>}
-      {list.loading && !list.data ? <div className="empty">读取活动备选…</div> : !list.data?.candidates.length ? <div className="empty">没有匹配的{view === 'curated' ? '精选' : ''}备选。{view === 'curated' ? '可切换“全部备选”查看低分、未评分或重叠项。' : '已保存审核记录的活动场次会在这里出现。'}</div> : <div className="clip-list">{list.data.candidates.map(row => <button key={row.id} className={selected === row.id ? 'selected' : ''} onClick={() => setSelected(row.id)}>
+      {list.loading && !list.data ? <div className="empty">读取候补切片…</div> : !list.data?.candidates.length ? <div className="empty">没有匹配的{view === 'curated' ? '精选' : ''}备选。{view === 'curated' ? '可切换“全部备选”查看低分、未评分或重叠项。' : '已保存审核记录的岁己及芙娅之魂场次会在这里出现。'}</div> : <div className="clip-list">{list.data.candidates.map(row => <button key={row.id} className={selected === row.id ? 'selected' : ''} onClick={() => setSelected(row.id)}>
         <div className="clip-row-meta"><span className="mono">{row.label}</span><span>{row.streamerName || row.roomId}</span></div>
         <strong>{row.title}</strong><small>{row.recordedAt} · {row.streamTitle}</small><small>{clock(row.start)} — {clock(row.end)}{row.score !== undefined && ` · 评分 ${row.score}`}</small>
         {row.reason && <span className="issue-preview">备选原因：{row.reason}</span>}
       </button>)}</div>}
       <div className="pagination"><button disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>{page} / {Math.max(1, Math.ceil((list.data?.total || 0) / 40))}</span><button disabled={page * 40 >= (list.data?.total || 0)} onClick={() => setPage(value => value + 1)}>下一页</button></div>
-    </section><section className="review-inspector">{selected ? <CandidatePreview key={selected} id={selected} /> : <div className="review-empty"><span>▷</span><h2>选择一条芙娅之魂备选</h2><p>按主播和直播场次查找 R1、R2，播放原片并逐句定位。</p></div>}</section></div>
+    </section><section className="review-inspector">{selected ? <CandidatePreview key={selected} id={selected} /> : <div className="review-empty"><span>▷</span><h2>选择一条候补切片</h2><p>按主播和直播场次查找岁己及芙娅之魂候补，播放原片并逐句定位。</p></div>}</section></div>
   </>;
 }
 

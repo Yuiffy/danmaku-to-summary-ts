@@ -4,6 +4,7 @@ import * as path from 'path';
 import { createQQAnswerer } from './QQAgent';
 import { createQQKnowledge, QQKnowledge, QQReadTool } from './QQKnowledge';
 import { QQ_LIMITS, QQRequest } from './QQPolicy';
+import { createQQImageTools } from './QQImageTools';
 
 const request: QQRequest = { key: 'receipt', user: 'hash', scope: 'group', targetId: 'private-group', msgId: 'private-msg',
   text: '岁己最新直播播了什么', createdAt: Date.parse('2026-10-28T02:00:00+08:00') };
@@ -74,6 +75,21 @@ test('unknown tools never execute, bogus citations fail, and tool loops stop at 
   expect(execute).toHaveBeenCalledTimes(2); // One in the citation case, once in the deduplicated loop.
 });
 
+test.each([
+  ['insufficient', ['ev1'], true],
+  ['insufficient', [], true],
+  ['insufficient', ['unknown'], false],
+  ['general', ['ev1'], false],
+  ['evidence', [], false]
+])('partial answers keep checked citations: basis=%s ids=%j accepted=%s', async (basis, ids, accepted) => {
+  const read = jest.fn(async () => ({ evidenceId: 'ev1', text: '买了但还没下载', limited: true }));
+  const transport = jest.fn().mockResolvedValueOnce(call('search_recordings', {}))
+    .mockResolvedValueOnce(final('已有购买线索，实际游玩日期尚不能确认。', basis, ids));
+  const answer = createQQAnswerer(settings, knowledge([tool('search_recordings', read)]), transport as any)(request, signal());
+  if (accepted) await expect(answer).resolves.toContain('尚不能确认');
+  else await expect(answer).rejects.toMatchObject({ diagnostic: { code: 'invalid_evidence' } });
+});
+
 test('oversized tool evidence is bounded with an explicit truncation marker and cannot overspend the reservation', async () => {
   const execute = async () => ({ hits: Array.from({ length: 32 }, (_, i) => ({ evidenceId: `ev${i}`, text: '唱歌'.repeat(300) })), limited: true });
   const transport = jest.fn().mockResolvedValueOnce(call('search_recordings', {})).mockResolvedValueOnce(final('部分资料中提到了唱歌。', 'evidence', ['ev0']));
@@ -96,11 +112,69 @@ test('a bounded exploration reserves its final answer and never executes tools a
     properties: { index: { type: 'integer' } }, required: ['index'] } };
   const answer = await createQQAnswerer(settings, knowledge([definition]), transport as any)(request, signal());
   expect(answer).toContain('唱歌');
+  expect(read).toHaveBeenCalledTimes(QQ_LIMITS.agentTurns - 1);
   expect(transport.mock.calls.length).toBeLessThanOrEqual(QQ_LIMITS.agentTurns);
   expect(JSON.parse(transport.mock.calls.at(-1)![1].body).tool_choice).toBe('none');
+  expect(JSON.parse(transport.mock.calls.at(-1)![1].body).tools).toBeUndefined();
   const controller = new AbortController();
   const abort = jest.fn(async () => { controller.abort(); return { evidenceId: 'ev1', text: '唱歌' }; });
   const model = jest.fn(async () => call('read_context', {}));
   await expect(createQQAnswerer(settings, knowledge([tool('read_context', abort)]), model as any)(request, controller.signal)).rejects.toThrow();
   expect(model).toHaveBeenCalledTimes(1); expect(abort).toHaveBeenCalledTimes(1);
+});
+
+test('large tool schemas do not consume the answer reserve before a focused search and context read', async () => {
+  const execute = jest.fn(async () => ({ evidenceId: 'ev1', text: '已核对的历史游戏线索', limited: true }));
+  const definitions = ['read_live_overview', 'list_recordings', 'search_recordings', 'read_context'].map(name =>
+    ({ ...tool(name, execute), description: '资料工具说明'.repeat(100) }));
+  const plan = definitions.map(definition => definition.name);
+  const choices: string[] = [];
+  const transport = jest.fn(async (_url, options) => {
+    const body = JSON.parse(options.body), index = transport.mock.calls.length - 1;
+    choices.push(body.tool_choice);
+    if (body.tool_choice === 'none' || index === plan.length) return final('历史资料中有游戏线索，覆盖有限。');
+    return call(plan[index], {}, `call${index}`);
+  });
+  await createQQAnswerer(settings, knowledge(definitions), transport as any)({ ...request, text: '上次玩某游戏是什么时候' }, signal());
+  expect(execute).toHaveBeenCalledTimes(4);
+  expect(choices.slice(0, 4)).toEqual(['auto', 'auto', 'auto', 'auto']);
+  if (choices.at(-1) === 'none') expect(JSON.parse(transport.mock.calls.at(-1)![1].body).tools).toBeUndefined();
+  const reserved = transport.mock.calls.reduce((sum, [, options]) => sum + Buffer.byteLength(options.body, 'utf8') + 768 + 256, 0);
+  expect(reserved).toBeLessThanOrEqual(QQ_LIMITS.reservation);
+});
+
+test('full recording and image schemas can search after browsing while escaping stays within the final answer budget', async () => {
+  const context = createQQKnowledge({ questions: { enabled: true, providerConfigPath: 'unused',
+    lexical: { enabled: true, directory: 'unused-index' }, recordingRoots: { '25788785': ['D:/25788785_岁己SUI'] } } },
+  { runtimeConfigPath: 'unused', roomId: '25788785', collaborationRooms: [] });
+  const execute = jest.fn(async (name: string) => name === 'read_live_overview' ?
+    { artifacts: [{ evidenceId: 'overview1', text: '近期直播概述'.repeat(95) }] } :
+    { hits: Array.from({ length: 32 }, (_, index) => ({ evidenceId: `ev${index + 1}`, date: '2024-08-30',
+      text: '游戏历史线索和带转义的文字"\\'.repeat(35) })), limited: true });
+  const tools: QQKnowledge = (...args) => {
+    const session = context(...args);
+    return { ...session, tools: session.tools.map(definition => ({ ...definition, execute: () => execute(definition.name) })) };
+  };
+  const paidImage = jest.fn();
+  const images = createQQImageTools(request, { enabled: true, model: 'unused', quality: 'high',
+    dailyLimit: 1, userDailyLimit: 1, timeoutMs: 1000 }, paidImage, paidImage);
+  const plan = [
+    ['read_live_overview', { date: null }],
+    ['list_recordings', { collection: 'recordings', kind: 'all', date: null, offset: 0, limit: 12, preview: 'head', cuesPerRecording: 2 }],
+    ['search_recordings', { terms: ['某游戏'], kind: 'all', date: null, query: null, withinEvidenceId: null, collection: 'recordings' }]
+  ] as const;
+  const transport = jest.fn(async (_url, options) => {
+    const body = JSON.parse(options.body), index = transport.mock.calls.length - 1;
+    return body.tool_choice === 'none' || index >= plan.length ? final('已查到历史线索，覆盖有限。') :
+      call(plan[index][0], plan[index][1], `call${index}`);
+  });
+  await createQQAnswerer(settings, tools, transport as any, undefined, images)({ ...request, text: '上次玩某游戏是什么时候' }, signal());
+  expect(execute.mock.calls.map(([name]) => name)).toEqual(plan.map(([name]) => name));
+  expect(paidImage).not.toHaveBeenCalled();
+  const last = JSON.parse(transport.mock.calls.at(-1)![1].body);
+  const output = JSON.parse(last.messages.filter((message: any) => message.role === 'tool').at(-1).content);
+  expect(output.truncated).toBe(true);
+  expect(output.untrustedEvidence.hits[0].evidenceId).toBe('ev1');
+  const reserved = transport.mock.calls.reduce((sum, [, options]) => sum + Buffer.byteLength(options.body, 'utf8') + 768 + 256, 0);
+  expect(reserved).toBeLessThanOrEqual(QQ_LIMITS.reservation);
 });

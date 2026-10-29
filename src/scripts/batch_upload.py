@@ -73,9 +73,11 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from clip_upload_progress import UploadProgress
+from clip_upload_cancel import UploadControl, UploadCancelled
 from clip_upload_pacing import UploadPacing, PreuploadRateLimited, UploadPaused, paced_uploader_type, http_status
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 from clip_upload_manifest import load_upload_manifest, find_review_manifest
+from clip_upload_input import load_queued_upload_clips
 from clip_upload_description import (
     clean_generated_description, split_source_description, build_clip_time_range, build_desc, resolve_upload_prefix,
 )
@@ -577,6 +579,9 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         )
         uploader_type = (paced_uploader_type(video_uploader.VideoUploader, pacing, pages, before_submit)
                          if pacing else video_uploader.VideoUploader)
+        control = UploadControl(clip['queueJobId'], clip['path']) if clip.get('queueJobId') else None
+        if control:
+            uploader_type = control.uploader_type(uploader_type)
         uploader = uploader_type(
             pages=pages, meta=meta, credential=credential,
             # SDK auto-selection can choose an expired CDN certificate.
@@ -589,7 +594,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
             lambda name, index: pacing.record('submit_start' if name == 'PRE_SUBMIT' else 'part_complete',
                                               'submit' if name == 'PRE_SUBMIT' else 'page', part_index=index)
         ) if pacing else None)
-        result = await progress.run(uploader)
+        result = await control.run(uploader, progress) if control else await progress.run(uploader)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
@@ -623,6 +628,9 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
                 try: os.remove(cover_tmp)
                 except: pass
             return {'idx': clip['idx'], 'title': full_title, 'status': 'fail'}
+    except UploadCancelled as e:
+        print(str(e), flush=True)
+        return {'idx': clip['idx'], 'title': full_title, 'status': 'cancelled'}
     except Exception as e:
         err = str(e)
         if cleanup_cover_tmp:
@@ -752,12 +760,15 @@ async def main():
     parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
     parser.add_argument('--automatic-job', default=None, help='Revalidate a running automatic job immediately before each submission')
     parser.add_argument('--queue-job', default=None, help='Running reviewed queue job for safe submission reconciliation')
+    parser.add_argument('--queue-ids', default=None, help='Stable registry IDs for this running queue group; bypass mutable batch exports')
     parser.add_argument('--dry-run', action='store_true', help='只查重不上传')
     parser.add_argument('--state', default=None, help='状态文件路径')
     parser.add_argument('--rate-limit-wait', type=int, default=DEFAULT_RATE_LIMIT_WAIT, help='B站提示上传过快后的等待秒数')
     parser.add_argument('--rate-limit-retries', type=int, default=DEFAULT_RATE_LIMIT_RETRIES, help='B站提示上传过快后的最大重试次数')
     args = parser.parse_args()
 
+    if args.queue_ids is not None and (not args.manifest or not args.queue_job):
+        parser.error('--queue-ids requires --manifest and --queue-job')
     if not args.review and not args.manifest:
         parser.error('必须提供 --manifest 或 --review')
     if args.review and not args.manifest:
@@ -773,7 +784,7 @@ async def main():
     tag_override = [t.strip() for t in args.tags.split(',') if t.strip()]
     if args.manifest:
         try:
-            clips = parse_upload_manifest(
+            clips = load_queued_upload_clips(args.queue_ids, args.queue_job) if args.queue_ids is not None else parse_upload_manifest(
                 args.manifest,
                 source=args.source,
                 tags=tag_override,
@@ -782,8 +793,11 @@ async def main():
                 review_path=args.review or '',
                 selected_indices={int(value) for value in args.only.split(',') if value.strip()} if args.only else None,
             )
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-            print(f'[ERROR] 无法读取上传 JSON: {exc}')
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f'[ERROR] 无法读取上传资料: {exc}')
+            return 1
+        except ValueError as exc:
+            print(f'[ERROR] 上传资料校验失败: {exc}')
             return 1
         if not clips:
             print('[ERROR] 上传 JSON 中未找到切片')
@@ -795,7 +809,7 @@ async def main():
         args.streamer_name = args.streamer_name or clips[0].get('streamerName') or None
         args.room_id = args.room_id or clips[0].get('roomId') or None
         args.review = args.review or clips[0].get('reviewPath') or args.manifest
-        print(f"[INFO] 从上传 JSON 解析到 {len(clips)} 个切片: {args.manifest}")
+        print(f"[INFO] 从{'队列 ID' if args.queue_ids is not None else '上传 JSON'}解析到 {len(clips)} 个切片: {args.queue_ids or args.manifest}")
     else:
         clips = parse_review(args.review)
         if not clips:
@@ -977,8 +991,10 @@ async def main():
         clip['queueJobId'] = args.queue_job
         full_title = f"{args.prefix}{clip['title']}"
         print(f"[{i+1}/{len(to_upload)}] #{clip['idx']} {full_title}")
+        created_intent = False
 
         def before_submit():
+            nonlocal created_intent
             if args.queue_job and not args.force:
                 validate_queue_submission({**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}, args.queue_job)
             if args.automatic_job:
@@ -992,6 +1008,7 @@ async def main():
                     'startedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
                 save_upload_state(state_path, state)
+                created_intent = True
 
         result = await upload_one_guarded(
             clip,
@@ -1009,6 +1026,8 @@ async def main():
             pacing=pacing,
         )
         results.append(result)
+        if result.get('status') == 'cancelled' and created_intent:
+            clear_intent(state, clip)
 
         # An explicit server rejection is known not to have created an archive.
         # Preserve the existing account cooldown; only ambiguous submission outcomes stay held.
@@ -1017,6 +1036,8 @@ async def main():
                 result.get('errorCode') == 'manual_pause' or
                 (result.get('errorCode') == 406 and result.get('errorStage') == 'preupload')):
             clear_intent(state, clip)
+            if args.queue_job:
+                UploadControl(args.queue_job, clip['path']).rejected()
 
         # 记录到状态
         if result['status'] in ('ok', 'ok_after_406'):

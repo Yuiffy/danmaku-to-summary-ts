@@ -64,3 +64,10 @@ test('duplicate IDs, missing assignments and forced-mode contradictions are reje
     expect(() => parseStyleChoices(JSON.stringify({ choices: [row, row] }), [candidate, { ...candidate, id: 2 }])).toThrow();
     expect(() => parseStyleChoices(JSON.stringify({ choices: [row] }), [candidate], 'precision')).toThrow();
 });
+test('automatic precision can reference an actual preceding question but cannot invent or duplicate one', () => {
+    const c = { ...candidate, precedingAudience: [{ time: 90.12, text: '喜欢什么题材？' }] };
+    const row = { id: 1, style: 'precision', reason: '补提问再接回答', contextDanmakuAt: 90.12 };
+    expect(parseStyleChoices(JSON.stringify({ choices: [row] }), [c])[0].contextDanmakuAt).toBe(90.12);
+    for (const change of [{ contextDanmakuAt: 90.5 }, { style: 'ordinary' }])
+        expect(() => parseStyleChoices(JSON.stringify({ choices: [{ ...row, ...change }] }), [c])).toThrow(/Context/);
+});

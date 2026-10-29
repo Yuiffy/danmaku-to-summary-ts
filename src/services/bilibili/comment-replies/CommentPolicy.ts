@@ -8,6 +8,7 @@ export interface CommentReplyConfig {
   maxUserQueue: number;
   pollIntervalMs: number;
   videoVision?: boolean;
+  agentTools?: boolean;
   knowledge?: { runtimeConfigPath: string; roomId: string; collaborationRooms: string[] };
   projectSources?: Array<{ id: string; label: string; path: string; keywords: string[]; section?: string; kind: 'code' | 'skill' | 'guide' }>;
   speakerNames?: Record<string, string>;
@@ -33,6 +34,10 @@ export const LIMITS = {
 export const QUOTA_NOTICE = '今日你的鹿饼聊天额度到达上限，请明天再来哦~';
 export const SAFETY_NOTICE = '鹿饼只能在这里聊聊天，不能执行命令、读取私人资料或操作账号哦~';
 export class CommentPlatformBlocked extends Error {}
+export const COMMENT_TOOL_LIMITS = { tokenReservation: 65536, timeoutMs: 90000, turns: 3, outputTokens: 768 } as const;
+export const commentTokenReservation = (config: CommentReplyConfig): number => config.agentTools ? COMMENT_TOOL_LIMITS.tokenReservation : LIMITS.tokenReservation;
+export const commentTimeout = (config: CommentReplyConfig): number => config.agentTools ? COMMENT_TOOL_LIMITS.timeoutMs : LIMITS.timeoutMs;
+export const commentModelSlots = (config: CommentReplyConfig): number => config.agentTools ? COMMENT_TOOL_LIMITS.turns : 1;
 
 export function positiveId(value: unknown): string | undefined {
   const text = typeof value === 'string' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '';
@@ -48,13 +53,14 @@ export function validateCommentConfig(config: CommentReplyConfig): void {
       config.unlimitedUids.some(uid => !positiveId(uid) || typeof uid !== 'string') ||
       typeof config.credentialConfigPath !== 'string' || typeof config.providerConfigPath !== 'string') throw new Error('Invalid comment reply identities/config paths');
   for (const [key, min, max] of [
-    ['dailyTokenBudget', LIMITS.tokenReservation, 40960000], ['maxQueue', 1, 1000],
+    ['dailyTokenBudget', commentTokenReservation(config), 40960000], ['maxQueue', 1, 1000],
     ['maxUserQueue', 1, 20], ['pollIntervalMs', 30000, 3600000]
   ] as const) {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid comment replies ${key}`);
   }
   const knowledge = config.knowledge;
   if (config.videoVision !== undefined && typeof config.videoVision !== 'boolean') throw new Error('Invalid comment video vision flag');
+  if (config.agentTools !== undefined && typeof config.agentTools !== 'boolean') throw new Error('Invalid comment agent tools flag');
   if (config.feedbackOwnerUids !== undefined && (!Array.isArray(config.feedbackOwnerUids) || config.feedbackOwnerUids.length > 20 ||
     config.feedbackOwnerUids.some(uid => typeof uid !== 'string' || !positiveId(uid)))) throw new Error('Invalid feedback video owners');
   if (config.projectSources && (!Array.isArray(config.projectSources) || config.projectSources.length > 8 ||

@@ -7,6 +7,7 @@ function Quota({ value }: { value: QQQuotaStatus }) {
   return <div className={`qq-quota qq-quota-${value.status}`}>
     <strong>{statusText[value.status]}</strong>
     {value.used !== undefined && <span> {value.used} / {value.limit} · 剩余 {value.remaining}</span>}
+    {value.window && <small>滚动 5 小时 {value.window.used} / {value.window.limit} · 剩余 {value.window.remaining}</small>}
     {value.reasons.map(reason => <small key={reason.code}>{reason.label}{reason.until && <> · {dateText(reason.until)} 可重新尝试</>}</small>)}
   </div>;
 }

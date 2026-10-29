@@ -4,6 +4,20 @@ import Image from 'next/image';
 import { QQ_RECORD_STATUSES, type AdminQQRecordsView } from '../../core/admin/qqRecords';
 import { dateText, useResource } from './client';
 import { QQUserStats } from './QQUserStats';
+import { QQ_FAILURE_CODES, type QQDiagnostic } from '../../core/admin/qqDiagnostics';
+
+function FailureDetail({ value }: { value: QQDiagnostic }) {
+  return <div><p>{QQ_FAILURE_CODES[value.code]} · <code>{value.stage}/{value.code}</code></p>
+    <small>{dateText(value.at)}{value.turn !== undefined && ` · 第 ${value.turn} 轮`}{value.elapsedMs !== undefined && ` · ${value.elapsedMs} ms`}
+      {value.httpStatus !== undefined && ` · HTTP ${value.httpStatus}`}{value.finishReason && ` · finish_reason=${value.finishReason}`}</small>
+    {value.budgetBefore !== undefined && <p>累计预留 {value.budgetBefore} + 本轮 {value.charge} / 上限 {value.budgetLimit}；请求 {value.requestBytes} 字节</p>}
+    {value.requestId && <p>上游请求 ID：<code>{value.requestId}</code></p>}
+    {(value.errorName || value.systemCode) && <p>异常类型：{value.errorName} {value.systemCode}</p>}
+    {value.validation && <p>校验项：{value.validation} · 输出 {value.outputChars} 字</p>}
+    {value.fingerprint && <small>异常指纹：{value.fingerprint}</small>}
+    {!!value.frames?.length && <p>调用位置：<code>{value.frames.join(' ← ')}</code></p>}
+  </div>;
+}
 
 export function QQRecords() {
   const [date, setDate] = useState(''), [scope, setScope] = useState('all'), [status, setStatus] = useState('all');
@@ -47,13 +61,25 @@ export function QQRecords() {
             <button className="qq-link" onClick={() => selectUser(`${row.appId}:${row.user}`)}>用户 {row.user.slice(0, 12)}</button></small></td>
           <td><p className="comment-copy">{row.question || '（空艾特）'}</p></td><td><p className="comment-copy">{row.answer || '—'}</p><small>{row.model || '固定回复'}</small>
             {row.agent && <details><summary>查询过程 · {row.agent.modelCalls} 次模型调用</summary>
-              <p>{row.agent.tools.length ? row.agent.tools.map(step => `${step.name}（${step.status === 'ok' ? '完成' : '失败'}，${step.elapsedMs} ms）`).join(' → ') : '直接回答，未调用资料工具'}</p>
+              <p>{row.agent.tools.length ? row.agent.tools.map(step => `${step.name}（${step.status === 'ok' ? '完成' : '失败'}，${step.elapsedMs} ms）`).join(' → ') : '未执行资料工具'}</p>
               <small>输入 {row.agent.inputTokens} / 输出 {row.agent.outputTokens} token（缺少用量时按预算估计）</small>
+              {row.agent.calls?.map(call => <div key={call.turn}><p>第 {call.turn} 轮 · {call.status === 'ok' ? '完成' : call.status === 'blocked' ? '调用前阻止' : call.status === 'running' ? '请求中／尚未记录完成' : '失败'} · {call.elapsedMs} ms
+                {call.httpStatus !== undefined && ` · HTTP ${call.httpStatus}`}{call.finishReason && ` · ${call.finishReason}`}</p>
+                <small>{dateText(call.at)} · 请求 {call.requestBytes} 字节 · 预留 {call.budgetBefore} + {call.charge} / {call.budgetLimit}</small>
+                {call.requestId && <p>上游请求 ID：<code>{call.requestId}</code></p>}
+                {call.failure && <FailureDetail value={call.failure} />}</div>)}
+              {row.agent.tools.filter(step => step.failure).map((step, index) => <div key={index}><p>{step.name}</p><FailureDetail value={step.failure!} /></div>)}
+              {row.agent.failures?.map((failure, index) => <FailureDetail key={index} value={failure} />)}
             </details>}
             {row.image && <><a href={`/api/admin/qq-records/${row.appId}/${data.date}/${row.id}/image`} target="_blank" rel="noreferrer">
               <Image unoptimized src={`/api/admin/qq-records/${row.appId}/${data.date}/${row.id}/image`} width={240} height={240} alt="鹿饼按本次要求生成的图片" style={{ objectFit: 'contain' }} />
             </a><details><summary>生图提示词</summary><p className="comment-copy">{row.image.prompt}</p></details></>}
-          </td><td>{QQ_RECORD_STATUSES[row.status]}{row.error && <p>{row.error === 'image_failed' ? '图片生成失败' : '模型请求失败'}，使用固定提示</p>}<small>{dateText(row.updatedAt)}</small></td></tr>)}
+          </td><td>{QQ_RECORD_STATUSES[row.status]}{row.error && <p>{row.error === 'image_failed' ? '图片生成失败' : '模型请求失败'}，使用固定提示</p>}
+            {row.failure && <details open><summary>失败原因</summary><FailureDetail value={row.failure} /></details>}
+            {row.sendFailure && <details open><summary>发送异常</summary><FailureDetail value={row.sendFailure} /></details>}
+            {row.error && !row.failure && <p>旧记录未保存详细原因</p>}
+            <details><summary>诊断标识</summary><p>请求哈希：<code>{row.id}</code></p>{row.queuedMs !== undefined && <p>排队 {row.queuedMs} ms</p>}</details>
+            <small>{dateText(row.updatedAt)}</small></td></tr>)}
         {!data.rows.length && <tr><td colSpan={4}>暂无符合条件的记录。在群里从 QQ 的艾特列表选中鹿饼后发送问题。</td></tr>}
       </tbody></table></div>
       <div className="toolbar"><button disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>{page} / {data.pages}</span>

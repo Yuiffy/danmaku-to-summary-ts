@@ -31,7 +31,7 @@ try:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
         terminal_upload_error_reason, format_upload_failure, is_submission_recovery_pending)
@@ -39,7 +39,7 @@ except ImportError:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor, clip_upload_enqueue, clip_upload_pacing, clip_upload_retry, clip_upload_cancel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -577,7 +577,12 @@ def commit_queue_snapshot(
             replacement = copy.deepcopy(source_job)
             for index, existing in enumerate(latest_jobs):
                 if str(existing.get("id") or "") == job_id:
-                    latest_jobs[index] = replacement
+                    latest_jobs[index] = clip_upload_cancel.merge_job(existing, replacement)
+                    if replacement.get("status") != "running" and clip_upload_cancel.requested_ids(latest_jobs[index]):
+                        current_registry = load_json(REGISTRY_PATH, default_registry())
+                        clip_upload_cancel.acknowledge_locked(sys.modules[__name__], current_registry,
+                            latest_jobs[index], clip_upload_cancel.requested_ids(latest_jobs[index]))
+                        save_json(REGISTRY_PATH, current_registry)
                     break
             else:
                 latest_jobs.append(replacement)
@@ -815,6 +820,8 @@ def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
             clear_mismatched_upload_state(clip)
             continue
         resolved_status = status.pop("status")
+        if clip.get("uploadCancellation") and resolved_status != "uploaded":
+            continue
         clip["status"] = resolved_status
         clip["uploadState"] = status
         if resolved_status == "uploaded" and parse_utc_timestamp(
@@ -902,85 +909,7 @@ def exclude_clips(args: argparse.Namespace) -> int:
 
 
 def cancel_job(args: argparse.Namespace) -> int:
-    """Cancel a waiting/blocked job and make unfinished clips enqueueable again."""
-    if not acquire_lock():
-        print(
-            "[ERROR] upload worker is running; stop it before cancelling a job",
-            file=sys.stderr,
-        )
-        return 3
-
-    try:
-        queue = load_json(QUEUE_PATH, default_queue())
-        job = next(
-            (item for item in queue.get("jobs", []) if item.get("id") == args.job),
-            None,
-        )
-        if job is None:
-            print(f"[ERROR] unknown upload job: {args.job}", file=sys.stderr)
-            return 2
-        if job.get("status") == "cancelled":
-            print(f"[OK] upload job already cancelled: {args.job}")
-            return 0
-        if job.get("status") not in ("pending", "retry_wait", "blocked"):
-            print(
-                f"[ERROR] job {args.job} cannot be cancelled from status "
-                f"{job.get('status')}",
-                file=sys.stderr,
-            )
-            return 2
-
-        ids = [int(clip_id) for clip_id in job.get("clipIds", [])]
-        registry = load_json(REGISTRY_PATH, default_registry())
-        missing = [
-            clip_id
-            for clip_id in ids
-            if str(clip_id) not in registry.get("clips", {})
-        ]
-        if missing:
-            print(f"[ERROR] missing registry ids: {missing}", file=sys.stderr)
-            return 2
-
-        sync_clip_statuses(registry, ids)
-        other_active_ids = {
-            int(clip_id)
-            for other in queue.get("jobs", [])
-            if other is not job
-            and other.get("status") in ("pending", "retry_wait", "running")
-            for clip_id in other.get("clipIds", [])
-        }
-        for clip_id in ids:
-            clip = registry["clips"][str(clip_id)]
-            if clip.get("status") == "uploaded" or clip_id in other_active_ids:
-                continue
-            clip["status"] = "review"
-            clip.pop("failureReason", None)
-            clip["updatedAt"] = now_iso()
-
-        clear_job_retry_metadata(job)
-        cancellation_note = str(args.note or "").strip()
-        if cancellation_note:
-            previous_note = str(job.get("note") or "").strip()
-            job["note"] = "; ".join(
-                note for note in (previous_note, cancellation_note) if note
-            )
-        cancelled_at = now_iso()
-        mark_job(
-            job,
-            "cancelled",
-            cancelledAt=cancelled_at,
-            cancellationReason=cancellation_note,
-            clipStatuses=clip_status_map(registry, ids),
-        )
-        save_json(REGISTRY_PATH, registry)
-        commit_queue_snapshot(queue, job_ids=(job.get("id"),))
-        print(
-            f"[OK] cancelled {args.job}; reusable clip ids: "
-            f"{','.join(str(clip_id) for clip_id in ids)}"
-        )
-        return 0
-    finally:
-        release_lock()
+    return clip_upload_cancel.cancel(args, sys.modules[__name__])
 
 
 def resume_uploads(args: argparse.Namespace) -> int:
@@ -1079,7 +1008,7 @@ def timeout_seconds_for_job(job: Dict[str, Any]) -> int:
 def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.CompletedProcess[str]:
     """Upload a group of clips.
 
-    JSON-backed clips use their manifest; historical REVIEW clips keep their
+    JSON-backed queue clips use stable IDs; historical REVIEW clips keep their
     compatibility path. Self-contained clips upload individually.
     """
     if job.get("automaticPublication"):
@@ -1133,7 +1062,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         if job.get("automaticPublication"):
             cmd.extend(["--automatic-job", str(job["id"])])
         if job.get("id"):
-            cmd.extend(["--queue-job", str(job["id"])])
+            cmd.extend(["--queue-job", str(job["id"]), "--queue-ids", ",".join(str(c["id"]) for c in json_clips)])
         if job.get("collectionSectionId"):
             cmd.extend(["--collection-section-id", str(job["collectionSectionId"])])
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
@@ -1191,6 +1120,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         ]
         if job.get("allowDuplicateTitle"):
             cmd.append("--force")
+        if job.get("id"):
+            cmd.extend(["--queue-job", str(job["id"])])
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
         try:
             cp = subprocess.run(
@@ -1236,6 +1167,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 "--tid", str(int(clip.get("tid", 21))),
                 "--source-desc", source_desc,
             ]
+            if job.get("id"):
+                cmd2 += ["--queue-job", str(job["id"])]
             if cover:
                 cmd2 += ["--cover", cover]
             print(f"[worker] manual upload #{clip_id}:", " ".join(f'"{c}"' if " " in c else c for c in cmd2), flush=True)
@@ -1253,6 +1186,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 )
                 out2 = cp2.stdout or ""
                 outputs.append(out2)
+                if "[UPLOAD_CANCELLED]" in out2:
+                    continue
                 if is_bilibili_submission_rate_limit(out2) or '[RATE_LIMIT_406]' in out2 or '[UPLOAD_PAUSED]' in out2:
                     submission_rate_limited = True
                     break
@@ -1420,7 +1355,7 @@ def set_unfinished_clip_statuses(
     """Keep registry state honest while a job waits or reaches a terminal error."""
     for clip_id in ids:
         clip = registry.get("clips", {}).get(str(clip_id))
-        if not clip or clip.get("status") == "uploaded":
+        if not clip or clip.get("status") == "uploaded" or clip.get("uploadCancellation"):
             continue
         clip["status"] = status
         if reason:
@@ -1774,7 +1709,7 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     review rows exist.  Without this check the queue labelled such a job as
     blocked and left the clip permanently in ``uploading``.
 
-    JSON-backed clips are self-contained and use their manifest. Historical
+    JSON-backed clips are self-contained registry records. Historical
     REVIEW.md records still need the Markdown row check; manually created
     records without either source continue through the single-upload path.
     """
@@ -1783,6 +1718,8 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
         errors.extend(clip_upload_enqueue.saved_title_errors(sys.modules[__name__], group) + clip_upload_enqueue.publication_errors(sys.modules[__name__], group))
         errors.extend(f"clip {clip.get('id')} is editorially excluded: {clip['editorialExclusion'].get('reason')}"
                       for clip in group if clip.get("editorialExclusion"))
+        errors.extend(f"clip {clip.get('id')} upload was cancelled; explicitly enqueue after editing"
+                      for clip in group if clip.get("uploadCancellation"))
         errors.extend(f"candidate {clip.get('id')} needs cutting first" for clip in group if clip.get("pendingCut"))
         json_clips = [c for c in group if c.get("manifestPath")]
         legacy_clips = [c for c in group if not c.get("manifestPath")]
@@ -1941,6 +1878,12 @@ def run_one_job() -> bool:
         return False
     job_id = job.get("id")
 
+    clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, clip_upload_cancel.requested_ids(job))
+    registry, queue = clip_upload_state.load_worker_snapshot(sys.modules[__name__])
+    job = find_queue_job(queue, job_id) or job
+    if job.get("status") == "cancelled":
+        return True
+
     ids = [int(i) for i in job.get("clipIds", [])]
     missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
     if missing:
@@ -2040,7 +1983,14 @@ def run_one_job() -> bool:
             account_upload_limited = True
             break
 
-        group = upload_groups[group_index]
+        queue = load_json(QUEUE_PATH, default_queue())
+        job = find_queue_job(queue, job_id) or job
+        skipped = [int(c["id"]) for c in upload_groups[group_index] if int(c["id"]) in clip_upload_cancel.requested_ids(job)]
+        clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, skipped)
+        group = [c for c in upload_groups[group_index] if int(c["id"]) not in skipped]
+        if not group:
+            group_index += 1
+            continue
         if len(group) > available_slots:
             upload_groups[group_index] = group[:available_slots]
             upload_groups.insert(group_index + 1, group[available_slots:])
@@ -2049,6 +1999,7 @@ def run_one_job() -> bool:
         group_ids = [int(clip["id"]) for clip in group]
         before_upload = clip_upload_snapshot(registry, group_ids)
         cp = run_batch(group, job)
+        clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, group_ids)
         last_returncode = cp.returncode or last_returncode
         output = cp.stdout or ""
         terminal_reason = terminal_reason or terminal_upload_error_reason(output)
@@ -2100,6 +2051,10 @@ def run_one_job() -> bool:
     registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
     queue = load_json(QUEUE_PATH, default_queue())
     current = find_queue_job(queue, job_id) or job
+    clip_upload_cancel.acknowledge(sys.modules[__name__], job_id, ids)
+    queue = load_json(QUEUE_PATH, default_queue())
+    current = find_queue_job(queue, job_id) or current
+    ids = [i for i in ids if i not in clip_upload_cancel.requested_ids(current)]
     statuses = {clip_id: registry["clips"][str(clip_id)].get("status") for clip_id in ids}
     last_output = "\n".join(all_outputs)[-12000:]
     pending_after_run = [clip_id for clip_id, status in statuses.items() if status != "uploaded"]
@@ -2109,7 +2064,9 @@ def run_one_job() -> bool:
     # A subprocess can exit non-zero after it has already persisted the final
     # successful result (for example while attaching a collection).  The
     # registry state is authoritative, so never turn that into a failed job.
-    if not pending_after_run:
+    if current.get("status") == "cancelled":
+        pass
+    elif not pending_after_run:
         clip_candidate_queue.finish_job(sys.modules[__name__], registry, current, lastOutput=last_output)
     else:
         terminal_reason = terminal_reason or terminal_upload_error_reason(last_output)
@@ -2313,8 +2270,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note", required=True)
     p.set_defaults(func=exclude_clips)
 
-    p = sub.add_parser("cancel", help="Cancel a waiting or blocked upload job")
-    p.add_argument("--job", required=True)
+    p = sub.add_parser("cancel", help="Cancel selected clips or an upload job, including active transfers")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--job")
+    target.add_argument("--ids")
     p.add_argument("--note", default="")
     p.set_defaults(func=cancel_job)
 

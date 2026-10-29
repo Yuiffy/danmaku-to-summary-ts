@@ -9,6 +9,7 @@ import { AdminJobs } from './AdminJobs';
 import { AdminSourceMedia } from './AdminSourceMedia';
 import { createAdminServer } from './AdminServer';
 import { atomicJson } from './AdminFiles';
+import { createHash } from 'crypto';
 
 let root: string;
 const campaign = { id: 'fuya', requiredGames: ['芙娅之魂'], roomIds: ['100', '200'], startsAt: '2026-10-22T00:00:00+08:00', endsAt: '2026-11-06T00:00:00+08:00' };
@@ -62,6 +63,37 @@ it('merges saved selection history without duplicating the same candidate across
   const rows = f.candidates.list({ view: 'all' }).candidates;
   expect(rows.map(row => row.label)).toEqual(['P4', 'R1', 'R2', 'R10', 'R20']);
   expect(rows.find(row => row.label === 'R20')?.title).toBe('保留旧备选');
+});
+it('includes ordinary Sui sessions outside campaign dates and without campaign configuration, preserving read-only previews', async () => {
+  const f = fixture(), older = f.session('25788785', '2025_01_02'), newer = f.session('25788785', '2026_12_03');
+  for (const s of [older, newer]) {
+    s.metadata.streamTitle = '普通杂谈';
+    atomicJson(s.statePath, { type: 'own_stream_review_state', metadata: s.metadata });
+  }
+  f.session('100', '2026_10_23'); f.session('999', '2026_10_23');
+  const before = fs.readFileSync(newer.statePath, 'utf8');
+  const list = (await request(f.app).get('/campaign-candidates?room=25788785&view=all').set(headers).expect(200)).body;
+  expect(list.total).toBe(6);
+  expect(list.candidates.map((row: any) => row.label)).toEqual(['R1', 'R2', 'R10', 'R1', 'R2', 'R10']);
+  expect(f.candidates.list({ view: 'all' }).total).toBe(9);
+  const id = list.candidates[0].id;
+  expect((await request(f.app).get(`/campaign-candidates/${id}`).set(headers).expect(200)).body.subtitles).toContain('候选原话');
+  expect((await request(f.app).get(`/campaign-candidates/${id}/source-playback`).set(headers).expect(200)).body).toEqual({ origin: 0, start: 10, end: 20 });
+  const roots = [path.join(root, 'recordings'), path.dirname(path.dirname(path.dirname(newer.statePath)))];
+  const withoutCampaigns = new AdminCampaignCandidates(f.clips, () => roots, () => []);
+  expect(withoutCampaigns.list({ view: 'all' }).candidates.map(row => row.id)).toEqual(list.candidates.map((row: any) => row.id));
+  expect(fs.readFileSync(newer.statePath, 'utf8')).toBe(before);
+  expect(f.clips.records()).toEqual({}); expect(f.run).not.toHaveBeenCalled();
+});
+it('does not duplicate Sui candidates covered by both a campaign and overlapping recording roots', () => {
+  const f = fixture(), s = f.session('25788785', '2026_10_23', true);
+  const roomRoot = path.join(root, 'recordings', '25788785_主播25788785');
+  const candidates = new AdminCampaignCandidates(f.clips, () => [path.join(root, 'recordings'), roomRoot],
+    () => [{ ...campaign, roomIds: ['25788785'] }]);
+  const rows = candidates.list({ view: 'all' }).candidates;
+  expect(rows).toHaveLength(3);
+  expect(new Set(rows.map(row => row.id)).size).toBe(3);
+  expect(candidates.detail(rows[0].id).candidate.streamTitle).toBe(s.metadata.streamTitle);
 });
 it('sorts by score or natural candidate number across sessions with stable ties and unscored candidates last', () => {
   const f = fixture(), older = f.session('100', '2026_10_23'), newer = f.session('200', '2026_10_24');
@@ -128,6 +160,42 @@ it('ignores unrelated streams and malformed states while admitting explicitly bo
   atomicJson(other.statePath, { type: 'own_stream_review_state', metadata: { ...other.metadata, streamTitle: '我魂测试', planPath } });
   fs.writeFileSync(s.statePath.replace('REVIEW_STATE', 'REVIEW_CORRUPT_STATE'), '{broken');
   expect(f.candidates.list({ view: 'all' }).candidates.map(row => row.roomId)).toEqual(['200', '200', '200']);
+});
+it.each(['metadata', 'plan'])('recovers untitled legacy campaign sessions from verified actual-game evidence using %s source', sourceLocation => {
+  const f = fixture(), s = f.session('100', '2026_10_28');
+  const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+  const base = path.join(path.dirname(s.media), 'source'), xml = `${base}.xml`, planPath = path.join(path.dirname(s.statePath), 'PLAN.json');
+  fs.writeFileSync(xml, '<i/>');
+  const source = { ...s.metadata.source, xmlPath: xml };
+  const context = { schemaVersion: 1, roomId: '100', sourceText: '游戏原文', sharedPrefix: '完整上下文',
+    sourceSha256: hash('游戏原文'), sharedPrefixSha256: hash('完整上下文'),
+    inputSources: { srtSha256: hash(fs.readFileSync(s.srt)), xmlSha256: hash('<i/>') } };
+  const summary = { schemaVersion: 1, status: 'success', roomId: '100',
+    source: { promptVersion: 2, coverage: 'full_srt_and_merged_danmaku', sourceSha256: context.sourceSha256,
+      sharedPrefixSha256: context.sharedPrefixSha256 }, content: { games: ['芙娅之魂'] } };
+  atomicJson(`${base}_FULL_LIVE_CONTEXT.json`, context); atomicJson(`${base}_LIVE_CONTENT.json`, summary);
+  atomicJson(planPath, { source, config: {} });
+  const metadata = { ...s.metadata, streamTitle: '又是类魂！！', planPath,
+    source: sourceLocation === 'metadata' ? source : undefined,
+    deferredSelectionHistory: sourceLocation === 'plan' ? { rows: s.metadata.aiStatus.ranking.skipped.map(row => ({ ...row, label: `R${row.candidateIndex}`,
+      phase: 'ranking', sourceSha256: s.metadata.aiStatus.ranking.sourceSha256,
+      selectionKey: `saved:${row.candidateIndex}` })) } : undefined };
+  atomicJson(s.statePath, { type: 'own_stream_review_state', metadata });
+  const before = fs.readFileSync(s.statePath, 'utf8');
+  const fresh = () => new AdminCampaignCandidates(f.clips, () => [path.join(root, 'recordings')], () => [campaign]);
+  expect(fresh().list({ view: 'all' }).total).toBe(3);
+  expect(fresh().list({}).total).toBe(1);
+  expect(fs.readFileSync(s.statePath, 'utf8')).toBe(before);
+  expect(f.run).not.toHaveBeenCalled(); expect(f.clips.records()).toEqual({});
+  atomicJson(`${base}_LIVE_CONTENT.json`, { ...summary, content: { games: [], overview: '明天玩芙娅之魂' } });
+  expect(fresh().list({ view: 'all' }).total).toBe(0);
+  atomicJson(`${base}_LIVE_CONTENT.json`, { ...summary, roomId: '200' });
+  expect(fresh().list({ view: 'all' }).total).toBe(0);
+  atomicJson(`${base}_LIVE_CONTENT.json`, summary);
+  fs.appendFileSync(s.srt, '\n来源发生变化');
+  expect(fresh().list({ view: 'all' }).total).toBe(0);
+  fs.writeFileSync(`${base}_FULL_LIVE_CONTEXT.json`, '{broken');
+  expect(fresh().list({ view: 'all' }).total).toBe(0);
 });
 it('returns only window subtitles, streams byte ranges and leaves all workflow files untouched', async () => {
   const f = fixture(), s = f.session('100', '2026_10_23'), before = fs.readFileSync(s.statePath, 'utf8');

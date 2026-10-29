@@ -4,6 +4,17 @@ export interface CommentFeedDiagnostic {
   httpStatus?: number;
   code?: number;
   transportCode?: string;
+  contentType?: 'json' | 'html' | 'text' | 'other' | 'missing';
+  bodyBytes?: number;
+  bodySha256?: string;
+  payloadStage?: 'json' | 'items' | 'cursor' | 'pagination';
+  bodyFormat?: 'json' | 'html' | 'text';
+  itemsType?: string;
+  itemCount?: number;
+  cursorType?: string;
+  endType?: string;
+  idType?: string;
+  timeType?: string;
 }
 
 /** Contains only allowlisted diagnostics, never transport messages, response text or credentials. */

@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import { CommentApi, parseBilibiliJson } from './CommentApi';
 import { createCommentAnswerer } from './CommentAgent';
-import { notificationEvent, LIMITS, validateCommentConfig } from './CommentPolicy';
+import { notificationEvent, LIMITS, validateCommentConfig, commentTokenReservation } from './CommentPolicy';
 import { pollCommentInbox } from './CommentInbox';
 import { newCommentState } from './CommentState';
 import { parseCommentArgs } from '../../../tools/bilibili/commentReplies';
@@ -145,7 +145,7 @@ test('CLI is offline validation by default and rejects ambiguous mode combinatio
   expect(parseCommentArgs(['--dry-run']).mode).toBe('dry-run');
   expect(() => parseCommentArgs(['--dry-run', '--live'])).toThrow('Usage');
   expect(() => validateCommentConfig(example)).not.toThrow();
-  expect(example.dailyTokenBudget / LIMITS.tokenReservation).toBe(1000);
+  expect(example.dailyTokenBudget / commentTokenReservation(example)).toBe(62.5);
 });
 
 test('video notifications require an account mention; nested @ uses target as the missing root', () => {

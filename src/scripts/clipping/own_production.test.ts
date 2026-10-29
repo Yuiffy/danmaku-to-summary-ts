@@ -2,6 +2,23 @@ export {};
 const fs=require('fs'),os=require('os'),path=require('path');
 const { produceOwnClips }=require('./own_production');
 
+test.each([undefined, { id: 'fuya', requiredGames: ['芙娅之魂'], gameAliases: { '普雅之魂': '芙娅之魂' } }])(
+    'plan-only output preserves campaign discovery binding even with no selected clips (%j)', async campaignContentGate => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'campaign-plan-'));
+    const context = { clips: [], options: { mediaPath: path.join(directory, 'source.mp4'), planOnly: true }, outputRoot: directory,
+        info: { roomId: '100' }, parsed: {}, danmaku: [], evidence: { cues: [] }, diagnostics: {}, metadata: { aiStatus: {} }, rootConfig: {},
+        config: { campaignContentGate, clipResourceAdaptive: { enabled: false } } };
+    const render = jest.fn();
+    try {
+        const result = await produceOwnClips(context, { review: async rows => rows, prepare: async rows => ({ clips: rows }),
+            planReview: () => '待审核', render });
+        const plan = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        expect(plan.config.campaignContentGate).toEqual(campaignContentGate);
+        expect(context.metadata).toMatchObject({ source: plan.source });
+        expect(plan.clips).toEqual([]); expect(render).not.toHaveBeenCalled();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test.each([false, true])('three-mode production defers legacy enhancements and never publishes baselines early (%s)', async streaming => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'styles-own-'));
     const sourceMedia = path.join(directory, 'source.mp4'), sourceSrt = path.join(directory, 'source.srt');

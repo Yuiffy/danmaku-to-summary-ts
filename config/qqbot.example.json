@@ -8,9 +8,10 @@
     "enabled": true,
     "model": "gpt-image-2.5-sunburst",
     "quality": "high",
-    "dailyLimit": 20,
-    "userDailyLimit": 3,
-    "timeoutMs": 180000,
+    "background": true,
+    "dailyLimit": 300,
+    "userDailyLimit": 30,
+    "timeoutMs": 900000,
     "registryConfigPath": "config/production.json"
   },
   "knowledge": {

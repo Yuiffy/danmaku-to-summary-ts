@@ -27,6 +27,7 @@ function precisionDetail(metadata, assets = {}) {
         rows.push({ start, text: `${clock(start)}-${clock(Math.min(end, plan.duration))} ${label}` });
     };
     if (plan.music) add(0, plan.duration, '添加 BGM（背景音乐）');
+    if (plan.contextQuestion) add(0, plan.contextQuestion.end, '前情提要（原直播观众弹幕提问）');
     for (const effect of plan.effects) {
         const visual = [];
         if (effect.zoom) visual.push(TARGET_LABELS[effect.zoom.target] || '画面放大');

@@ -1,9 +1,12 @@
+import { QQ_AGENT_LIMITS, QQDiagnostic, QQModelCall, validQQDiagnostic, validQQModelCall } from './qqDiagnostics';
 export const QQ_RECORD_STATUSES = {
   accepted: '已接收', generating: '生成中', sending: '发送中／待核对', sent: '已回复', unknown: '发送结果待核对', skipped: '已跳过'
 } as const;
 export interface QQAgentTrace {
   modelCalls: number; inputTokens: number; outputTokens: number;
-  tools: Array<{ name: string; status: 'ok' | 'failed'; elapsedMs: number }>;
+  tools: Array<{ name: string; status: 'ok' | 'failed'; elapsedMs: number; failure?: QQDiagnostic }>;
+  calls?: QQModelCall[];
+  failures?: QQDiagnostic[];
 }
 export interface QQRecord {
   version: 1; id: string; appId: string; scope: 'group' | 'c2c'; user: string; conversation: string;
@@ -12,6 +15,9 @@ export interface QQRecord {
   requestedAt: number; updatedAt: number; model: string; error?: 'model_failed' | 'image_failed';
   image?: { sha256: string; prompt: string };
   agent?: QQAgentTrace;
+  failure?: QQDiagnostic;
+  sendFailure?: QQDiagnostic;
+  queuedMs?: number;
 }
 export interface AdminQQRecordsView {
   date: string; dates: string[]; total: number; page: number; pages: number; rows: QQRecord[];
@@ -25,6 +31,7 @@ export interface QQRecordStats {
 export interface QQQuotaStatus {
   status: 'available' | 'limited' | 'paused' | 'unavailable';
   used?: number; limit?: number; remaining?: number; windowMs?: number;
+  window?: { used: number; limit: number; remaining: number; windowMs: number };
   reasons: Array<{ code: string; label: string; until?: number }>;
 }
 export interface QQUserSummary {
@@ -51,12 +58,17 @@ export function validQQRecord(value: QQRecord): boolean {
     (value.error === undefined || ['model_failed', 'image_failed'].includes(value.error)) &&
     (value.image === undefined || !!value.image && /^[a-f0-9]{64}$/u.test(value.image.sha256) &&
       typeof value.image.prompt === 'string' && value.image.prompt.length <= 16000) &&
+    (value.failure === undefined || validQQDiagnostic(value.failure)) &&
+    (value.sendFailure === undefined || validQQDiagnostic(value.sendFailure)) &&
+    (value.queuedMs === undefined || Number.isSafeInteger(value.queuedMs) && value.queuedMs >= 0) &&
     (value.agent === undefined || validQQAgentTrace(value.agent));
 }
 function validQQAgentTrace(value: QQAgentTrace): boolean {
-  return !!value && Number.isSafeInteger(value.modelCalls) && value.modelCalls >= 0 && value.modelCalls <= 5 &&
+  return !!value && Number.isSafeInteger(value.modelCalls) && value.modelCalls >= 0 && value.modelCalls <= QQ_AGENT_LIMITS.modelCalls &&
     [value.inputTokens, value.outputTokens].every(tokens => Number.isSafeInteger(tokens) && tokens >= 0 && tokens <= 10000000) &&
-    Array.isArray(value.tools) && value.tools.length <= 4 && value.tools.every(step => !!step &&
+    Array.isArray(value.tools) && value.tools.length <= QQ_AGENT_LIMITS.tools && value.tools.every(step => !!step &&
       typeof step.name === 'string' && /^[a-z_]{1,40}$/u.test(step.name) && ['ok', 'failed'].includes(step.status) &&
-      Number.isSafeInteger(step.elapsedMs) && step.elapsedMs >= 0);
+      Number.isSafeInteger(step.elapsedMs) && step.elapsedMs >= 0 && (step.failure === undefined || validQQDiagnostic(step.failure))) &&
+    (value.calls === undefined || Array.isArray(value.calls) && value.calls.length <= QQ_AGENT_LIMITS.modelCalls + 1 && value.calls.every(validQQModelCall)) &&
+    (value.failures === undefined || Array.isArray(value.failures) && value.failures.length <= 8 && value.failures.every(validQQDiagnostic));
 }

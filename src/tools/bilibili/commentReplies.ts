@@ -15,6 +15,8 @@ import { createCommentKnowledge } from '../../services/bilibili/comment-replies/
 import { CommentFeedError, CommentPoller } from '../../services/bilibili/comment-replies/CommentPolling';
 import { createProjectReader } from '../../services/bilibili/comment-replies/CommentProjects';
 import { createCommentVisualReader } from '../../services/bilibili/comment-replies/CommentVisual';
+import { alertCommentPause, commentPauseDiagnostic } from '../../services/bilibili/comment-replies/CommentAlerts';
+import { createCommentPauseNotify } from '../../services/bilibili/comment-replies/CommentAlertRuntime';
 
 export interface CommentCliOptions { config: string; mode: 'check' | 'dry-run' | 'live' | 'status' | 'resume' }
 export function parseCommentArgs(args: string[]): CommentCliOptions {
@@ -53,6 +55,8 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     const state = await store.open();
     try {
       state.paused = false;
+      delete state.pauseAlertAt;
+      delete state.pauseReason;
       await store.save(state);
       console.info('Comment replies resumed. Unknown/failed jobs remain terminal and will not be retried.');
     } finally { await store.close(); }
@@ -66,10 +70,11 @@ export async function runCommentReplies(args: string[]): Promise<void> {
   const api = new CommentApi(config.botUid, cookie);
   api.checkCredentials();
   const settings = questionProviderSettings(loadConfigLayers({ configPath: config.providerConfigPath }));
+  const projects = config.projectSources?.length ? createProjectReader(root, config.projectSources) : undefined;
   const knowledge = config.knowledge && options.mode !== 'dry-run' ? createCommentKnowledge(
     await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)), config.knowledge,
     { video: (aid, signal) => api.video(aid, signal), now: Date.now,
-      ...(config.projectSources ? { projects: createProjectReader(root, config.projectSources) } : {}) }) : undefined;
+      ...(projects && !config.agentTools ? { projects } : {}) }) : undefined;
   if (options.mode === 'check') {
     console.info('Comment reply configuration valid. No polling, model requests or publication performed.'); return;
   }
@@ -84,7 +89,8 @@ export async function runCommentReplies(args: string[]): Promise<void> {
       config.videoVision === false ? undefined : createCommentVisualReader({
         target: async (aid, signal) => (await api.video(aid, signal, false)).visualTarget,
         shots: (aid, cid, signal) => api.videoShots(aid, cid, signal)
-      })) : async () => '鹿饼收到啦，这是一条本地预览回复。',
+      }), config.agentTools ? event => ({ projects, video: event.type === 1 ? signal => api.video(event.oid, signal) : undefined,
+        report: entry => console.info(JSON.stringify(entry)) }) : undefined) : async () => '鹿饼收到啦，这是一条本地预览回复。',
     collectFeedback: options.mode === 'live' ? (event, note) => feedback.collect(event, note) : undefined,
     audience: (uid, signal) => api.audience(uid, signal),
     like: options.mode === 'live' ? (event, signal) => api.like(event, signal) : undefined,
@@ -101,13 +107,19 @@ export async function runCommentReplies(args: string[]): Promise<void> {
         return worker.admit(event);
       }, save: value => store.save(value) })
   });
-  let phase: 'poll' | 'work' = 'poll';
+  let phase: 'poll' | 'work' | 'startup' = 'startup';
+  const alert = (diagnostic: Parameters<typeof alertCommentPause>[1]) => options.mode === 'live' ? alertCommentPause(state, diagnostic, {
+    now: Date.now, save: value => store.save(value), notify: createCommentPauseNotify(config.credentialConfigPath),
+    report: entry => console.info(JSON.stringify(entry)) }) : Promise.resolve();
   const stop = () => { stopping = true; worker.stop(); if (timer) clearTimeout(timer); wake?.(); };
   const message = (value: unknown) => { if (value === 'shutdown') stop(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   process.on('message', message);
   // Exactly one loop: provider calls, checkpoint writes and sends never overlap.
   console.info(`Comment replies ${options.mode}; transient notification reads retry automatically; saved checkpoints preserved.`);
+  console.info(JSON.stringify({ event: 'comment_consumer_started', feedDiagnostics: 'shape-v1',
+    videoEvidence: 'model-tools-v1',
+    answerMode: config.agentTools ? 'tool-loop' : 'single-turn', pauseAlerts: options.mode === 'live' ? 'wecom' : 'disabled' }));
   try {
     while (!stopping && !state.paused) {
       phase = 'poll';
@@ -122,6 +134,9 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     if (state.paused) {
       process.exitCode = 2;
       console.info('Comment replies paused. Inspect --status and login/risk status before --resume.');
+      const diagnostic = commentPauseDiagnostic(state, phase);
+      console.error(JSON.stringify({ event: 'comment_consumer_paused', ...diagnostic }));
+      await alert(diagnostic);
     }
   } catch (error) {
     // Permanent feed failures, auth/risk and snapshot failures still require operator inspection.
@@ -129,6 +144,7 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     try { await store.save(state); } catch { /* Leave the previous durable intent intact. */ }
     console.error(JSON.stringify({ event: 'comment_consumer_paused', phase,
       ...(error instanceof CommentFeedError ? error.diagnostic : { reason: 'internal' }) }));
+    await alert({ phase, reason: 'internal', ...(error instanceof CommentFeedError ? { feedFailure: error.diagnostic } : {}) });
   } finally {
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
     process.removeListener('message', message);

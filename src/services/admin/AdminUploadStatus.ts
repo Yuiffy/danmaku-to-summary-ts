@@ -81,12 +81,15 @@ export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, no
       clips: (Array.isArray(job.clipIds) ? job.clipIds : []).map(Number).filter(Number.isSafeInteger).map((id: number) => {
         const clip = object(records[String(id)]);
         return { id, title: `${clip.prefix || ''}${clip.title || ''}`, done: clip.status === 'uploaded' && !job.allowDuplicateTitle,
+          ...(object(job.cancellationRequests)[String(id)] ? { cancelled: true,
+            cancelling: !job.cancellationAcknowledgedIds?.includes(id) } : {}),
+          ...(job.submissionStartedClipIds?.includes(id) ? { submissionStarted: true } : {}),
           excluded: Object.hasOwn(object(job.renderFailures), String(id)) };
       }), createdAt: iso(time(job.createdAt)), updatedAt: iso(time(job.updatedAt)), retryAt: job.status === 'retry_wait' ? iso(time(job.retryAt)) : undefined,
       eligibleAt: iso(eligible(job)), reason: reason(job) };
   }
   const entries = [...running, ...sorted.map(next => next.job), ...blocked].map(item);
-  const waitingIds = new Set(entries.filter(entry => entry.status !== 'blocked').flatMap(entry => entry.clips.filter(clip => !clip.done && !clip.excluded).map(clip => clip.id)));
+  const waitingIds = new Set(entries.filter(entry => entry.status !== 'blocked').flatMap(entry => entry.clips.filter(clip => !clip.done && !clip.excluded && !clip.cancelled).map(clip => clip.id)));
   const next = sorted.find(entry => entry.at !== undefined);
   const reasons: string[] = [];
   if (running.length) reasons.push('当前任务尚在执行，后续任务等待');

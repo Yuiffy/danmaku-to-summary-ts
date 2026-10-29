@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { QQRecords } from './QQRecords';
-import { qqRequest, QQInbound } from './QQPolicy';
+import { qqRequest, QQInbound, QQ_LIMITS } from './QQPolicy';
 import { AdminQQRecords } from '../admin/AdminQQRecords';
 import requestHttp from 'supertest';
 import { createAdminServer } from '../admin/AdminServer';
@@ -38,6 +38,36 @@ test('agent trace survives later send checkpoints and the admin projection strip
   const view = new AdminQQRecords(root).view();
   expect(view.rows[0].agent).toEqual(agent); expect(JSON.stringify(view)).not.toContain('must-not-leak');
   await expect(writer.write(request, { status: 'sent', agent: { ...agent, modelCalls: 1000 } })).rejects.toThrow('Invalid QQ transcript');
+});
+
+test('expanded agent rounds persist and remain readable through the admin contract, including a blocked next round', async () => {
+  const request = qqRequest(inbound, at)!, writer = new QQRecords(root, '900000001', () => at + 1000);
+  const agent = { modelCalls: QQ_LIMITS.agentTurns, inputTokens: 30000, outputTokens: 2000,
+    tools: Array.from({ length: QQ_LIMITS.agentTurns - 1 }, () => ({ name: 'search_recordings', status: 'ok' as const, elapsedMs: 1 })),
+    calls: Array.from({ length: QQ_LIMITS.agentTurns + 1 }, (_, index) => ({ turn: index + 1, at, elapsedMs: 1,
+      status: index < QQ_LIMITS.agentTurns ? 'ok' as const : 'blocked' as const, requestBytes: 1000,
+      budgetBefore: 1000 * index, charge: 1000, budgetLimit: QQ_LIMITS.reservation })) };
+  await writer.write(request, { status: 'generating', agent });
+  await writer.write(request, { status: 'sent', answer: '查询完成', model: 'gpt-6-luna' });
+  expect(new AdminQQRecords(root).view().rows[0].agent).toEqual(agent);
+  await expect(writer.write(request, { status: 'generating', agent: { ...agent, modelCalls: QQ_LIMITS.agentTurns + 1 } })).rejects.toThrow();
+});
+test('detailed failure survives fallback sending and strips unknown diagnostic fields at every level', async () => {
+  const request = qqRequest(inbound, at)!, writer = new QQRecords(root, '900000001', () => at + 1000);
+  const failure = { stage: 'model_budget' as const, code: 'budget_exceeded' as const, at, turn: 4, budgetBefore: 60000, charge: 10000, budgetLimit: 65536 };
+  const call = { turn: 4, at, elapsedMs: 0, status: 'blocked' as const, requestBytes: 8976, budgetBefore: 60000, charge: 10000, budgetLimit: 65536, failure };
+  await writer.write(request, { status: 'generating', queuedMs: 45000, error: 'model_failed', failure,
+    agent: { modelCalls: 3, inputTokens: 9000, outputTokens: 180, calls: [call], failures: [failure],
+      tools: [{ name: 'read_context', status: 'failed', elapsedMs: 40, failure: { stage: 'tool', code: 'tool_failed', at } }] } });
+  await writer.write(request, { status: 'sending', answer: '这次没答好' }); await writer.write(request, { status: 'sent' });
+  const file = path.join(root, 'data/runtime/qqbot/records/900000001/2026-10-28', `${request.key}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const node of [raw.failure, raw.agent.calls[0], raw.agent.calls[0].failure, raw.agent.failures[0], raw.agent.tools[0].failure]) node.apiKey = 'must-not-leak';
+  fs.writeFileSync(file, JSON.stringify(raw));
+  const row = new AdminQQRecords(root).view().rows[0];
+  expect(row).toMatchObject({ status: 'sent', error: 'model_failed', failure, queuedMs: 45000 });
+  expect(row.agent!.calls).toEqual([call]); expect(JSON.stringify(row)).not.toContain('must-not-leak');
+  await expect(writer.write(request, { status: 'sent', failure: { ...failure, code: 'made_up' as any } })).rejects.toThrow('Invalid QQ transcript');
 });
 
 test('platform nicknames persist through send checkpoints and support admin search alongside legacy records', async () => {

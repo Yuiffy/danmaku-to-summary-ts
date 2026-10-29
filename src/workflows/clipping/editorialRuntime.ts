@@ -1,12 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { composeTimeline, HookPlan, parseSrt, projectCues, writeSrt } from './editorialStyle';
+import { composeTimeline, HookPlan, parseSrt, projectCues, writeSrt, validateHookBudget } from './editorialStyle';
+import { opAudioGain, type Loudness } from './editorialAudio';
 
 export interface Probe { duration: number; width: number; height: number; audio: boolean }
 export interface StyleIO {
     probe(file: string): Promise<Probe>;
-    render(input: string, output: string, start: number, end: number, size: Probe): Promise<void>;
+    measureAudio(file: string, start?: number, end?: number): Promise<Loudness>;
+    render(input: string, output: string, start: number, end: number, size: Probe, audioGainDb?: number): Promise<void>;
     concat(list: string, output: string): Promise<void>;
 }
 const digest = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -34,6 +36,7 @@ export async function renderHighlightFirst(input: {
     if (!size.audio || !opSize.audio) throw new Error('Baseline and OP must both contain original audio');
     const cues = parseSrt(fs.readFileSync(subtitles, 'utf8')), opCues = parseSrt(fs.readFileSync(opSrt, 'utf8'));
     const timeline = composeTimeline(size.duration, opSize.duration, input.plan, cues);
+    validateHookBudget(size.duration, input.plan, cues);
     if (cues.some(c => c.end > size.duration + .1) || opCues.some(c => c.end > opSize.duration + .1)) throw new Error('Subtitles exceed media duration');
     const directory = path.resolve(input.output);
     // Refuse overwriting baseline or a prior review revision, including failed attempts.
@@ -42,10 +45,12 @@ export async function renderHighlightFirst(input: {
         srtPath: path.join(directory, 'highlight_first.srt'), metadataPath: path.join(directory, 'highlight_first.json'),
         burnedSubtitles: true, duration: timeline.duration };
     try {
+        const bodyAudio = await io.measureAudio(media), opAudio = await io.measureAudio(opMedia);
+        const gainDb = opAudioGain(bodyAudio, opAudio);
         const parts = [];
         for (const [index, piece] of timeline.pieces.entries()) {
             const part = path.join(directory, `part-${index}.mp4`);
-            await io.render(piece.kind === 'op' ? opMedia : media, part, piece.start, piece.end, size);
+            await io.render(piece.kind === 'op' ? opMedia : media, part, piece.start, piece.end, size, piece.kind === 'op' ? gainDb : 0);
             parts.push(part);
         }
         const list = path.join(directory, 'concat.txt');
@@ -54,6 +59,11 @@ export async function renderHighlightFirst(input: {
         const actual = await io.probe(output.mediaPath);
         if (!actual.audio || Math.abs(actual.duration - timeline.duration) > .2 || actual.width !== size.width || actual.height !== size.height)
             throw new Error('Rendered timeline duration, dimensions or audio stream mismatch');
+        const opPiece = timeline.pieces.find(p => p.kind === 'op')!;
+        const renderedOp = await io.measureAudio(output.mediaPath, opPiece.outputStart, opPiece.outputStart + opSize.duration);
+        if (!Number.isFinite(renderedOp.integrated) || !Number.isFinite(renderedOp.truePeak)
+            || renderedOp.integrated > bodyAudio.integrated + 1 || renderedOp.truePeak > -1)
+            throw new Error('Rendered OP is louder than the body or exceeds the peak ceiling');
         if (digest(media) !== binding.media || digest(subtitles) !== binding.subtitles || digest(metadata) !== binding.metadata
             || digest(opMedia) !== binding.opMedia || digest(opSrt) !== binding.opSubtitles || digest(opManifest) !== binding.opManifest)
             throw new Error('Source changed during composition');
@@ -64,7 +74,8 @@ export async function renderHighlightFirst(input: {
             uploadReady: false, qaRequired: true, qaResult: { status: 'pending' }, output,
             editorialTimeline: { version: 1, timeBasis: 'rendered_baseline_seconds', ...timeline, plan: input.plan,
                 baseline: { metadata, media, subtitles }, opManifest, opMedia, opSubtitles: opSrt,
-                op: { id: op.id, source: op.source, subtitles: opCues }, binding, measuredDuration: actual.duration } };
+                op: { id: op.id, source: op.source, subtitles: opCues }, binding, measuredDuration: actual.duration,
+                audioMix: { version: 1, status: 'passed', body: bodyAudio, op: opAudio, gainDb, renderedOp } } };
         save(output.metadataPath, result);
         fs.writeFileSync(path.join(directory, 'REVIEW.md'), `# 重点前置待审\n\n预告 ${timeline.hookSeconds.toFixed(2)} 秒 → OP ${opSize.duration.toFixed(2)} 秒 → 正文。\n\n正文策略：${timeline.repetition}。检查原话完整、语境、OP 接缝及重排后字幕。原片审核不继承，本命令不登记或投稿。\n`, 'utf8');
         return result;

@@ -282,6 +282,14 @@ class AutomaticPublicationTests(unittest.TestCase):
         self.assertEqual(result["queuedIds"], [1])
         self.assertEqual([row["status"] for row in result["results"]], ["needs_human", "queued", "needs_human", "needs_human"])
 
+    def test_operator_cancellation_blocks_automatic_readmission_after_returning_to_review(self):
+        self.data['clips']['1']['uploadCancellation'] = {'reason': '人工撤回', 'jobId': 'old'}
+        self.data['clips']['1']['status'] = 'review'
+        registry.save_json(self.registry_path, self.data)
+        result = self.enqueue()
+        self.assertEqual(result['queuedIds'], [])
+        self.assertEqual(result['results'][0]['status'], 'needs_human')
+
     def test_old_artifacts_wrong_room_and_disabled_policy_never_queue(self):
         for change in ({"mode": "off"}, {"roomIds": ["other"]}, {"activatedAt": "2026-10-04T00:00:00Z"}):
             with self.subTest(change=change):

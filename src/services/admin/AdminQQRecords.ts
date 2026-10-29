@@ -6,6 +6,7 @@ import { AdminError } from './AdminFiles';
 import { createHash } from 'crypto';
 import { qqConversations, qqIdentity, qqUsers, summarizeQQRecords } from './AdminQQRecordStats';
 import { qqAccountUsage, readQQUsage } from './AdminQQUsage';
+import { projectQQDiagnostic, projectQQModelCall } from '../../core/admin/qqDiagnostics';
 
 /** Bounded, read-only local transcript listing. Never opens credentials or calls QQ. */
 export class AdminQQRecords {
@@ -66,11 +67,15 @@ export class AdminQQRecords {
           const value = JSON.parse(fs.readFileSync(file, 'utf8')) as QQRecord;
           if (!validQQRecord(value) || value.id !== name.slice(0, -5) || value.appId !== account || shanghaiDay(value.requestedAt) !== result.date) throw new Error('archive schema');
           if (scope === 'all' || scope === value.scope) {
-            const { version, id, appId, scope: recordScope, user, conversation, senderName, question, answer, status: recordStatus, requestedAt, updatedAt, model, error, image, agent } = value;
+            const { version, id, appId, scope: recordScope, user, conversation, senderName, question, answer, status: recordStatus, requestedAt, updatedAt, model, error, image, agent, failure, sendFailure, queuedMs } = value;
             records.push({ version, id, appId, scope: recordScope, user, conversation, question, answer, status: recordStatus, requestedAt, updatedAt, model,
               ...(senderName ? { senderName } : {}), ...(error ? { error } : {}), ...(image ? { image: { sha256: image.sha256, prompt: image.prompt } } : {}),
+              ...(failure ? { failure: projectQQDiagnostic(failure) } : {}), ...(queuedMs !== undefined ? { queuedMs } : {}),
+              ...(sendFailure ? { sendFailure: projectQQDiagnostic(sendFailure) } : {}),
               ...(agent ? { agent: { modelCalls: agent.modelCalls, inputTokens: agent.inputTokens, outputTokens: agent.outputTokens,
-                tools: agent.tools.map(({ name, status, elapsedMs }) => ({ name, status, elapsedMs })) } } : {}) });
+                tools: agent.tools.map(({ name, status, elapsedMs, failure }) => ({ name, status, elapsedMs, ...(failure ? { failure: projectQQDiagnostic(failure) } : {}) })),
+                ...(agent.calls ? { calls: agent.calls.map(projectQQModelCall) } : {}),
+                ...(agent.failures ? { failures: agent.failures.map(projectQQDiagnostic) } : {}) } } : {}) });
           }
         }
       }

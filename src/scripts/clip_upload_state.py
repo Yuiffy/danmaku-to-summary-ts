@@ -31,6 +31,8 @@ def commit_worker_statuses(api, snapshot, ids):
                 continue
             if target.get("status") == "uploaded" and source.get("status") != "uploaded":
                 continue
+            if target.get("uploadCancellation") and source.get("status") != "uploaded":
+                continue
             for field in STATUS_FIELDS:
                 if field in source:
                     target[field] = copy.deepcopy(source[field])

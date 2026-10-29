@@ -1,4 +1,4 @@
-import { ClipStyle, clipStyle, HookPlan, parseSrt, composeTimeline } from './editorialStyle';
+import { ClipStyle, clipStyle, HookPlan, parseSrt, validateHookBudget } from './editorialStyle';
 import { parseModelJson } from '../text/json';
 
 export interface EditorialStylesConfig {
@@ -19,8 +19,9 @@ export function chooseOpManifest(settings: EditorialStylesConfig, random: () => 
     return pool[Math.floor(sample * pool.length)];
 }
 export interface StyleCandidate { id: number; title: string; duration: number; subtitles: ReturnType<typeof parseSrt>;
+    precedingAudience?: Array<{ time: number; text: string }>;
     binding?: Pick<HookPlan, 'baselineMediaSha256' | 'baselineSubtitlesSha256' | 'baselineMetadataSha256'> }
-export interface StyleChoice { id: number; style: ClipStyle; reason: string; plan?: HookPlan }
+export interface StyleChoice { id: number; style: ClipStyle; reason: string; plan?: HookPlan; contextDanmakuAt?: number }
 
 export function styleSelectionPrompt(candidates: StyleCandidate[]): string {
     return [
@@ -29,6 +30,8 @@ export function styleSelectionPrompt(candidates: StyleCandidate[]): string {
         'highlight_first 前置：有可以独立吸引观众、真实完整的原话。2–20秒、1–6段按原时序的不重叠完整字幕句，保留否定、条件和人物归属；随后插入鹿饼OP和正文。',
         'precision 精切：需要内容相关的故事重排、去冗余或画面重点强调；保留剧情、教学步骤和原意。它会走完整精切与审核流程。',
         '时间均为已渲染普通成片的本地秒数。前置只允许完整字幕句边界；连续开头用 repetition:auto 并从0秒选起（即使首句字幕从0.2秒起，前面仅是静音也包含它），这样正文从开头结束处继续、不重复。其他位置保留完整正文。',
+        '重复预告总长不得超过正文15%且最多6秒；短问答不要把答案大段播放两遍。优先保留提问、前情与回答；依赖缺失提问或指代的句子不能独立当前置，选择普通或精切补足前情。',
+        'precedingAudience是片前原弹幕，不是主播台词。若其中有明确对应本片回答的提问，可选precision并附contextDanmakuAt为该条原始time；工具会显示标明来源的前情提要。没有直接对应关系就不填，不能凭空归纳提问或猜测。',
         '只返回JSON {"choices":[{"id":1,"style":"ordinary|highlight_first|precision","reason":"依据", "plan":{"version":1,"highlights":[{"start":0,"end":3}],"repetition":"auto","reason":"看点"}}]}。只有前置需要plan；每个ID恰好一次。',
         'CANDIDATES_JSON ' + JSON.stringify(candidates)
     ].join('\n');
@@ -44,8 +47,12 @@ export function parseStyleChoices(text: string, candidates: StyleCandidate[], fo
         seen.add(row.id);
         const style = clipStyle(row.style);
         if (forced && style !== forced) throw new Error('Editorial choice contradicts configured mode');
-        if (style === 'highlight_first') composeTimeline(candidate.duration, 6, row.plan, candidate.subtitles);
-        return { id: row.id, style, reason: row.reason, ...(style === 'highlight_first' ? { plan: { ...row.plan, ...candidate.binding } } : {}) };
+        if (row.contextDanmakuAt !== undefined && (style !== 'precision' || !Number.isFinite(row.contextDanmakuAt)
+            || candidate.precedingAudience?.filter(c => Math.abs(c.time - row.contextDanmakuAt) < .005).length !== 1))
+            throw new Error('Context must identify one original preceding audience question for precision');
+        if (style === 'highlight_first') validateHookBudget(candidate.duration, row.plan, candidate.subtitles);
+        return { id: row.id, style, reason: row.reason, ...(style === 'highlight_first' ? { plan: { ...row.plan, ...candidate.binding } } : {}),
+            ...(row.contextDanmakuAt === undefined ? {} : { contextDanmakuAt: row.contextDanmakuAt }) };
     });
 }
 
@@ -54,7 +61,7 @@ export async function applyEditorialChoices<T extends Record<string, any>>(artif
     candidate(artifact: T, id: number): Promise<StyleCandidate>;
     request(prompt: string): Promise<string>;
     highlight(artifact: T, plan: HookPlan): Promise<T>;
-    precision(artifact: T, reason: string): Promise<T>;
+    precision(artifact: T, reason: string, contextDanmakuAt?: number): Promise<T>;
     save(artifact: T): Promise<void>;
 }): Promise<T[]> {
     if (!settings.enabled) return artifacts;
@@ -73,7 +80,7 @@ export async function applyEditorialChoices<T extends Record<string, any>>(artif
                 [choice] = parseStyleChoices(await io.request(prompt), [candidate], mode === 'auto' ? undefined : mode);
             }
             if (choice.style === 'highlight_first') current = await io.highlight(baseline, choice.plan!);
-            if (choice.style === 'precision') current = await io.precision(baseline, choice.reason);
+            if (choice.style === 'precision') current = await io.precision(baseline, choice.reason, choice.contextDanmakuAt);
             const completed = choice.style === 'ordinary' || choice.style === 'highlight_first' && Boolean(current.editorialTimeline)
                 || choice.style === 'precision' && current.creativeResult?.status === 'edited';
             current = { ...current, style: completed ? choice.style : 'ordinary', editorialStyle: {

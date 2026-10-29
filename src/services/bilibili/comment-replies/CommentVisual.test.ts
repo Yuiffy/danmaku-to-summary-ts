@@ -83,6 +83,14 @@ test('one existing answer call contains one low-detail image, with explicit time
     .toBeLessThanOrEqual(LIMITS.tokenReservation);
 });
 
+test('realistic image transport size is not incorrectly counted as base64 text tokens', async () => {
+  const { answer, transport, visual } = fixture();
+  visual.mockResolvedValueOnce({ jpeg: Buffer.alloc(40 * 1024), times: [0, 49] });
+  await expect(answer(event.text, signal(), event)).resolves.toContain('红色');
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(transport.mock.calls[0][1].body.length).toBeGreaterThan(40 * 1024);
+});
+
 test('subtitle-sufficient cost questions never call the image adapter', async () => {
   const { answer, visual, transport } = fixture();
   const request = { ...event, text: '这个插件耗token多吗' };

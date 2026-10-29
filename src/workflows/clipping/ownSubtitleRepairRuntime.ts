@@ -55,7 +55,7 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
     if (!subtitleRepairEligible(artifact) || config.mode !== 'auto' || !publicationEnabled(config, artifact.roomId)
         || !config.authorizationNote?.trim() || !Number.isFinite(Date.parse(config.activatedAt || ''))
         || !(Date.parse(artifact.generatedAt) >= Date.parse(config.activatedAt!))
-        || (artifact.qaRequired || required.qaRequired)) return artifact;
+        || (artifact.qaRequired || required.qaRequired) && !artifact.renderedSubtitles) return artifact;
     const previousRepair = artifact.automaticSubtitleRepair;
     const cues = io.parse(artifact.output.srtPath), probes = planSubtitleProbes(artifact, cues, previousRepair ? .25 : 5);
     if (!probes.length) return artifact;

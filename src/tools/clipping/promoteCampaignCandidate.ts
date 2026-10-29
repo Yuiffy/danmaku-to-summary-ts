@@ -24,7 +24,9 @@ export function prepareCampaignCandidate(input: { state: string; id: string; sel
   const { buildSubtitleEvidence } = require(path.join(root, 'src/scripts/clipping/subtitle_evidence.js'));
   const { buildOwnUploadSettings } = require(path.join(root, 'src/scripts/clipping/own_upload_registry.js'));
   const parsed = topic.parseTopicSrt(row.sourceSrtPath), evidence = buildSubtitleEvidence(parsed.segments);
-  const upload = buildOwnUploadSettings(context, { tags: [context.streamerName, '芙娅之魂', '虚拟主播', '直播切片', 'AI切片'].filter(Boolean), ...row.candidate?.copy });
+  const campaignCopy = String(context.roomId) === '25788785' ? {}
+    : { tags: [context.streamerName, '芙娅之魂', '虚拟主播', '直播切片', 'AI切片'].filter(Boolean) };
+  const upload = buildOwnUploadSettings(context, { ...campaignCopy, ...row.candidate?.copy });
   if (context.uploadManifestPath && fs.existsSync(context.uploadManifestPath)) {
     const manifest = JSON.parse(fs.readFileSync(context.uploadManifestPath, 'utf8').replace(/^\uFEFF/u, ''));
     if (String(manifest.roomId || manifest.upload?.roomId) !== String(context.roomId)) throw new Error('原投稿清单的主播身份不匹配');

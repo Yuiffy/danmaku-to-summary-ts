@@ -67,6 +67,42 @@ test.each(['technical', 'meaning', 'missing-check', 'provider'])('a %s failure k
     expect(f.io.inspect).toHaveBeenCalledTimes(1);
 });
 
+test('current required QA receives confirmed negation edits without promoting notes or stale revisions', async () => {
+    const f = fixture();
+    f.evidence.retained = [{ start: 0, end: 10, text: '喜欢这种题材' }];
+    const edit = { authority: 'user', original: '不喜欢', replacement: '喜欢',
+        changes: [{ cue: 1, before: '不喜欢这种题材', after: '喜欢这种题材' }] };
+    f.artifact.renderedSubtitles = { revision: 1, renderedRevision: 1, edits: [edit,
+        { ...edit, authority: 'model' }, { ...edit, changes: [{ ...edit.changes[0], after: '其他文字' }] }],
+        review: { note: '全部通过' } };
+    await reviewOwnRequiredQa(f.artifact, config, f.evidence, f.io);
+    const prompt = (f.io.request as jest.Mock).mock.calls[0][0];
+    expect(JSON.parse(prompt.split('EVIDENCE_JSON ')[1]).userConfirmedSubtitleEdits).toEqual([
+        { cue: 1, original: '不喜欢', replacement: '喜欢', start: 0, end: 10 }
+    ]);
+    expect(prompt).toContain('实际反证及其他缺陷仍独立拒绝');
+    (f.io.request as jest.Mock).mockClear();
+    f.artifact.renderedSubtitles.renderedRevision = 0;
+    await reviewOwnRequiredQa(f.artifact, config, f.evidence, f.io);
+    expect(JSON.parse((f.io.request as jest.Mock).mock.calls[0][0].split('EVIDENCE_JSON ')[1]).userConfirmedSubtitleEdits).toEqual([]);
+});
+
+test('new confirmed wording evidence permits one fresh review of otherwise identical failed media', async () => {
+    const f = fixture();
+    f.evidence.retained = [{ start: 0, end: 10, text: '喜欢这种题材' }];
+    (f.io.request as jest.Mock).mockResolvedValueOnce({ text: JSON.stringify({ approved: false,
+        checks: { ...checks, subtitles: false }, issues: ['核心否定需要核对'] }) });
+    const failed = await reviewOwnRequiredQa(f.artifact, config, f.evidence, f.io);
+    expect(failed.qaResult.status).toBe('failed');
+    failed.renderedSubtitles = { revision: 1, renderedRevision: 1, edits: [{ authority: 'user',
+        original: '不喜欢', replacement: '喜欢', changes: [{ cue: 1, before: '不喜欢这种题材', after: '喜欢这种题材' }] }] };
+    const reviewed = await reviewOwnRequiredQa(failed, config, f.evidence, f.io);
+    expect(reviewed.qaResult.status).toBe('passed');
+    expect(f.io.request).toHaveBeenCalledTimes(2);
+    await expect(reviewOwnRequiredQa(reviewed, config, f.evidence, f.io)).resolves.toBe(reviewed);
+    expect(f.io.request).toHaveBeenCalledTimes(2);
+});
+
 test.each(['source', 'video', 'cover', 'copy'])('changing %s during quality review cannot save approval', async kind => {
     const f = fixture();
     f.io.request = jest.fn(async () => {
