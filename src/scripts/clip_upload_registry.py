@@ -66,7 +66,6 @@ DEFAULT_BILIBILI_ACCOUNT_ID = "412141275"
 CHINA_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 LOCK_OWNER_TOKEN: Optional[str] = None
 
-
 def hidden_subprocess_kwargs() -> Dict[str, Any]:
     """Prevent nested console programs from flashing a window on Windows."""
     if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):

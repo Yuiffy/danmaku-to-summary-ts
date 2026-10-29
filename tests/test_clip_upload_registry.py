@@ -1257,6 +1257,8 @@ class ClipUploadRegistryTests(unittest.TestCase):
             registry, "QUEUE_PATH", fixture["queue_path"]
         ), patch.object(
             registry, "LOCK_PATH", fixture["runtime"] / "worker.lock"
+        ), patch.object(
+            registry, "configured_upload_account", return_value=("fixture-account", {}, "")
         ), patch.object(registry, "acquire_lock", return_value=True), patch.object(
             registry, "release_lock"
         ) as release_lock:
