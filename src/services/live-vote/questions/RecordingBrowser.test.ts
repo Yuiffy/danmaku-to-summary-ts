@@ -5,7 +5,7 @@ import { RecordingEvidence } from './RecordingEvidence';
 import { QuestionCorpus } from './QuestionCorpus';
 import { aggregateEvidence } from './QuestionTools';
 import { runQuestionAgent } from './QuestionAgent';
-import { formatQuestionRecord } from './QuestionPolicy';
+import { formatQuestionRecord, NO_EVIDENCE } from './QuestionPolicy';
 
 let root: string;
 const listing = (overrides = {}) => ({ collection: 'recordings', kind: 'subtitle', date: '2026-10', offset: 0,
@@ -170,4 +170,71 @@ it('refines a truncated overview once before accepting an insufficient verdict',
   expect(result.source?.time).toBe('00:07:00');
   expect(read).toHaveBeenCalledTimes(1);
   expect(observe).toHaveBeenCalledWith(expect.objectContaining({ readFallback: true }));
+});
+
+it('requires a fresh read when the first four recordings do not cover the requested opening samples', async () => {
+  // Recent reconnection fragments and a long song intro can occupy the entire fallback batch.
+  const lyrics = Array.from({ length: 81 }, (_, index) => srt(index, '歌曲片段')).join('\n');
+  for (let day = 4; day <= 7; day++) await fs.writeFile(path.join(root, `2026-10-0${day}.srt`), lyrics);
+  await fs.writeFile(path.join(root, '2026-10-03.srt'), lyrics + '\n' + srt(420, '大家晚上好，能听到吗'));
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([root], signal);
+  const read = jest.spyOn(evidence, 'read'), observe = jest.fn();
+  let calls = 0, candidate = '';
+  const result = await runQuestionAgent({ roomId: '100', uid: '1', question: '统计近7天开场等待时长' }, signal, evidence, async input => {
+    calls++;
+    if (calls === 1) return { content: null, tool_calls: [{ id: 'heads', type: 'function', function: {
+      name: 'list_recordings', arguments: JSON.stringify(listing({ cuesPerRecording: 1 })) } }] };
+    const data = JSON.parse(input.messages.filter(message => message.content?.includes('untrustedRecordingEvidence')).at(-1)!.content!).untrustedRecordingEvidence;
+    if (calls === 2) {
+      candidate = data.recordings.find((entry: { date: string }) => entry.date === '2026-10-03').recordingId;
+      return { content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) };
+    }
+    if (calls === 3) {
+      expect(data.recordings).toHaveLength(4);
+      expect(data.recordings.every((entry: { preview: Array<{ excerpt: string }> }) => entry.preview.every(cue => cue.excerpt === '歌曲片段'))).toBe(true);
+      return { content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) };
+    }
+    if (calls === 4) {
+      expect(input.toolChoice).toBe('required');
+      expect(input.messages.at(-1)?.content).toContain('续读');
+      return { content: null, tool_calls: [{ id: 'opening', type: 'function', function: {
+        name: 'read_recordings', arguments: JSON.stringify(reading([candidate], { offset: 80 })) } }] };
+    }
+    const cue = data.recordings[0].preview.find((hit: { excerpt: string }) => hit.excerpt.includes('晚上好'));
+    return { content: JSON.stringify({ action: 'answer', certainty: 'supported', rankedEvidenceIds: [cue.evidenceId], evidenceIds: [cue.evidenceId],
+      answer: '只核实一个样本，录制约7分钟出现开场问候；其余场次未核实，无法统计完整7天。', shortAnswer: '已查1段约7分钟，7天统计不全。' }) };
+  }, observe);
+  expect(result.source?.time).toBe('00:07:00');
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(calls).toBe(5);
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ validationIssue: 'incomplete_browse_needs_refinement' }));
+  expect(observe).toHaveBeenCalledWith(expect.objectContaining({ phase: 'read_recordings', browse: {
+    total: 4, returned: 4, cues: 320, unfinished: 4, nextOffset: null
+  } }));
+});
+
+it.each([false, true])('bounds browsing recovery and skips it when all previews have been read (truncated=%s)', async truncated => {
+  const content = Array.from({ length: truncated ? 200 : 2 }, (_, index) => srt(index, '歌曲片段')).join('\n');
+  await fs.writeFile(path.join(root, '2026-10-03.srt'), content);
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([root], signal);
+  const read = jest.spyOn(evidence, 'read'), observe = jest.fn();
+  let calls = 0, candidate = '';
+  const result = await runQuestionAgent({ roomId: '100', uid: '1', question: '这场开头何时开始聊天' }, signal, evidence, async input => {
+    if (++calls === 1) return { content: null, tool_calls: [{ id: 'heads', type: 'function', function: {
+      name: 'list_recordings', arguments: JSON.stringify(listing({ date: '2026-10-03', cuesPerRecording: 1 })) } }] };
+    const data = JSON.parse(input.messages.filter(message => message.content?.includes('untrustedRecordingEvidence')).at(-1)!.content!).untrustedRecordingEvidence;
+    candidate ||= data.recordings[0].recordingId;
+    if (calls === 4) {
+      expect(input.toolChoice).toBe('required');
+      return { content: null, tool_calls: [{ id: 'continue', type: 'function', function: {
+        name: 'read_recordings', arguments: JSON.stringify(reading([candidate], { offset: 80 })) } }] };
+    }
+    return { content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) };
+  }, observe);
+  expect(result.answer).toBe(NO_EVIDENCE);
+  expect(calls).toBe(truncated ? 5 : 3);
+  expect(read).toHaveBeenCalledTimes(truncated ? 2 : 1);
+  expect(observe.mock.calls.filter(([step]) => step.validationIssue === 'incomplete_browse_needs_refinement')).toHaveLength(truncated ? 1 : 0);
+  expect(JSON.stringify(observe.mock.calls)).not.toContain('歌曲片段');
+  expect(JSON.stringify(observe.mock.calls)).not.toContain(root);
 });
