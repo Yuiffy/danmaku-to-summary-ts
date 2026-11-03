@@ -886,6 +886,27 @@ async function generateTextWithTuZi(prompt, options = {}) {
     }
 }
 
+// zai/deepSeek 兜底生成器拆分至 text/openai_compatible_fallback.js (架构行数预算)
+const { generateTextWithZai, generateTextWithDeepSeek, runDaiYuFallbackChain } = require('./text/openai_compatible_fallback');
+
+// 注入共享工具给兜底模块 (函数声明有提升, 此处引用安全)
+require('./text/openai_compatible_fallback').bindDeps({
+    createTextAttemptState,
+    recordFailedTextAttempt,
+    buildTextModelFailureError,
+    createGenerationResult,
+    buildOpenAITextMessages,
+    getTuZiFinishReason,
+    isIncompleteTextState,
+    resolveTextRequestTimeout,
+    assertGeneratedOutput,
+    unwrapSharedLiveOutput,
+    logAiUsage,
+    generateTextWithTuZi,
+    normalizeDaiYuApiMode
+});
+
+
 // 调用daiYu API生成文本（OpenAI兼容，支持thinking）
 async function generateTextWithDaiYu(prompt, options = {}) {
     ({prompt,options}=prepareSharedLiveOutput(prompt,options));
@@ -1169,43 +1190,14 @@ async function generateTextWithDaiYu(prompt, options = {}) {
 
             if (attempt === modelSequence.length - 1) {
                 const daiYuFailure = buildTextModelFailureError(attempts, 'daiYu');
-                const fallbackProvider = String(daiYuConfig.fallbackProvider || '').trim().toLowerCase();
-                if (options.allowProviderFallback !== false && fallbackProvider === 'tuzi' && configLoader.isTuZiTextConfigured()
-                    && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
-                    const fallbackModel = String(
-                        daiYuConfig.fallbackProviderModel || DAIYU_PRIMARY_MODEL
-                    ).trim() || DAIYU_PRIMARY_MODEL;
-                    const fallbackApiMode = normalizeDaiYuApiMode(
-                        daiYuConfig.fallbackProviderApiMode
-                        || config.ai?.text?.tuZi?.apiMode
-                    );
-                    console.warn(
-                        `⚠️  daiYu全部候选失败，改走 tuZi/${fallbackModel} `
-                        + `${fallbackApiMode} 兜底`
-                    );
-                    try {
-                        return await generateTextWithTuZi(prompt, {
-                            ...options,
-                            fallback: true,
-                            attempts,
-                            primaryModel: fallbackModel,
-                            reasoningEffort,
-                            fallbackModelsEnabled: false,
-                            wordLimit,
-                            timeoutMs: options.timeoutMs,
-                            maxTokens: options.maxTokens,
-                            apiMode: fallbackApiMode
-                        });
-                    } catch (fallbackError) {
-                        const failure = new Error(
-                            `${daiYuFailure.message} | tuZi/${fallbackModel} 兜底失败: ${fallbackError.message}`
-                        );
-                        failure.attempts = fallbackError.attempts || attempts;
-                        throw failure;
-                    }
+                if (options.allowProviderFallback !== false && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
+                    return await runDaiYuFallbackChain({
+                        prompt, options, daiYuFailure, attempts,
+                        daiYuConfig, reasoningEffort, wordLimit, config
+                    });
                 }
                 throw daiYuFailure;
-            }
+                }
 
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
@@ -1903,6 +1895,8 @@ module.exports = {
     inspectGeneratedReply,
     generateTextWithGemini,
     generateTextWithTuZi,
+    generateTextWithZai,
+    generateTextWithDeepSeek,
     generateTextWithDaiYu,
     getPromptTokenUsage,
     getCompletionTokenUsage,

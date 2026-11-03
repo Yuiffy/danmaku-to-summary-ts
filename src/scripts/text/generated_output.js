@@ -64,6 +64,8 @@ function assertGeneratedOutput(text, options = {}, data = {}, context = {}) {
     throw error;
 }
 function stageOutputContract(phase) {
+    if (/^(?:curation|peer-cli)-assess-/.test(phase)) return { key: 'worthPublishing', type: 'boolean' };
+    if (/^(?:curation|peer-cli)-compare-/.test(phase)) return { key: 'sameEvent', type: 'boolean' };
     if (/^precision-experiment-selection/.test(phase)) return { key: 'selected', type: 'records' };
     if (/^edit-/.test(phase)) return { key: 'removeEvidenceIds', type: 'strings' };
     if (/^packaging-/.test(phase)) return { key: 'variants', type: 'records' };

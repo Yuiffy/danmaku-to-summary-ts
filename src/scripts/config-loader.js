@@ -3,7 +3,7 @@ const path = require('path');
 const Joi = require('joi');
 const configLayers = require('./workflow-runtime').loadWorkflow('config/layers');
 const findSecretsPath = () => configLayers.findSecretsPath();
-const EditorialStylesSchema = Joi.object({ enabled: Joi.boolean(),
+const EditorialStylesSchema = Joi.object({ enabled: Joi.boolean(), requirePrecision: Joi.boolean(),
     mode: Joi.string().valid('auto', 'ordinary', 'highlight_first', 'precision'), opManifest: Joi.string(),
     opManifests: Joi.array().items(Joi.string().trim().min(1)).min(1).unique() });
 
@@ -73,6 +73,16 @@ const AISchema = Joi.object({
             fallbackModels: Joi.array().items(Joi.string()).default(['gemini-3-flash-preview']),
             temperature: Joi.number().default(0.7),
             maxTokens: Joi.number().default(100000),
+            proxy: Joi.string().allow('', null).default('')
+        }).default(),
+        zai: Joi.object({
+            retry: TextRetrySchema.optional(),
+            enabled: Joi.boolean().default(true),
+            apiKey: Joi.string().allow('').default(''),
+            baseUrl: Joi.string().default('https://open.bigmodel.cn/api/paas/v4'),
+            model: Joi.string().default('glm-5.3-flash'),
+            temperature: Joi.number().default(0.1),
+            maxTokens: Joi.number().default(2000),
             proxy: Joi.string().allow('', null).default('')
         }).default(),
         daiYu: Joi.object({
@@ -158,6 +168,13 @@ const AISchema = Joi.object({
 }).default();
 
 const ConfigSchema = Joi.object({
+    clipCuration: Joi.object({
+        enabled: Joi.boolean(), roomIds: Joi.array().items(Joi.string()).min(1).unique(), includeKeywordTopics: Joi.boolean(),
+        minScore: Joi.number().integer().min(0).max(100), maxStandalone: Joi.number().integer().min(1).max(5),
+        maxCandidates: Joi.number().integer().min(1).max(100), maxSearchResults: Joi.number().integer().min(1).max(5),
+        supportActions: Joi.array().items(Joi.string().valid('like', 'favorite', 'repost')).unique(), favoriteFolderId: Joi.string().pattern(/^[1-9]\d*$/u),
+        maxSupportPerDay: Joi.number().integer().min(0).max(20), supportIntervalSeconds: Joi.number().integer().min(30).max(86400)
+    }),
     app: Joi.object({
         name: Joi.string().default('danmaku-to-summary'),
         version: Joi.string().default('0.2.0'),
@@ -332,6 +349,9 @@ const ConfigSchema = Joi.object({
             collection: Joi.object({ seasonId: Joi.number().integer().positive().allow(null), sectionId: Joi.number().integer().positive().allow(null) }) })
     }).optional(),
     streamGameClips: Joi.object({
+        otherGames: Joi.object({ enabled: Joi.boolean().strict().default(false), tid: Joi.number().integer().positive(),
+            tags: Joi.array().items(Joi.string()), collection: Joi.object({ seasonId: Joi.number().integer().positive().required(),
+                sectionId: Joi.number().integer().positive().required() }).required() }).optional(),
         enabled: Joi.boolean().default(false),
         roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).min(1).required(),
         outputDirName: Joi.string().pattern(/^[^\\/]+$/),
@@ -343,11 +363,16 @@ const ConfigSchema = Joi.object({
         requireOriginalStreamCopy: Joi.boolean().strict().default(false),
         autoUpload: Joi.boolean().default(false), authorizationNote: Joi.string().allow(''),
         ai: Joi.object({ model: Joi.string(), boundaryEvidenceMethod: Joi.string().valid('native_audio', 'independent_local_asr'),
-            boundaryModel: Joi.string(), boundaryProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu'),
-            boundaryApiMode: Joi.string().valid('gemini_native', 'openai_chat'), frameModel: Joi.string(), frameProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu'),
+            boundaryModel: Joi.string(), boundaryProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai'),
+            boundaryApiMode: Joi.string().valid('gemini_native', 'openai_chat'), frameModel: Joi.string(), frameProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai'),
             frameApiMode: Joi.string().valid('gemini_native', 'openai_chat'), timeoutMs: Joi.number().integer().positive(), maxTokens: Joi.number().integer().positive() }),
-        visual: Joi.object({ provider: Joi.string().valid('tuZi', 'gemini', 'daiYu'), apiMode: Joi.string().valid('gemini_native', 'openai_chat'), model: Joi.string(),
-            sampleSeconds: Joi.number().min(30).max(120), timeoutMs: Joi.number().integer().positive() }),
+        visual: Joi.object({ provider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai'), apiMode: Joi.string().valid('gemini_native', 'openai_chat'), model: Joi.string(),
+            sampleSeconds: Joi.number().min(30).max(120), aiSampleSeconds: Joi.number().positive(), aiOtherSampleSeconds: Joi.number().positive(),
+            aiBoundaryPaddingSeconds: Joi.number().min(0), maxFramesPerBatch: Joi.number().integer().min(1).max(24), timeoutMs: Joi.number().integer().positive(),
+            maxTokens: Joi.number().integer().positive(), reasoningEffort: Joi.string().valid('low', 'high', 'max'),
+            coverageGuard: Joi.string().valid('off', 'warn', 'fail'), coverageMinDroppedMinutes: Joi.number().min(0),
+            coverageDroppedRatio: Joi.number().min(0).max(1),
+            localEvidence: Joi.object({ sceneCutThreshold: Joi.number().min(0).max(1), deathThreshold: Joi.number().min(0).max(1), deathMinGapSeconds: Joi.number().positive() }) }),
         games: Joi.array().items(Joi.object({ id: Joi.string().pattern(/^[a-z0-9-]+$/).required(), name: Joi.string().required(),
             aliases: Joi.array().items(Joi.string()).min(1).required(), tid: Joi.number().integer().positive(), tags: Joi.array().items(Joi.string()),
             collection: Joi.object({ seasonId: Joi.number().integer().positive().allow(null), sectionId: Joi.number().integer().positive().allow(null) }) })).min(1).required()
@@ -365,6 +390,7 @@ const ConfigSchema = Joi.object({
             minScore: Joi.number().min(0).max(100),
             maxStandalone: Joi.number().integer().min(1).max(100),
             standoutScore: Joi.number().min(0).max(100),
+            hardLimit: Joi.boolean(),
             bundles: Joi.object({ enabled: Joi.boolean(), minScore: Joi.number().min(0).max(100),
                 protectScore: Joi.number().min(0).max(100), maxGroups: Joi.number().integer().min(1).max(5),
                 maxMembers: Joi.number().integer().min(2).max(4), maxSeconds: Joi.number().min(30).max(900),
@@ -678,6 +704,37 @@ function isDaiYuTextConfigured() {
 }
 
 /**
+ * 获取zai(智谱GLM) API Key (兜底文本生成用)
+ */
+function getZaiTextApiKey() {
+    return getByPath('ai.text.zai.apiKey') ||
+           getByPath('zai.apiKey') ||
+           '';
+}
+
+function isZaiTextConfigured() {
+    const apiKey = getZaiTextApiKey();
+    return apiKey && apiKey.trim() !== '';
+}
+
+/**
+ * 获取DeepSeek API Key (兜底文本生成用)
+ */
+function getDeepSeekTextApiKey() {
+    return getByPath('ai.text.deepSeek.apiKey') ||
+           getByPath('deepSeek.apiKey') ||
+           // deepSeek 兑底默认走 sub2api(daiYu)时复用其 key
+           getByPath('ai.text.daiYu.apiKey') ||
+           getByPath('providers.daiYu.apiKey') ||
+           '';
+}
+
+function isDeepSeekTextConfigured() {
+    const apiKey = getDeepSeekTextApiKey();
+    return apiKey && apiKey.trim() !== '';
+}
+
+/**
  * 获取主播和粉丝名称
  */
 function getNames(roomId) {
@@ -745,6 +802,10 @@ module.exports = {
     isTuZiConfigured,
     isTuZiTextConfigured,
     isDaiYuTextConfigured,
+    getZaiTextApiKey,
+    isZaiTextConfigured,
+    getDeepSeekTextApiKey,
+    isDeepSeekTextConfigured,
     getNames,
     getWordLimit,
     clearCache,

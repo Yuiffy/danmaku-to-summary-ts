@@ -3,17 +3,73 @@
   "defaultEnvironment": "development",
   "baseFile": "default.json",
   "productionFile": "production.json",
-  "productionEnvironments": ["production", "automation"],
+  "productionEnvironments": [
+    "production",
+    "automation"
+  ],
   "secretFile": "secret.json",
   "secretMappings": [
-    { "sources": ["gemini.apiKey"], "target": "ai.text.gemini.apiKey" },
-    { "sources": ["tuZi.apiKey"], "target": "ai.comic.tuZi.apiKey" },
-    { "sources": ["tuZi.textApiKey", "tuZi.apiKey"], "target": "ai.text.tuZi.apiKey" },
-    { "sources": ["bilibili"], "target": "bilibili" },
-    { "sources": ["wechatWork"], "target": "wechatWork" },
-    { "sources": ["tuZiBalance"], "target": "ai.tuZiBalance" },
-    { "sources": ["providers"], "target": "ai.providers" },
-    { "sources": ["ai.providers"], "target": "ai.providers" }
+    {
+      "sources": [
+        "gemini.apiKey"
+      ],
+      "target": "ai.text.gemini.apiKey"
+    },
+    {
+      "sources": [
+        "zai.apiKey"
+      ],
+      "target": "ai.text.zai.apiKey"
+    },
+    {
+      "sources": [
+        "deepSeek.apiKey"
+      ],
+      "target": "ai.text.deepSeek.apiKey"
+    },
+    {
+      "sources": [
+        "tuZi.apiKey"
+      ],
+      "target": "ai.comic.tuZi.apiKey"
+    },
+    {
+      "sources": [
+        "tuZi.textApiKey",
+        "tuZi.apiKey"
+      ],
+      "target": "ai.text.tuZi.apiKey"
+    },
+    {
+      "sources": [
+        "bilibili"
+      ],
+      "target": "bilibili"
+    },
+    {
+      "sources": [
+        "wechatWork"
+      ],
+      "target": "wechatWork"
+    },
+    {
+      "sources": [
+        "tuZiBalance"
+      ],
+      "target": "ai.tuZiBalance"
+    },
+    {
+      "sources": [
+        "providers"
+      ],
+      "target": "ai.providers"
+    },
+    {
+      "sources": [
+        "ai.providers"
+      ],
+      "target": "ai.providers"
+    }
   ],
   "daiYuTextAlias": {
     "provider": "ai.providers.daiYu",

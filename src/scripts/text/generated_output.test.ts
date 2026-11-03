@@ -1,6 +1,18 @@
 export {};
 const fs = require('fs'), os = require('os'), path = require('path');
-const { classifyGeneratedOutput, assertGeneratedOutput } = require('./generated_output');
+const { classifyGeneratedOutput, assertGeneratedOutput, stageOutputContract } = require('./generated_output');
+
+test.each(['curation', 'peer-cli'])('peer %s stages accept both positive and negative domain decisions', prefix => {
+    for (const [phase, key] of [['assess-1', 'worthPublishing'], ['compare-1-BV1234567890', 'sameEvent']]) {
+        const contract = stageOutputContract(`${prefix}-${phase}`);
+        expect(contract).toEqual({ key, type: 'boolean' });
+        const options = { structuredOutputKey: contract.key, structuredOutputType: contract.type };
+        for (const value of [true, false]) expect(classifyGeneratedOutput(JSON.stringify({ [key]: value,
+            reason: '明确的编辑判断', score: 90 }), options).rejected).toBe(false);
+        expect(classifyGeneratedOutput(JSON.stringify({ [key]: 'true', reason: '错误结构' }), options).rejected).toBe(true);
+        expect(classifyGeneratedOutput(JSON.stringify({ refusal: 'no', [key]: false }), options).rejected).toBe(true);
+    }
+});
 test('structured quoted and internal text cannot trigger a whole-response refusal match', () => {
     const text = JSON.stringify({ clips: [{ title: '聊到提示词', reason: '讨论 system prompt 与 Anthropic', evidenceCueIds: ['G1'] }] });
     expect(classifyGeneratedOutput(text, { structuredOutputKey: 'clips' })).toMatchObject({ rejected: false, reason: 'keywords_inside_structured_data' });

@@ -17,6 +17,18 @@
   "pollIntervalMs": 30000,
   "videoVision": true,
   "agentTools": true,
+  "images": {
+    "enabled": true,
+    "model": "gpt-image-2.5-sunburst",
+    "quality": "high",
+    "timeoutMs": 900000,
+    "registryConfigPath": "config/production.json",
+    "trustedUids": ["1954091502", "14279"],
+    "trustedHourlyLimit": 20,
+    "trustedDailyLimit": 100,
+    "otherUserDailyLimit": 1,
+    "otherGlobalDailyLimit": 100
+  },
   "projectSources": [
     { "id": "shikamochi-clipping", "label": "鹿饼切片能力与技术评估边界", "kind": "guide",
       "path": "docs/clipping-capabilities.md", "section": "## 公开能力摘要",

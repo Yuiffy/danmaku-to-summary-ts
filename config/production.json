@@ -205,6 +205,15 @@
         "maxTokens": 100000,
         "proxy": "http://127.0.0.1:7890"
       },
+      "zai": {
+        "enabled": true,
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-5.3-flash",
+        "temperature": 0.1,
+        "maxTokens": 2000,
+        "proxy": null,
+        "textMaxTokens": 8192
+      },
       "daiYu": {
         "enabled": true,
         "baseUrl": "http://localhost:8080",
@@ -222,7 +231,26 @@
         },
         "temperature": 0.7,
         "maxTokens": 100000,
-        "proxy": null
+        "proxy": null,
+        "fallbackChain": [
+          {
+            "provider": "zai",
+            "model": "glm-5.3-flash"
+          },
+          {
+            "provider": "deepSeek",
+            "model": "deepseek-flash"
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-6-luna",
+            "apiMode": "responses"
+          }
+        ]
+      },
+      "deepSeek": {
+        "baseUrl": "https://api.deepseek.com/v1",
+        "model": "deepseek-flash"
       }
     },
     "comic": {
@@ -1718,7 +1746,8 @@
   "clipTopics": {
     "editorialStyles": {
       "enabled": true,
-      "mode": "auto",
+      "mode": "precision",
+      "requirePrecision": true,
       "opManifests": [
         "public/branding/shikamochi/OP-sad-v1.json",
         "public/branding/shikamochi/OP-watch-v1.json"
@@ -1830,8 +1859,18 @@
         {
           "id": "sui-accompany-pig-title",
           "keyword": "岁己",
-          "targetNames": ["岁己", "小岁", "饼干岁", "SUI"],
-          "forms": ["陪你这个猪", "配你这个猪", "陪你这只猪", "配你这只猪"]
+          "targetNames": [
+            "岁己",
+            "小岁",
+            "饼干岁",
+            "SUI"
+          ],
+          "forms": [
+            "陪你这个猪",
+            "配你这个猪",
+            "陪你这只猪",
+            "配你这只猪"
+          ]
         }
       ]
     },
@@ -1900,6 +1939,7 @@
     "automaticPublication": {
       "mode": "auto",
       "scope": "configured_keywords",
+      "requirePrecision": true,
       "policyVersion": "topic-v1",
       "activatedAt": "2026-10-04T01:17:26Z",
       "authorizationNote": "用户授权关键词切片通过最终审核后自动入队投稿；沿用现有关键词与忽略房间配置，仅在现有企微列表汇总状态，不单发成功或BV通知。",
@@ -1929,7 +1969,36 @@
       "frameApiMode": "openai_chat",
       "frameModel": "gpt-6.1-sol"
     },
-    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。用户要求不降码率，超限切短，保留原视频与音频码流。",
+    "visual": {
+      "provider": "zai",
+      "apiMode": "openai_chat",
+      "model": "glm-5.3-flash",
+      "sampleSeconds": 120,
+      "aiSampleSeconds": 300,
+      "aiOtherSampleSeconds": 600,
+      "aiBoundaryPaddingSeconds": 240,
+      "maxFramesPerBatch": 4,
+      "maxTokens": 8000,
+      "reasoningEffort": "low",
+      "coverageGuard": "warn",
+      "coverageMinDroppedMinutes": 20,
+      "coverageDroppedRatio": 0.15
+    },
+    "otherGames": {
+      "enabled": true,
+      "tid": 17,
+      "tags": [
+        "岁己",
+        "小岁",
+        "游戏实况",
+        "虚拟主播"
+      ],
+      "collection": {
+        "seasonId": 9446037,
+        "sectionId": 10578445
+      }
+    },
+    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。用户要求不降码率，超限切短，保留原视频与音频码流。用户于 2026-11-02 要求把 2026-11-01 场次的《影之刃零》游戏切完成后一并投稿；按本场完整上下文概要识别出的其他游戏沿用岁己游戏合集，投稿前仍逐次人工确认。",
     "games": [
       {
         "id": "elden-ring",
@@ -2008,7 +2077,8 @@
   "ownStreamClips": {
     "editorialStyles": {
       "enabled": true,
-      "mode": "auto",
+      "mode": "precision",
+      "requirePrecision": true,
       "opManifests": [
         "public/branding/shikamochi/OP-sad-v1.json",
         "public/branding/shikamochi/OP-watch-v1.json"
@@ -2119,6 +2189,7 @@
       "roomIds": [
         "25788785"
       ],
+      "requirePrecision": true,
       "policyVersion": "own-stream-v1",
       "activatedAt": "2026-10-02T19:05:41Z",
       "authorizationNote": "用户授权普通岁己切片审核明确通过后自动入队投稿；仅在现有企微列表汇总状态，不单发成功或BV通知。",
@@ -2242,9 +2313,10 @@
       "roomIds": [
         "25788785"
       ],
-      "minScore": 75,
-      "maxStandalone": 18,
+      "minScore": 90,
+      "maxStandalone": 5,
       "standoutScore": 92,
+      "hardLimit": true,
       "bundles": {
         "enabled": false,
         "minScore": 70,

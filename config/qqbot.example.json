@@ -12,7 +12,41 @@
     "dailyLimit": 300,
     "userDailyLimit": 30,
     "timeoutMs": 900000,
-    "registryConfigPath": "config/production.json"
+    "registryConfigPath": "config/production.json",
+    "characters": [
+      {
+        "name": "岁己·小红帽",
+        "aliases": ["小红帽", "岁己小红帽", "小红帽岁己"],
+        "baseCharacter": "岁己SUI",
+        "skin": "小红帽",
+        "referenceImage": "public/reference_images/岁己小红帽立绘.png",
+        "description": "岁己的小红帽皮肤，白发红瞳、双马尾、红色贝雷帽、白色露肩上衣、深色格纹短裙，具体外观以参考图为准。"
+      },
+      {
+        "name": "岁己·小花帽",
+        "aliases": ["小花帽", "岁己小花帽", "小花帽岁己"],
+        "baseCharacter": "岁己SUI",
+        "skin": "小花帽",
+        "referenceImage": "public/reference_images/岁己小花帽立绘.png",
+        "description": "岁己的小花帽皮肤，白色长发红瞳、粉色花朵发饰、白色蓝边连衣裙与浅色外套、白色小翅膀和细光环，具体外观以参考图为准。"
+      },
+      {
+        "name": "岁己·小蓝帽",
+        "aliases": ["小蓝帽", "岁己小蓝帽", "小蓝帽岁己"],
+        "baseCharacter": "岁己SUI",
+        "skin": "小蓝帽",
+        "referenceImage": "public/reference_images/岁己小蓝帽三视图.png",
+        "description": "岁己的小蓝帽皮肤，白发红瞳双马尾、深蓝色贝雷帽、深蓝短外套与白色连衣裙、金色饰链、白色长靴。参考图是同一套皮肤的三视图，生图只画用户要求的画面，不照搬三视图排版。"
+      },
+      {
+        "name": "岁己·小猫帽",
+        "aliases": ["小猫帽", "岁己小猫帽", "小猫帽岁己"],
+        "baseCharacter": "岁己SUI",
+        "skin": "小猫帽",
+        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
+        "description": "岁己的小猫帽皮肤，白发红瞳双马尾、黑紫色猫耳帽、紫色外套与黑色内搭、黑色厚底长靴和蝙蝠小翅膀；参考图的饼干岁只在用户要求时加入。"
+      }
+    ]
   },
   "knowledge": {
     "runtimeConfigPath": "data/runtime/live-vote.json",

@@ -260,6 +260,12 @@ export interface AsrGpuLowImpactConfig {
   model_load_poll_s?: number;
 }
 
+export interface AsrGpuUltraLowImpactConfig extends AsrGpuLowImpactConfig {
+  max_external_util_pct?: number;
+  max_memory_pct?: number;
+  min_free_mb?: number;
+}
+
 export interface AsrResourcePeakMonitorConfig {
   enabled?: boolean;
   sample_interval_s?: number;
@@ -278,6 +284,7 @@ export interface AsrGpuThrottleConfig {
   hard_wait?: boolean;
   soft_gpu?: AsrGpuSoftPressureConfig;
   low_impact?: AsrGpuLowImpactConfig;
+  ultra_low_impact?: AsrGpuUltraLowImpactConfig;
 }
 
 export interface AsrEmotionAnalysisConfig {
@@ -576,7 +583,7 @@ export interface ImageGenerationConfig {
   export interface TextAIConfig {
     retry?: TextRetryConfig;
   enabled: boolean;
-  provider: 'gemini' | 'openai' | 'claude' | 'daiYu' | 'tuZi';
+  provider: 'gemini' | 'openai' | 'claude' | 'daiYu' | 'tuZi' | 'zai';
   /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
   sharedPromptCache?: {
     enabled?: boolean;
@@ -587,11 +594,19 @@ export interface ImageGenerationConfig {
   };
   gemini?: GeminiConfig;
   tuZi?: TuZiConfig;
+  zai?: TuZiConfig;
+  deepSeek?: TuZiConfig;
   daiYu?: TuZiConfig & {
     apiMode?: 'chatCompletions' | 'responses';
-    fallbackProvider?: 'tuZi';
+    fallbackProvider?: 'tuZi' | 'zai' | 'deepSeek';
     fallbackProviderModel?: string;
     fallbackProviderApiMode?: 'chatCompletions' | 'responses';
+    /** daiYu 全部候选失败后的兑底链(存在时优先于 fallbackProvider) */
+    fallbackChain?: Array<{
+      provider: 'tuZi' | 'zai' | 'deepSeek';
+      model?: string;
+      apiMode?: 'chatCompletions' | 'responses';
+    }>;
     thinking?: {
       enabled?: boolean;
       budgetTokens?: number;
@@ -972,7 +987,10 @@ export interface StreamGameClipsConfig {
     boundaryModel?: string; boundaryProvider?: 'tuZi' | 'gemini' | 'daiYu';
     boundaryApiMode?: 'gemini_native' | 'openai_chat'; frameModel?: string; frameProvider?: 'tuZi' | 'gemini' | 'daiYu';
     frameApiMode?: 'gemini_native' | 'openai_chat'; timeoutMs?: number; maxTokens?: number };
-  visual?: { provider?: 'tuZi' | 'gemini' | 'daiYu'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; sampleSeconds?: number; timeoutMs?: number };
+  visual?: { provider?: 'tuZi' | 'gemini' | 'daiYu'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string;
+    sampleSeconds?: number; aiSampleSeconds?: number; aiOtherSampleSeconds?: number; aiBoundaryPaddingSeconds?: number;
+    maxFramesPerBatch?: number; timeoutMs?: number;
+    localEvidence?: { sceneCutThreshold?: number; deathThreshold?: number; deathMinGapSeconds?: number } };
   games: Array<{ id: string; name: string; aliases: string[]; tid?: number; tags?: string[];
     collection?: { seasonId?: number | null; sectionId?: number | null } }>;
 }

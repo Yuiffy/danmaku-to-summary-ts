@@ -444,6 +444,13 @@ export class ConfigValidator {
               emotion_batch_size_s: 30,
               yield_s: 0.2,
             },
+            ultra_low_impact: {
+              batch_size_s: 30,
+              yield_s: 1.0,
+              max_external_util_pct: 98,
+              max_memory_pct: 85,
+              min_free_mb: 2048,
+            },
           },
           cpu_throttle: {
             enabled: false,

@@ -10,6 +10,7 @@
   "main": "dist/app/main.js",
   "types": "dist/app/main.d.ts",
   "scripts": {
+    "clips:peers": "node -r ts-node/register src/tools/clipping/peerCoverage.ts",
     "dev": "node dist/app/main.js --port 12522 --host 0.0.0.0",
     "build": "tsc --project tsconfig.build.json",
     "dev:next": "next dev --hostname 127.0.0.1",
@@ -149,6 +150,7 @@
     "inversify": "^6.0.2",
     "joi": "^17.12.0",
     "moment": "^2.30.1",
+    "mpegts.js": "^1.8.2",
     "multer": "^2.0.2",
     "next": "14.2.15",
     "node-fetch": "^2.7.0",

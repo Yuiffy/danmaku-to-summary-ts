@@ -754,7 +754,14 @@
         "wait_s": 20,
         "max_wait_s": 0,
         "pmon_sample_count": 2,
-        "segment_paraformer": true
+        "segment_paraformer": true,
+        "ultra_low_impact": {
+          "batch_size_s": 30,
+          "yield_s": 1.0,
+          "max_external_util_pct": 98,
+          "max_memory_pct": 85,
+          "min_free_mb": 2048
+        }
       },
       "enable_speaker": true,
       "preset_spk_num": 5,
@@ -1671,7 +1678,7 @@
   },
   "clipTopics": {
     "memeRecall": { "enabled": false, "contextSeconds": 60, "rules": [] },
-    "editorialStyles": { "enabled": false, "mode": "auto", "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
+    "editorialStyles": { "enabled": false, "mode": "precision", "requirePrecision": true, "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
     "enabled": false,
     "mode": "local_review",
     "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
@@ -1791,8 +1798,26 @@
       "collection": { "seasonId": null, "sectionId": null }
     }
   },
+  "clipCuration": {
+    "enabled": false,
+    "roomIds": [
+      "25788785"
+    ],
+    "includeKeywordTopics": true,
+    "minScore": 90,
+    "maxStandalone": 5,
+    "maxCandidates": 50,
+    "maxSearchResults": 3,
+    "supportActions": [
+      "like",
+      "favorite",
+      "repost"
+    ],
+    "maxSupportPerDay": 10,
+    "supportIntervalSeconds": 60
+  },
   "ownStreamClips": {
-    "editorialStyles": { "enabled": false, "mode": "auto", "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
+    "editorialStyles": { "enabled": false, "mode": "precision", "requirePrecision": true, "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
     "campaigns": [
       {
         "id": "fuya-pilgrimage-2026-10",
@@ -1925,9 +1950,10 @@
     "publicationPolicy": {
       "mode": "curated",
       "roomIds": ["25788785"],
-      "minScore": 75,
-      "maxStandalone": 18,
+      "minScore": 90,
+      "maxStandalone": 5,
       "standoutScore": 92,
+      "hardLimit": true,
       "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }
     },
     "chunkSeconds": 2700,
@@ -1977,7 +2003,7 @@
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
       "maxCandidateDanmakuLines": 14,
-      "fallbackToLocalRules": true
+      "fallbackToLocalRules": false
     },
     "parallel": {
       "enabled": false,
