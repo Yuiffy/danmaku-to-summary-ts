@@ -2,22 +2,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { buildWorkflowRelease } from './buildWorkflowRelease';
+import { workflowEntries } from './workflowEntries';
 
 test('repeat builds and failed builds clean their staging files without activating or damaging a candidate', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-builder-'));
   try {
-    const entries = ['clipping/radioDanmaku', 'clipping/speakerIdentity', 'clipping/stage', 'clipping/editPlan', 'clipping/enhancement', 'clipping/creativeQa', 'clipping/experiment',
-      'clipping/activityStages', 'clipping/activityRecovery', 'clipping/activityWatchContext', 'clipping/activityAudio', 'clipping/activityTitles', 'clipping/activityPublication', 'clipping/ownTimingRecovery',
-      'clipping/watchBlackPolicy', 'clipping/watchBlackRuntime', 'clipping/watchMovieCadence', 'clipping/songResearchRuntime', 'clipping/activityNativeSegments', 'clipping/watchPublicNames',
-      'clipping/reviewDigest', 'clipping/reviewSelectionHistory', 'clipping/ownSourceReview', 'clipping/ownCampaign', 'clipping/clipIntent',
-      'clipping/editorialStyle', 'clipping/editorialSelection', 'clipping/editorialRuntime', 'clipping/editorialMedia', 'clipping/creativeContext',
-      'clipping/ownPublicationRepair', 'clipping/ownBoundaryRepair', 'clipping/ownRequiredReview', 'clipping/subtitleWindowEvidence', 'clipping/ownPublicationRecheck',
-      'clipping/ownSubtitleRepairRuntime',
-      'clipping/gameOpening', 'clipping/gameEditorial', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',
-      'clipping/topicPublicationRepair',
-      'clipping/quantityEvidence', 'clipping/preflightEnding', 'clipping/preflightConversation',
-      'ai/usage', 'text/response', 'text/requests', 'summary/diagnostics', 'itinerary/runtime'].map(name => `workflows/${name}`);
-    entries.push('core/config/ConfigLayers');
+    const entries = [...new Set(Object.values(workflowEntries))].map(file => file.replace(/\.js$/u, ''));
     for (const entry of entries) {
       const file = path.join(root, 'src', `${entry}.ts`);
       fs.mkdirSync(path.dirname(file), { recursive: true });

@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import * as ts from 'typescript';
 
 import { workflowEntries as entries } from './workflowEntries';
+import { overlayLeafWorkflows } from './workflowOverlay';
 
 function filesUnder(directory: string, relative = ''): string[] {
   return fs.readdirSync(path.join(directory, relative), { withFileTypes: true })
@@ -20,10 +21,11 @@ function writeJsonAtomically(file: string, value: unknown): void {
 }
 
 /** Build an immutable release; activation is a separate explicit operation. */
-export function buildWorkflowRelease(root = process.cwd(), activate = false): string {
+export function buildWorkflowRelease(root = process.cwd(), activate = false, overlayEntries: string[] = []): string {
   const stagingRoot = path.join(root, 'build', 'workflow-staging');
   fs.mkdirSync(stagingRoot, { recursive: true });
   const stage = fs.mkdtempSync(path.join(stagingRoot, 'candidate-'));
+  let overlayStage: string | undefined;
   try {
     const configFile = ts.readConfigFile(path.join(root, 'tsconfig.workflows.json'), ts.sys.readFile);
     if (configFile.error) throw new Error(ts.flattenDiagnosticMessageText(configFile.error.messageText, '\n'));
@@ -39,29 +41,46 @@ export function buildWorkflowRelease(root = process.cwd(), activate = false): st
     }));
     const result = program.emit();
     if (result.emitSkipped) throw new Error('Workflow compilation did not emit a complete release');
-    const files = Object.fromEntries(filesUnder(stage).map(file => [file,
-      createHash('sha256').update(fs.readFileSync(path.join(stage, file))).digest('hex')
+    let output = stage, releaseEntries: Record<string, string> = entries, basePointer: string | undefined;
+    if (overlayEntries.length) {
+      overlayStage = fs.mkdtempSync(path.join(stagingRoot, 'overlay-'));
+      const overlay = overlayLeafWorkflows(root, stage, overlayStage, overlayEntries, entries);
+      output = overlayStage; releaseEntries = overlay.entries; basePointer = overlay.pointerText;
+    }
+    const files = Object.fromEntries(filesUnder(output).map(file => [file,
+      createHash('sha256').update(fs.readFileSync(path.join(output, file))).digest('hex')
     ]));
-    for (const entry of Object.values(entries)) {
+    for (const entry of Object.values(releaseEntries)) {
       if (!files[entry]) throw new Error(`Missing workflow entry: ${entry}`);
     }
-    const version = createHash('sha256').update(JSON.stringify({ entries, files })).digest('hex').slice(0, 20);
-    const manifest = { schemaVersion: 1, version, entries, files };
-    fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+    const version = createHash('sha256').update(JSON.stringify({ entries: releaseEntries, files })).digest('hex').slice(0, 20);
+    const manifest = { schemaVersion: 1, version, entries: releaseEntries, files };
+    fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     const releaseDir = path.join(root, 'build', 'workflow-releases', version);
     fs.mkdirSync(path.dirname(releaseDir), { recursive: true });
-    if (!fs.existsSync(releaseDir)) fs.renameSync(stage, releaseDir);
+    if (!fs.existsSync(releaseDir)) fs.renameSync(output, releaseDir);
     const descriptor = { releaseDir, version };
     writeJsonAtomically(path.join(root, 'build', 'workflow-candidate.json'), descriptor);
-    if (activate) writeJsonAtomically(path.join(root, 'data', 'runtime', 'workflow-release.json'), descriptor);
+    if (activate) {
+      if (basePointer !== undefined && fs.readFileSync(path.join(root, 'data/runtime/workflow-release.json'), 'utf8') !== basePointer) {
+        throw new Error('Active workflows changed during overlay build; rebuild against the new active release');
+      }
+      writeJsonAtomically(path.join(root, 'data', 'runtime', 'workflow-release.json'), descriptor);
+    }
     return releaseDir;
   } finally {
     // Only this invocation owns the staging directory; never remove published releases.
     fs.rmSync(stage, { recursive: true, force: true });
+    if (overlayStage) fs.rmSync(overlayStage, { recursive: true, force: true });
   }
 }
 
 if (require.main === module) {
-  const releaseDir = buildWorkflowRelease(process.cwd(), process.argv.includes('--activate'));
+  const args = process.argv.slice(2), overlayEntries: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--overlay-entry' && args[i + 1] && !args[i + 1].startsWith('--')) overlayEntries.push(args[++i]);
+    else if (args[i] !== '--activate') throw new Error(`Unknown or incomplete workflow build argument: ${args[i]}`);
+  }
+  const releaseDir = buildWorkflowRelease(process.cwd(), args.includes('--activate'), overlayEntries);
   console.log(JSON.stringify({ releaseDir, activated: process.argv.includes('--activate') }));
 }
