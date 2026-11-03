@@ -6,15 +6,32 @@ const clips = [78, 94, 85, 92, 85, 600].map((score, index) => ({ start: index * 
     duration: 20, title: `Story ${index + 1}`, candidateIndex: index + 10, score,
     selectionSource: index === 5 ? 'danmaku_heat' : 'model_global_rerank' }));
 const config = { mode: 'curated', maxStandalone: 2 };
-test('configured broader admission admits 75–79 point model candidates without granting upload authority', () => {
+test('configured strict admission keeps only 90+ model candidates without granting upload authority', () => {
     for (const name of ['default', 'production']) {
         const policy = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../config', `${name}.json`), 'utf8')).ownStreamClips.publicationPolicy;
-        const candidates = [74, 75, 79, 80].map((score, index) => ({ ...clips[0], start: index * 40, score }));
+        const candidates = [75, 89, 90, 94].map((score, index) => ({ ...clips[0], start: index * 40, score }));
         const result = selectPublication(candidates, policy, '25788785');
-        expect(result.clips.map(row => row.score)).toEqual([75, 79, 80]);
+        expect(result.clips.map(row => row.score)).toEqual([90, 94]);
         expect(result.clips.every(row => !row.uploadReady && !row.publicationReview && !row.publicationDecision)).toBe(true);
-        expect(policy.maxStandalone).toBe(18);
+        expect(policy.maxStandalone).toBe(5);
+        expect(policy.hardLimit).toBe(true);
     }
+});
+
+test('production own and keyword automatic publication both require completed precision', () => {
+    const production = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../config/production.json'), 'utf8'));
+    for (const config of [production.ownStreamClips, production.clipTopics]) {
+        expect(config.automaticPublication.requirePrecision).toBe(true);
+        expect(config.editorialStyles).toMatchObject({ enabled: true, mode: 'precision', requirePrecision: true });
+    }
+});
+
+test('hard budget also caps standout scores and retains all deferred evidence', () => {
+    const input = Array.from({ length: 8 }, (_, index) => ({ ...clips[0], score: 99, start: index * 40 }));
+    const result = selectPublication(input, { mode: 'curated', minScore: 90, maxStandalone: 5, hardLimit: true }, '25788785');
+    expect(result.clips).toHaveLength(5);
+    expect(result.report.deferred).toHaveLength(3);
+    expect(result.report.protectedOverflow).toBe(0);
 });
 test('applies an absolute floor and relative budget without confusing heat with editorial scores', () => {
     const result = selectPublication(clips, config, '25788785');
@@ -46,6 +63,15 @@ test.each(['all', 'shadow'])('rollback/observation mode %s keeps original candid
 test('missing configuration and other rooms retain legacy behavior', () => {
     expect(selectPublication(clips, {}, '25788785').clips).toEqual(clips);
     expect(selectPublication(clips, config, '22470216').clips).toEqual(clips);
+});
+
+test('all mode retains curated holds in the deferred report for Web review', () => {
+    const input = [{ ...clips[0], curation: { status: 'covered' } }, clips[1]];
+    const result = selectPublication(input, { ...config, mode: 'all' }, '25788785');
+    expect(result.clips).toEqual([clips[1]]);
+    expect(result.report.deferred).toHaveLength(1);
+    expect(result.report.decisions[0]).toMatchObject({ selected: false, reason: 'curation_covered' });
+    expect(result.report.deferred[0]).toMatchObject({ ...input[0], publication: result.report.decisions[0] });
 });
 test('global rank score wins over a more generous detail score and empty selections are valid', () => {
     const result = selectPublication([{ ...clips[1], score: 99, globalSelection: { score: 74 } }], config, '25788785');

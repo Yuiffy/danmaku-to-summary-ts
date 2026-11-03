@@ -287,7 +287,8 @@ def load_upload_manifest(
                 "socialReviewRequired": metadata.get("type") == "social_post_video",
                 "metadataPath": metadata_path,
                 "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),
-                "sourceMediaPath": _resolve_optional_path((metadata.get("source") or {}).get("mediaPath"), path.parent)
+                "sourceMediaPath": _resolve_optional_path((metadata.get('candidateBundle') or {}).get('originalSourceMediaPath')
+                    or (metadata.get("source") or {}).get("mediaPath"), path.parent)
                     if isinstance(metadata.get("source"), dict) else "",
                 "reviewPending": bool(review_errors),
                 "reviewIssues": list(dict.fromkeys(str(error) for error in review_errors)),

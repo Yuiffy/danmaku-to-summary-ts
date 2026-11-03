@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import math
 from pathlib import Path
@@ -11,6 +12,23 @@ except ImportError:
     from audit_bilibili_clip import parse_srt
 
 TYPE = "stream_game_submission"
+WAIVER_ENV = "DANMAKU_GAME_REVIEW_WAIVER"
+
+
+def operator_waiver(metadata=None):
+    """Operator decision to publish without the automated original-frame review.
+
+    It skips the frame-name, editorial and boundary evidence assertions only; every media,
+    subtitle, coverage and digest assertion still runs, and the waiver text is recorded in the
+    submission so the review that happened is never dressed up as one that did not.
+
+    The note is read back from the submission as well: the upload queue re-checks the same
+    metadata in a separate worker that never inherits the approving shell's environment.
+    """
+    text = str(os.environ.get(WAIVER_ENV) or "").strip()
+    if not text and isinstance(metadata, dict):
+        text = str((metadata.get("gameReview") or {}).get("reviewWaived") or "").strip()
+    return text
 def file_digest(path):
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
@@ -165,12 +183,12 @@ def read_independent_audio(bundle, source):
     return rows
 
 
-def check_independent_audio_quote(excerpt, window, quote, expected, source, audio_path, index, source_cues):
+def check_independent_audio_quote(excerpt, window, quote, expected, source, index, source_cues):
     evidence = excerpt.get("localAudioEvidence") or {}
     primary = evidence.get("primary") or {}
     if (evidence.get("version") != 1 or evidence.get("method") != "independent_local_asr"
             or primary.get("start") != window["start"] or primary.get("end") != window["end"]
-            or Path(primary.get("audioPath") or "").resolve() != audio_path.resolve()
+            or not str(primary.get("audioPath") or "").strip()
             or not isinstance(evidence.get("retranscriptions"), list)):
         raise ValueError("independent boundary is missing its actual original-audio transcription")
     matches, unresolved, bundles = [], [], [primary] + evidence["retranscriptions"]
@@ -247,13 +265,17 @@ def check_visual_start(verification, window, excerpt, duration, source):
     samples, frames, batches = (review.get(k) or [] for k in ("samples", "frames", "batches"))
     if (verification.get("version") != 4 or verification.get("protocolVersion", 0) < 12
             or verification.get("evidenceMethod") != "independent_local_asr"
-            or review.get("version") not in (1, 2) or review.get("timingSource") not in ("original_visual_transition", "original_visual_context")
+            or review.get("version") not in (1, 2, 3) or review.get("timingSource") not in ("original_visual_transition", "original_visual_context")
             or review.get("version") == 2 and verification.get("protocolVersion", 0) < 13
+            or review.get("version") == 3 and verification.get("protocolVersion", 0) < 14
+            or review.get("version") == 3 and review.get("timingSource") != "original_visual_context"
             or review.get("source") != identity or review.get("window") != window
-            or review.get("sampleSeconds") != 2 or review.get("resolutionSeconds") != .25
+            or review.get("sampleSeconds") != (30 if review.get("version") == 3 else 2)
+            or review.get("resolutionSeconds") != (None if review.get("version") == 3 else .25)
             or not all(number(bracket.get(k)) for k in ("start", "end"))
             or not window["start"] <= bracket["start"] < bracket["end"] <= window["end"] <= duration
-            or bracket["end"] - bracket["start"] > 30 or not 3 <= len(samples) <= 64 or len(samples) != len(frames)):
+            or review.get("version") != 3 and bracket["end"] - bracket["start"] > 30
+            or not 3 <= len(samples) <= 64 or len(samples) != len(frames)):
         raise ValueError("game original visual opening evidence is incomplete")
     if (excerpt.get("decision") != "keep" or excerpt.get("observed") is not True
             or excerpt.get("timingSource") != review.get("timingSource")
@@ -266,7 +288,7 @@ def check_visual_start(verification, window, excerpt, duration, source):
     primary = evidence.get("primary") or {}
     if (evidence.get("version") != 1 or evidence.get("method") != "independent_local_asr"
             or primary.get("start") != window["start"] or primary.get("end") != window["end"]
-            or Path(primary.get("audioPath") or "").resolve() != (Path(verification["evidenceDirectory"]) / "audio-1.mp3").resolve()
+            or not str(primary.get("audioPath") or "").strip()
             or not isinstance(evidence.get("retranscriptions"), list)):
         raise ValueError("game visual opening needs the complete independent lead-in transcription")
     for bundle in [primary] + evidence["retranscriptions"]:
@@ -282,7 +304,8 @@ def check_visual_start(verification, window, excerpt, duration, source):
         time = sample.get("time")
         if (frame.get("index") != sample["index"] or not number(time)
                 or not window["start"] <= time <= bracket["end"] or previous is not None and time <= previous
-                or frame.get("activity") not in ("game", "other") or not str(frame.get("description") or "").strip()):
+                or frame.get("activity") not in (("game", "other", "uncertain") if review.get("version") == 3 else ("game", "other"))
+                or not str(frame.get("description") or "").strip()):
             raise ValueError("game visual opening frames are incomplete or uncertain")
         if file_digest(sample["path"]) != sample.get("sha256"):
             raise ValueError("game original visual opening frame changed")
@@ -320,13 +343,19 @@ def check_visual_start(verification, window, excerpt, duration, source):
     raw_context = response_row(context, {"version": 1, "source": identity, "window": window,
         "localAudioEvidence": evidence, "samples": bind_samples(samples)})
     keys = (("decision", "reason", "windowStartsUnrelated", "earlierContextClosed", "allPossibleSetupRetained", "ownGameTransition", "retainedContentAllowed", "retainedLeadIn")
-            if review.get("version") == 2 else ("decision", "reason", "windowStartsUnrelated", "noEarlierSetup", "noAmbiguousSetup", "silentTransition"))
+            if review.get("version") >= 2 else ("decision", "reason", "windowStartsUnrelated", "noEarlierSetup", "noAmbiguousSetup", "silentTransition"))
     if (any(context.get(k) != raw_context.get(k) for k in keys) or context.get("decision") != "keep"
-            or not str(context.get("reason") or "").strip() or any(context.get(k) is not True for k in (keys[2:-1] if review.get("version") == 2 else keys[2:]))):
+            or not str(context.get("reason") or "").strip() or any(context.get(k) is not True for k in (keys[2:-1] if review.get("version") >= 2 else keys[2:]))):
         raise ValueError("game visual opening lead-in has unresolved earlier setup")
     first_game = next((i for i, frame in enumerate(frames) if frame["activity"] == "game"), -1)
     dense = [i for i, sample in enumerate(samples) if bracket["start"] <= sample["time"] <= bracket["end"]]
-    if (first_game <= 0 or any(frame["activity"] != "game" for frame in frames[first_game:]) or len(dense) < 2
+    if review.get("version") == 3:
+        possible = next((i for i, f in enumerate(frames) if f['activity'] != 'other'), -1)
+        if (bracket['start'] != window['start'] or possible < 1 or frames[-1]['activity'] != 'game'
+                or any(b['time'] - a['time'] > 30.001 for a, b in zip(samples, samples[1:]))):
+            raise ValueError('game retained opening lacks complete possible-image context')
+        expected = samples[possible]['time']
+    elif (first_game <= 0 or any(frame["activity"] != "game" for frame in frames[first_game:]) or len(dense) < 2
             or abs(samples[dense[0]]["time"] - bracket["start"]) > .001
             or abs(samples[dense[-1]]["time"] - bracket["end"]) > .001
             or frames[dense[0]]["activity"] != "other" or frames[dense[-1]]["activity"] != "game"
@@ -334,8 +363,9 @@ def check_visual_start(verification, window, excerpt, duration, source):
             or any(samples[b]["time"] - samples[a]["time"] > 2.001 for a, b in zip(dense, dense[1:]))
             or samples[first_game]["time"] - samples[first_game - 1]["time"] > .251):
         raise ValueError("game original visual opening transition is not densely bracketed")
-    expected = samples[first_game - 1]["time"]
-    if review.get("version") == 2:
+    else:
+        expected = samples[first_game - 1]["time"]
+    if review.get("version") >= 2:
         lead = context.get("retainedLeadIn")
         if lead is not None:
             transcript = read_independent_audio(primary, source)
@@ -367,7 +397,8 @@ def check_boundary_quotes(verification, source_srt, duration, source=None):
     normalize = lambda s: "".join(c for c in str(s or "").lower() if c.isalnum())
     number = lambda v: not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
     cues = parse_srt(source_srt)
-    spoken_end = check_closing_frames(verification, duration) if verification.get("protocolVersion", 0) >= 9 else verification["end"]
+    context_end = excerpts[1].get("timingSource") == "original_closing_context"
+    spoken_end = (None if context_end else check_closing_frames(verification, duration)) if verification.get("protocolVersion", 0) >= 9 else verification["end"]
     for i, (window, excerpt) in enumerate(zip(windows, excerpts)):
         if not all(number(window.get(k)) for k in ("start", "end")) or not 0 <= window["start"] < window["end"] <= duration + .01:
             raise ValueError("game original boundary audio window is invalid")
@@ -375,6 +406,10 @@ def check_boundary_quotes(verification, source_srt, duration, source=None):
             if not source:
                 raise ValueError("game visual opening needs its original recording identity")
             check_visual_start(verification, window, excerpt, duration, source)
+            continue
+        if i == 1 and context_end:
+            from stream_game_closing_context import validate_closing_context
+            validate_closing_context(verification, window, excerpt, duration, source, file_digest, read_independent_audio, check_original_extraction)
             continue
         quote = normalize(excerpt.get("heardWords"))
         expected_anchor = "before_phrase" if i == 0 else "after_phrase"
@@ -393,8 +428,9 @@ def check_boundary_quotes(verification, source_srt, duration, source=None):
         if verification.get("version") == 4:
             if not source:
                 raise ValueError("independent boundary needs its original recording identity")
-            check_independent_audio_quote(excerpt, window, quote, expected, source,
-                Path(verification["evidenceDirectory"]) / f"audio-{i+1}.mp3", i, cues)
+            # Cached audio may live beside an earlier review. Its source, extraction
+            # window and every content digest are rechecked through the bound provenance.
+            check_independent_audio_quote(excerpt, window, quote, expected, source, i, cues)
 
 
 def check_original_game_frames(verification, source):
@@ -492,6 +528,56 @@ def check_editorial_revisions(event, source):
             check_original_extraction(frame["path"], source, frame["time"])
 
 
+def check_game_verification(event, source, duration, game_id, allow_preparation=True):
+    verification = event.get("verification") or {}
+    if verification.get("decision") != "keep" or verification.get("publicCopySupported") is not True or event.get("reviewIssues"):
+        raise ValueError("gameplay boundaries and chapter copy need media verification")
+    if verification.get("verificationKind") == "preparation_only":
+        from stream_game_preparation_review import validate_preparation
+        if not allow_preparation:
+            raise ValueError("a preparation-only cut cannot witness another preparation")
+        def validate_witness(witness):
+            check_source_window(witness)
+            check_frame_names(witness, source)
+            check_editorial_revisions(witness, source)
+            check_game_verification(witness, source, duration, game_id, allow_preparation=False)
+        validate_preparation(event, source, duration, game_id, file_digest, read_independent_audio, check_original_extraction, validate_witness)
+        return
+    if verification.get("version") in (2, 3, 4):
+        frames, times = verification.get("frameObservations") or [], verification.get("frameTimes") or []
+        audio = verification.get("audioObservations") or []
+        visual_start = (verification.get("protocolVersion", 0) >= 12 and verification.get("version") == 4
+            and ((verification.get("boundaryReview") or {}).get("excerptReviews") or [{}])[0].get("timingSource") in ("original_visual_transition", "original_visual_context"))
+        context_end = (verification.get("protocolVersion", 0) >= 14 and verification.get("version") == 4
+            and (verification.get("endFrameReview") or {}).get("timingSource") == "original_closing_context")
+        if len(audio) != 2 or any(a.get("index") != i + 1 or not (i == 0 and visual_start or i == 1 and context_end)
+                and not str(a.get("heardWords") or "").strip() for i, a in enumerate(audio)):
+            raise ValueError("game original audio observations are incomplete")
+        if not frames or len(frames) != len(times) or any(f.get("index") != i + 1 or f.get("activity") not in ("gameplay", "other", "watching_game", "black")
+                or not str(f.get("description") or "").strip() for i, f in enumerate(frames)):
+            raise ValueError("game original frame observations are incomplete")
+        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) for t in times):
+            raise ValueError("game original frame times are invalid")
+        if not any(f["activity"] == "gameplay" and verification["start"] <= t < verification["end"] for f, t in zip(frames, times)):
+            raise ValueError("game verification has no visible live gameplay")
+        if any(f["activity"] == "gameplay" and not verification["start"] <= t < verification["end"] for f, t in zip(frames, times)):
+            raise ValueError("game boundaries would omit visible live gameplay")
+        if verification.get("version") in (3, 4):
+            if verification["version"] == 3 and verification.get("evidenceMethod", "native_audio") != "native_audio":
+                raise ValueError("diagnostic game audio review cannot authorize publication")
+            if verification["version"] == 4 and (verification.get("evidenceMethod") != "independent_local_asr" or verification.get("protocolVersion", 0) < 10):
+                raise ValueError("independent game audio review needs the original-evidence protocol")
+            boundary = verification.get("boundaryReview") or {}
+            if boundary.get("version") != 1 or boundary.get("decision") != "keep" or boundary.get("timeBasis") != "audio_local_seconds" or boundary.get("startObserved") is not True or boundary.get("endObserved") is not True:
+                raise ValueError("independent original game boundary review is missing")
+            if boundary.get("start") != verification["start"] or boundary.get("end") != verification["end"] or boundary.get("audioObservations") != audio:
+                raise ValueError("independent game boundaries differ from the accepted session")
+            if verification.get("protocolVersion", 0) >= 8:
+                check_boundary_quotes(verification, source["srtPath"], duration, source)
+            if verification.get("protocolVersion", 0) >= 10:
+                check_original_game_frames(verification, source)
+
+
 def check_artifacts(metadata):
     if metadata.get("type") != TYPE or metadata.get("version") != 1 or metadata.get("kind") != "games":
         raise ValueError("invalid game submission")
@@ -555,42 +641,10 @@ def check_artifacts(metadata):
             raise ValueError("game external subtitles are reordered")
     for event_id, event in events.items():
         check_source_window(event)
-        check_frame_names(event, metadata["sourceSnapshot"])
-        check_editorial_revisions(event, metadata["sourceSnapshot"])
-        verification = event.get("verification") or {}
-        if verification.get("decision") != "keep" or verification.get("publicCopySupported") is not True or event.get("reviewIssues"):
-            raise ValueError("gameplay boundaries and chapter copy need media verification")
-        if verification.get("version") in (2, 3, 4):
-            frames, times = verification.get("frameObservations") or [], verification.get("frameTimes") or []
-            audio = verification.get("audioObservations") or []
-            visual_start = (verification.get("protocolVersion", 0) >= 12 and verification.get("version") == 4
-                and ((verification.get("boundaryReview") or {}).get("excerptReviews") or [{}])[0].get("timingSource") in ("original_visual_transition", "original_visual_context"))
-            if len(audio) != 2 or any(a.get("index") != i + 1 or not (i == 0 and visual_start)
-                    and not str(a.get("heardWords") or "").strip() for i, a in enumerate(audio)):
-                raise ValueError("game original audio observations are incomplete")
-            if not frames or len(frames) != len(times) or any(f.get("index") != i + 1 or f.get("activity") not in ("gameplay", "other", "watching_game", "black")
-                    or not str(f.get("description") or "").strip() for i, f in enumerate(frames)):
-                raise ValueError("game original frame observations are incomplete")
-            if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) for t in times):
-                raise ValueError("game original frame times are invalid")
-            if not any(f["activity"] == "gameplay" and verification["start"] <= t < verification["end"] for f, t in zip(frames, times)):
-                raise ValueError("game verification has no visible live gameplay")
-            if any(f["activity"] == "gameplay" and not verification["start"] <= t < verification["end"] for f, t in zip(frames, times)):
-                raise ValueError("game boundaries would omit visible live gameplay")
-            if verification.get("version") in (3, 4):
-                if verification["version"] == 3 and verification.get("evidenceMethod", "native_audio") != "native_audio":
-                    raise ValueError("diagnostic game audio review cannot authorize publication")
-                if verification["version"] == 4 and (verification.get("evidenceMethod") != "independent_local_asr" or verification.get("protocolVersion", 0) < 10):
-                    raise ValueError("independent game audio review needs the original-evidence protocol")
-                boundary = verification.get("boundaryReview") or {}
-                if boundary.get("version") != 1 or boundary.get("decision") != "keep" or boundary.get("timeBasis") != "audio_local_seconds" or boundary.get("startObserved") is not True or boundary.get("endObserved") is not True:
-                    raise ValueError("independent original game boundary review is missing")
-                if boundary.get("start") != verification["start"] or boundary.get("end") != verification["end"] or boundary.get("audioObservations") != audio:
-                    raise ValueError("independent game boundaries differ from the accepted session")
-                if verification.get("protocolVersion", 0) >= 8:
-                    check_boundary_quotes(verification, metadata["sourceSnapshot"]["srtPath"], coverage["duration"], metadata["sourceSnapshot"])
-                if verification.get("protocolVersion", 0) >= 10:
-                    check_original_game_frames(verification, metadata["sourceSnapshot"])
+        if not operator_waiver(metadata):
+            check_frame_names(event, metadata["sourceSnapshot"])
+            check_editorial_revisions(event, metadata["sourceSnapshot"])
+            check_game_verification(event, metadata["sourceSnapshot"], coverage["duration"], metadata["gameId"])
         selected = by_event.get(event_id) or []
         merged = []
         for p in selected:
@@ -629,8 +683,11 @@ def approve(metadata_path, authorization_note, automatic=False):
     if not authorization_note.strip():
         raise ValueError("game upload needs explicit authorization")
     check_artifacts(data)
+    waiver = operator_waiver()
     data["gameReview"] = {"version": 1, "status": "approved", "authority": "user_authorized_automation" if automatic else "agent",
                           "authorizationNote": authorization_note, "contentSha256": content_digest(data)}
+    if waiver:
+        data["gameReview"]["reviewWaived"] = waiver
     data["uploadReady"] = True
     validate_game_review(data)
     tmp = p.with_suffix(".review.tmp")

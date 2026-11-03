@@ -49,7 +49,10 @@ HUD 小字时，按实际取样秒数回原片取大图／裁切；一格的时�
 对应选择框。每个新录播任务重新读取配置，同一任务的全部阶段共用该配置快照；常驻后台
 切片 worker 缓存 workflow release，代码部署时须在队列空闲后重启
 `background-clip-queue-runner`，不能以验证命令代替重启。
-生产配置启用自动三选一，开发默认关闭。它优先于旧的 enhancement 实验抽样（包括活动
+生产配置固定 `precision` 并启用 `requirePrecision`，开发默认关闭。自动投稿只接受精切及
+独立画面、音轨复审通过的成片；失败保留普通底版和失败理由，仍可在 Web 浏览、人工选择投稿。
+筛选后的候补同样保留编号、字幕与原片定位，人工选中后按已有流程制作及投稿。
+这些制作设置优先于旧的 enhancement 实验抽样（包括活动
 `all_eligible`）；关闭后保留旧行为。未通过选材、人物或关键词前置审核的底版不进入制作。
 
 两路均先生成普通版，三模式制作结束后才登记及最终审核。普通无需重编码；精切调用共享
@@ -61,6 +64,10 @@ HUD 小字时，按实际取样秒数回原片取大图／裁切；一格的时�
 `window.start/end` 仍是原录播素材窗；`window.duration` 为最终成片时长，前置同时保留
 `sourceWindow`。`editorialTimeline` 保存片段映射、OP 录播来源、字幕及六份输入摘要。
 最终审核和上传 worker 均绑定该时间轴及输入文件，OP 原话不能成为当前房间事件的证据。
+
+精切若先因素材窗不足记录 `source_window_incomplete`，后续扩展素材并完成新的故事／成片 QA
+后，历史记录仍会保留作取证，但不再阻塞用户已确认的投稿；当前仍存在的素材扩展、故事修复或音频
+复核请求继续阻止入队。
 
 统一的本地操作入口如下，中文模式名也可使用：
 
@@ -140,10 +147,40 @@ OP 合成前分别测量底版与 OP 的实际综合响度及真峰值，仅衰�
 恢复入口按原片房间与录制日期解析活动精切设置，沿用活动期素材校验；
 不能使用全局日常房间列表误拒活动房间，也不因此给旧编号自动投稿权限。
 
+用户明确选择同场的多个关键词候选做一条精切时，使用独立合辑入口：
+
+```powershell
+python src/scripts/clip_upload_registry.py precision-bundle --ids 123,124 --title "两个话题的共同标题" --description "分别描述两段原话，不捏造因果" --cover-text "封面文案" --note "用户指定合并；保留各段起因和收尾"
+```
+
+接受 2–5 个同源、同房间、无重叠、预审已通过且未投稿/排队/改词的关键词候选。
+沿用当前候选字幕及其摘要、原始源证据，通过共享合辑渲染器建立连续素材，
+再运行紧凑精切与独立画面/音轨 QA。成员原编号保持不变，不创建另一项手动队列任务。
+连续素材先用音频时间戳补齐拼接处缺少的采样和编码尾差，再生成底版；保持所选窗口的真实时间轴，
+不压缩时间戳空隙或改动原话。合辑即使没有新增声音/音乐，也执行原声音轨对比，沿用原有门槛。
+结果放在素材目录的 `precision_bundles/<IDs>/r-*/`；`MEMBERS.json` 保存原文件摘要，
+`TIMELINE.json` 记录原录播到合辑的逐段映射，`RESULT.json` 明确成功待审或失败。
+精切不能漏掉任一成员的关键词原话；源字幕、成员或素材变化均停止。
+这是独立多段成片，不能冒充单一编号的原窗重建；不批准、不入队、不投稿。
+
+已有明确投稿授权且成片检查通过后，用独立命令登记一条稿件，再走普通数字 ID 入队：
+
+```powershell
+python src/scripts/clip_upload_registry.py approve-bundle --revision "D:\clips\precision_bundles\123-124\r-example" --review-note "用户授权检查通过后投稿"
+python src/scripts/clip_upload_registry.py enqueue --ids <返回的合辑ID>
+```
+
+`approve-bundle` 核验成员摘要、原录播、关键词保留、合成素材身份与全部成片 QA，
+不将投稿授权冒充人工视听。所有同组版本共用 `PUBLICATION.json` 和一个注册 ID，
+已排队或投稿时重跑不改成片；原成员标为已合并，不能再分别入队。
+上传前再次检查来源与审核摘要，并用原成员的录播区间查重，不能用合辑的零起点绕过重复投稿拦截。
+
 ```powershell
 python src/scripts/clip_upload_registry.py precision --id 123 --note "修复后重新制作精切供查看"
 # 紧凑综艺版：完整句组删减、表情/关键点特写、较密效果与 BGM
 python src/scripts/clip_upload_registry.py precision --id 123 --style compact --note "重新剪辑剧情与节奏"
+# 用户明确确认单人直播、混入游戏台词时，仅对这次本地精切跳过人物证据。
+python src/scripts/clip_upload_registry.py precision --id 123 --style compact --single-host-note "用户已确认单人直播，其他台词来自游戏" --note "按反馈制作本地精切"
 # 游戏路线/操作是故事重点：保留主画面，只把面部反应放进圆形窗
 python src/scripts/clip_upload_registry.py precision --id 123 --avatar-mode circle --resume-from "D:\clips\precision_revisions\123\r-example" --note "保留游戏画面并放大面部反应"
 ```
@@ -152,13 +189,34 @@ python src/scripts/clip_upload_registry.py precision --id 123 --avatar-mode circ
 每次输出保存在原成片目录的 `precision_revisions/<ID>/r-*/`，其中 `RESULT.json`、`clip.json`
 及 `REVIEW.md` 保存新视频、效果和检查结果；父目录 `latest.json` 指向最新完成的尝试。
 
+关键词候选如果通过 `rebuild` / `cut --feedback-authorized` 保存了明确的用户反馈接受记录，
+可以直接进入本地 `precision` 生成待审核精切。这个分支只放宽“普通底版必须先有独立发布审核”
+这一前置门槛；源文件、字幕、窗口、成片摘要和精切自身的 QA 仍会重新校验，结果仍保持
+`uploadAuthorized: false`，不能直接入队或投稿。未有反馈接受记录的重建稿，以及自动投稿路径，
+继续要求当前独立审核。
+
 尚未投稿的编号可在用户授权、查看成片后选择该精切版本，再进入原上传队列：
 `python src/scripts/clip_upload_registry.py select-precision --id 123 --revision "D:\clips\precision_revisions\123\r-example" --review-note "用户授权与成片复核依据"`，
 随后 `enqueue --ids 123`。选择命令保留普通底版及独立实验元数据，将同一编号绑定到通过QA且摘要匹配的发布副本；
 验证原始来源未变，拒绝已发布、排队中或待重压条目。刷新旧批次不会回退版本或分配重复ID。
 已发布编号继续使用 `replace-precision`，不能新投一次。
+用户已查看当前精切并明确授权投稿时，可在 `select-precision` 添加 `--feedback-authorized`。
+该分支先核对原始源快照、当前视频／字幕／封面／文案的独立 QA 摘要和未解决的源／音轨问题，
+再将本次用户接受记录绑定到独立 `publication.json`。继承的普通版 `renderedSubtitles` 必须与
+`original.json` 的已渲染版本一致，仅转存为 `precisionBaselineSubtitles`；精切字幕由当前 QA 摘要校验。
+可同时传 `--cover-image <PNG/JPEG/WebP>` 导入已检查的成品封面，保存来源摘要并转换为投稿 JPEG。
+换封面后原 AI QA 标为已被人工接受记录取代，不能冒称 AI 审核过新封面；原 `clip.json` 与底版不改。
+人物等原有发布门槛保留，由明确的当前成片人工接受记录解决，不修改全局自动投稿策略。
+未给 `--feedback-authorized` 时不能导入成品封面，原选择／线上替换流程保持原校验。
+选择仍不入队，最后须按既有 `enqueue --ids ...` 投稿。
 失败返回非零退出码并保留证据。原成片、注册表与已投稿 BV 不变，新版仅供本地审核；
 不重新生成 ASR，不发送通知，也不入队或替换线上稿件。存在待重压字幕或活动上传的 ID 须先完成原任务。
+
+`--single-host-note` 必须来自用户对该素材的明确确认，仅允许当前已重建、烧字完整且来源未变的本地底版。
+它将授权、源摘要、窗口和旧人物审核保存为 `attributionExemption`，不伪造人物审核通过或整片核听。
+允许人物审核缺失及待完成精切的前置状态；字幕、边界、媒体或其他终审失败仍阻断。
+故事连续性、画面坐标、字幕与音轨检查照常执行；原注册表和全局配置保留，新修订始终
+`uploadAuthorized: false`，此授权不能直接用于自动投稿或替换线上稿件。
 画面修复反馈逐项标出有问题的缩放节点与字段；无法确认安全裁切时撤掉该处缩放，保留其余有效效果，
 不能把 `safeToCrop` 改成 `true` 来绕过校验。
 已成功自动精切的编号也可用同一 `precision` 命令修订。它验证现有成片 QA 摘要与原源身份，
@@ -356,6 +414,8 @@ GIF 及持续运动跟踪尚未实现。未来转场用于确实的场景/章节
 时刻校验失败时最多修复一次；画面方案最多修复两次，每轮同时报告所有不合格节点，保留其余有效效果。
 `creative_preflight.js` 使用实际视频分辨率、生产字幕样式与本轮 SRT，在渲染前检查圆窗倍率、原位放大和完整 ASS 字幕布局。
 故事时间轴先按字幕编号检查顺序与重复选择；相邻保留句组的前后余量重叠时合并为一个区间，不重复播放、不将正常留白误报为重排。省略的字幕与受保护引用仍逐条校验。
+
+反应前的关键无字幕动作可由该 `keep` 组的可选 `actionBeforeSeconds` 保留，表示首句前的总时长，范围为有限数值 0–12 秒。默认仍为 0.12 秒，实际起点受素材起点和上一条字幕结束限制，不会截断或恢复已省略对白；需要更早的对白时应扩展 `fromCue`。只按已核实的动作选择短前导，不对所有切点统一加时，成片字幕、原声和取证仍使用同一条校验后的时间轴。
 不能容纳真实脸框或字幕时，由模型依据三帧改成安全全屏特写、其他效果或省略该节点，不能缩小真实脸框、修改安全标记或降低字号来凑通过。
 自动圆窗转换只针对游戏、混合或教程中需要保留主画面的头像特写，且目标框必须在配置直径内达到最低倍率；聊天大头像保留已验证的全屏特写。
 用户显式选择 `--avatar-mode circle` 仍走圆窗校验。局部修正后，渲染、音画同步和独立成片 QA 照常执行；预检不等于成片通过。

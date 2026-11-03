@@ -7,18 +7,67 @@ import time
 from pathlib import Path
 try:
     from .clip_publication_duplicates import duplicate_errors
+    from .clip_quality_policy import quality_errors
 except ImportError:
     from clip_publication_duplicates import duplicate_errors
+    from clip_quality_policy import quality_errors
 
 
-def publication_errors(api, clips, registry=None):
+def publication_errors(api, clips, registry=None, *, manual_enqueue=False):
     registry = registry if registry is not None else api.load_json(api.REGISTRY_PATH, api.default_registry())
     def read_metadata(value):
         try:
             return api.load_json(Path(value), {})
         except (OSError, ValueError):
             return {}
-    return duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
+    # Explicit numeric enqueue may first render an approved candidate revision.
+    # The worker checks every finished artifact after rendering and before upload.
+    quality_clips = [clip for clip in clips if not (manual_enqueue and
+                     (clip.get('pendingCut') or clip.get('pendingRebuild')))]
+    return (duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
+            + quality_policy_errors(api, quality_clips))
+
+
+def quality_policy_errors(api, clips):
+    if not clips:
+        return []
+    from hashlib import file_digest
+    try:
+        from .clip_qa import validate_human_review, validate_metadata_qa
+    except ImportError:
+        from clip_qa import validate_human_review, validate_metadata_qa
+    def read_metadata(value):
+        return api.load_json(Path(value), {})
+    def digest(value):
+        with Path(value).open('rb') as handle:
+            return file_digest(handle, 'sha256').hexdigest()
+    def manual_review(clip, metadata):
+        if metadata.get('bundlePublicationReview'):
+            validate_metadata_qa(metadata)
+            return
+        review = metadata.get('ownStreamHumanReview')
+        if review:
+            if clip.get('id') is not None and review.get('clipId') != clip['id']:
+                raise ValueError('human editorial choice belongs to a different clip ID')
+            validate_human_review(metadata)
+            return
+        review, revision = metadata['precisionPublicationReview'], metadata.get('precisionRevision') or {}
+        if (review.get('authority') != 'user' or not str(review.get('note') or '').strip()
+                or not review.get('qaDigests') or review['qaDigests'] != (metadata.get('qaResult') or {}).get('digests')
+                or revision.get('uploadAuthorized') is not True
+                or clip.get('id') is not None and revision.get('clipId') != clip['id']):
+            raise ValueError('human editorial choice belongs to a different clip ID')
+        validate_metadata_qa(metadata)
+        snapshot, source = revision.get('sourceSnapshot') or {}, metadata.get('source') or {}
+        stat = Path(source['mediaPath']).stat()
+        actual = {'mediaPath': str(Path(source['mediaPath']).resolve()), 'mediaBytes': str(stat.st_size),
+                  'mediaMtimeNs': str(stat.st_mtime_ns), 'srtPath': str(Path(source['srtPath']).resolve()),
+                  'srtSha256': digest(source['srtPath']),
+                  'xmlPath': str(Path(source['xmlPath']).resolve()) if source.get('xmlPath') else None,
+                  'xmlSha256': digest(source['xmlPath']) if source.get('xmlPath') else None}
+        if actual != snapshot:
+            raise ValueError('source changed after human precision selection')
+    return quality_errors(clips, api.load_upload_runtime_config(), read_metadata, digest, manual_review)
 
 
 def validate_saved_titles(api, registry, ids):
@@ -113,7 +162,7 @@ def enqueue(args: argparse.Namespace, api) -> int:
         print("[ERROR] --collection-section-id requires one JSON-backed clip and a positive ID", file=sys.stderr)
         return 2
     if args.dry_run:
-        errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry)
+        errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry, manual_enqueue=True)
         if errors:
             print('[ERROR] ' + '; '.join(errors), file=sys.stderr)
             return 2
@@ -166,7 +215,7 @@ def enqueue(args: argparse.Namespace, api) -> int:
             print("[OK] requested IDs are already queued; no duplicate job created")
             return 0
         try:
-            errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry)
+            errors = publication_errors(api, [registry['clips'][str(i)] for i in ids], registry, manual_enqueue=True)
             if errors:
                 raise ValueError('; '.join(errors))
             validate_saved_titles(api, registry, ids)

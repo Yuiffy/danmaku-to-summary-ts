@@ -30,6 +30,7 @@ async function runCreativeStory(input, io) {
     writeJsonAtomic(path.join(scratch, 'story-input.json'), { sourceDuration, copy: baseline.copy, sourceCues, protectedSpans, protectedCues });
     const storyPrompt = '先识别内容与语气再剪辑。游戏保留关键操作/路线和反应；杂谈、故事、连麦保留人物关系、铺垫和接话；教程保留步骤与解释；演唱、演奏、朗读等连续表演保留完整乐句和段落，不在内部乱剪。'
         + '删掉重复说明、无进展操作及支线，但不为了固定压缩比例删必要内容。只选给出的完整字幕句组，按原顺序，不改话、不挪因果，必须覆盖protectedSpans。'
+        + '反应前有必要的无字幕动作时，keep组可选actionBeforeSeconds（0到12秒），表示首句前保留的总时长；程序仍在上一句结束处截住，不截断或恢复已删对白。按已核实的动作选择，不给所有切点固定加时；需保留更早对白时扩展fromCue。'
         + '同时给出profile：kind=gameplay/conversation/story/tutorial/performance/mixed；tone=comic/neutral/serious；density=dense/moderate/light；preserveContinuity为布尔；music=playful/none；laughter为布尔；reason说明依据。中性/严肃内容不要笑声或轻快BGM，连续表演必须preserveContinuity=true且music=none、laughter=false。'
         + '返回 {"profile":{"kind":"gameplay","tone":"comic","density":"dense","preserveContinuity":false,"music":"playful","laughter":true,"reason":"具体内容依据"},"keep":[{"fromCue":"C1","toCue":"C6","role":"setup","reason":"建立起因"},...]}；role可用setup/escalation/reaction/payoff/context/step/explanation/performance/closing，每组须有内容理由。\n'
         + protectionRules + '\n'

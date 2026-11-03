@@ -12,11 +12,28 @@ const METHOD = 'independent_local_asr';
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const number = value => typeof value === 'number' && Number.isFinite(value);
 
+function transcriptDefect(s, i, all, duration) {
+    if (!number(s.start) || !number(s.end)) return 'nan';
+    if (s.start < 0) return 'negative-start';
+    if (s.end <= s.start) return 'end<=start';
+    // A trailing sentence may be decoded slightly past the extracted window; the tail is
+    // clamped to the real audio length below, while gross overshoot still fails the sample.
+    if (s.end > duration + 1.5) return 'beyond-window';
+    if (!String(s.text || '').trim()) return 'empty-text';
+    if (i > 0 && s.start < all[i - 1].start) return 'out-of-order';
+    return null;
+}
+
 function transcriptRows(value, duration) {
-    if (!Array.isArray(value.segments) || value.segments.some((s, i, all) => !number(s.start) || !number(s.end)
-        || s.start < 0 || s.end <= s.start || s.end > duration + .25 || !String(s.text || '').trim()
-        || i > 0 && s.start < all[i - 1].start)) throw new Error('Independent original-audio ASR has invalid timing');
-    return value.segments.map(({ start, end, text }) => ({ start, end: Math.min(duration, end), text }));
+    const segments = Array.isArray(value.segments) ? value.segments : null;
+    const defects = segments ? segments.map((s, i, all) => {
+        const why = transcriptDefect(s, i, all, duration);
+        return why ? { i, why, seg: s } : null;
+    }).filter(Boolean) : [];
+    if (!segments || defects.length) {
+        throw new Error(`Independent original-audio ASR has invalid timing: duration=${duration} ${JSON.stringify(defects.slice(0, 3)).slice(0, 600)}`);
+    }
+    return segments.map(({ start, end, text }) => ({ start, end: Math.min(duration, end), text }));
 }
 function audioIdentity(source) {
     return { mediaPath: source.mediaPath, mediaBytes: source.mediaBytes, mediaMtimeNs: source.mediaMtimeNs };

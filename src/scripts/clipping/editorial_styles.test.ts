@@ -1,7 +1,7 @@
 import { editorialEvidenceDigest } from '../../workflows/clipping/editorialEvidence';
 const fs = require('fs'), os = require('os'), path = require('path');
 const runtime = require('../workflow-runtime');
-const { applyStyles, finishTopicStylesAndReview } = require('./editorial_styles');
+const { applyStyles, finishTopicStylesAndReview, curateSource } = require('./editorial_styles');
 
 let directory: string;
 beforeEach(() => { directory = fs.mkdtempSync(path.join(os.tmpdir(), 'editorial-production-')); });
@@ -30,6 +30,27 @@ function fixture(kind: string) {
         topic: { resolveFfprobePath: () => 'ffprobe' } };
     return { baseline, context, io };
 }
+
+test.each(['own', 'topic'])('%s source curation uses typed domain decisions through the shared output guard', async kind => {
+    const { assertGeneratedOutput, stageOutputContract } = require('../text/generated_output');
+    const request = jest.spyOn(require('./enhancement_runner'), 'requestStage').mockImplementation(async (_config, _budget, info: any, phase: any) => {
+        const contract = info.outputContract || stageOutputContract(phase);
+        const text = JSON.stringify(phase.includes('-assess-') ? { worthPublishing: false, score: 60, reason: '缺少完整看点' }
+            : { sameEvent: true, complete: true, quality: true, reason: '同一事件已完整覆盖' });
+        assertGeneratedOutput(text, { structuredOutputKey: contract.key, structuredOutputType: contract.type });
+        return { text };
+    });
+    const windows = [{ start: 10, end: 30 }];
+    jest.spyOn(runtime.loadWorkflow('clipping/peerCoverageRuntime'), 'curateClipWindows').mockImplementation(async (_clips, _input, model: any) => {
+        await model('assess-1', '原始字幕');
+        await model('compare-1-BV1234567890', '完整双方字幕');
+        return windows;
+    });
+    expect(await curateSource(windows, kind, { rootConfig: { clipCuration: { enabled: true } }, config: {},
+        info: { roomId: '25788785' }, options: { srtPath: 'source.srt', mediaPath: 'source.mp4' },
+        parsed: { segments: [] }, outputRoot: directory })).toBe(windows);
+    expect(request).toHaveBeenCalledTimes(2);
+});
 test.each(['own', 'topic'])('%s preserves source/copy/preflight contracts and invalidates final approvals', async kind => {
     const f = fixture(kind), original = fs.readFileSync(f.baseline.output.metadataPath, 'utf8');
     const [result] = await applyStyles([f.baseline], f.context);

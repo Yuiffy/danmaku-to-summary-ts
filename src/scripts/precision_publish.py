@@ -20,7 +20,7 @@ def precision_public_copy(metadata, public_copy=None):
 def render_precision(args, api):
     script = Path(__file__).parent / 'clipping' / 'precision_revision.js'
     command = ['node', str(script), '--id', str(args.id), '--registry', str(api.REGISTRY_PATH), '--note', args.note]
-    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position', 'context_danmaku_at'):
+    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position', 'context_danmaku_at', 'single_host_note'):
         if getattr(args, field, None) is not None:
             command.extend(['--' + field.replace('_', '-'), str(getattr(args, field))])
     if args.allow_cover_face_overlap:
@@ -29,9 +29,34 @@ def render_precision(args, api):
 
 
 def register_commands(sub, api):
+    p = sub.add_parser('approve-bundle', help='Approve and register one checked numeric keyword bundle; does not enqueue')
+    p.add_argument('--revision', required=True)
+    p.add_argument('--review-note', required=True)
+    def approve_keyword_bundle(args):
+        try:
+            from .precision_bundle_review import approve_bundle
+        except ImportError:
+            from precision_bundle_review import approve_bundle
+        return approve_bundle(args, api)
+    p.set_defaults(func=approve_keyword_bundle)
+    p = sub.add_parser('precision-bundle', help='Render 2–5 unpublished topic IDs into one separate pending-review precision bundle')
+    p.add_argument('--ids', required=True)
+    p.add_argument('--note', required=True)
+    p.add_argument('--title', required=True)
+    p.add_argument('--description', required=True)
+    p.add_argument('--cover-text', required=True)
+    def render_bundle(args):
+        command = ['node', str(api.PROJECT_ROOT / 'src/scripts/clipping/precision_bundle.js'),
+                   '--project-root', str(api.PROJECT_ROOT), '--registry', str(api.REGISTRY_PATH),
+                   '--queue', str(api.QUEUE_PATH)]
+        for name in ('ids', 'note', 'title', 'description', 'cover_text'):
+            command.extend(['--' + name.replace('_', '-'), getattr(args, name)])
+        return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
+    p.set_defaults(func=render_bundle)
     p = sub.add_parser('precision', help='Render a separate creative revision by ID; preserves original and uploaded clips')
     p.add_argument('--id', required=True, type=int)
     p.add_argument('--note', default='')
+    p.add_argument('--single-host-note', default=None, help='Explicit user single-host confirmation; skip actor evidence for this local revision only, never approve upload')
     p.add_argument('--context-danmaku-at', type=float, default=None, help='Original XML timestamp for a preceding audience question shown as context')
     p.add_argument('--style', choices=('accent', 'compact'), default=None)
     p.add_argument('--avatar-mode', choices=('auto', 'circle', 'closeup'), default=None)
@@ -51,6 +76,8 @@ def register_commands(sub, api):
     p.add_argument('--id', required=True, type=int)
     p.add_argument('--revision', required=True)
     p.add_argument('--review-note', required=True)
+    p.add_argument('--feedback-authorized', action='store_true', help='Bind explicit user acceptance of the current precision preview; never approves automatically')
+    p.add_argument('--cover-image', help='Prepared cover image, accepted only with --feedback-authorized; video remains unchanged')
     p.set_defaults(func=lambda args: select_precision(args, api))
 
 
@@ -71,15 +98,32 @@ def select_precision(args, api):
             raise ValueError('Published, queued, excluded or pending-rebuild clips cannot select another media revision')
         previous = record.get('precisionSelection') or {}
         original_path = previous.get('originalMetadataPath') or record['metadataPath']
-        metadata, directory = validate_revision({**record, 'metadataPath': original_path}, args.revision)
+        feedback = getattr(args, 'feedback_authorized', False)
+        cover_image = getattr(args, 'cover_image', None)
+        if cover_image and not feedback:
+            raise ValueError('A prepared cover requires explicit --feedback-authorized user acceptance')
+        metadata, directory = validate_revision({**record, 'metadataPath': original_path}, args.revision, feedback_authorized=feedback)
         approved = copy.deepcopy(metadata)
+        if feedback:
+            try:
+                from .precision_selection_review import prepare_feedback_selection
+            except ImportError:
+                from precision_selection_review import prepare_feedback_selection
+            approved = prepare_feedback_selection(metadata, directory, args.review_note, api.now_iso(), cover_image)
         approved['uploadReady'] = True
-        approved.pop('ownStreamHumanReview', None)
+        if not feedback:
+            approved.pop('ownStreamHumanReview', None)
         approved['precisionRevision']['uploadAuthorized'] = True
         approved['precisionPublicationReview'] = {'authority': 'user', 'note': args.review_note,
             'approvedAt': api.now_iso(), 'qaDigests': approved['qaResult']['digests']}
         publication_path = directory / 'publication.json'
         approved['output']['metadataPath'] = str(publication_path)
+        if feedback:
+            try:
+                from .clip_qa import validate_metadata_qa
+            except ImportError:
+                from clip_qa import validate_metadata_qa
+            validate_metadata_qa(approved)
         api.save_json(publication_path, approved)
         entry = api.load_upload_manifest(publication_path)[0]
         if int(entry.get('reviewIndex') or entry.get('idx') or 0) != int(record['reviewIndex']):
@@ -99,7 +143,7 @@ def select_precision(args, api):
         api.release_queue_mutation_lock(handle)
 
 
-def validate_revision(record, revision_path, *, manual_replacement=False):
+def validate_revision(record, revision_path, *, manual_replacement=False, feedback_authorized=False):
     try:
         from .clip_qa import validate_metadata_qa, validate_precision_metadata_qa, _file_digest
     except ImportError:
@@ -134,7 +178,13 @@ def validate_revision(record, revision_path, *, manual_replacement=False):
     # Automatic policy approves the ordinary baseline. This explicit manual path
     # validates the new precision QA without inheriting its old media hashes or
     # claiming that technical audio checks constitute human listening.
-    if manual_replacement:
+    if feedback_authorized:
+        try:
+            from .precision_selection_review import validate_feedback_artifact
+        except ImportError:
+            from precision_selection_review import validate_feedback_artifact
+        validate_feedback_artifact(metadata, json.loads((directory / 'original.json').read_text(encoding='utf-8')))
+    elif manual_replacement:
         baseline = json.loads((directory / 'original.json').read_text(encoding='utf-8'))
         validate_precision_metadata_qa(checked, baseline)
     else:

@@ -49,14 +49,20 @@ function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profi
         const a = cues.findIndex(c => c.id === row.fromCue), b = cues.findIndex(c => c.id === row.toCue);
         if (a < 0 || b < a || !String(row.reason || '').trim()
             || !['setup', 'escalation', 'reaction', 'payoff', 'context', 'step', 'explanation', 'performance', 'closing'].includes(row.role)) throw new Error('Story ranges require ordered real cue IDs, reason and role');
-        if (a <= lastCue) throw new Error(`Keep ranges must be chronological and disjoint: ${row.fromCue} repeats or precedes C${lastCue + 1}`);
+        // A repair may repeat the previous range's final cue when two editorial
+        // groups meet at the same subtitle. The groups are merged below, so the
+        // cue is retained once without weakening ordering for earlier repeats.
+        if (a < lastCue || (a === lastCue && b <= lastCue)) throw new Error(`Keep ranges must be chronological and disjoint: ${row.fromCue} repeats or precedes C${lastCue + 1}`);
         lastCue = b;
-        // Only complete approved subtitle cues; adjacent boundaries never split another cue.
-        const start = Math.max(0, cues[a].start - .12, a ? cues[a - 1].end : 0);
+        const actionBefore = row.actionBeforeSeconds === undefined ? .12 : row.actionBeforeSeconds;
+        if (!Number.isFinite(actionBefore) || actionBefore < 0 || actionBefore > 12) throw new Error('actionBeforeSeconds must be finite and between 0 and 12');
+        // Keep brief action leading into a reaction, without including partial omitted speech.
+        const start = Math.max(0, cues[a].start - Math.max(.12, actionBefore), a ? cues[a - 1].end : 0);
         const end = Math.min(sourceDuration, cues[b].end + (index === raw.keep.length - 1 ? endingHoldSeconds : .22), cues[b + 1]?.start ?? sourceDuration);
         return { start: round(start), end: Math.min(sourceDuration, round(end)), reason: row.reason, role: row.role, firstCue: a, lastCue: b };
     });
-    if (keep.some((s, i) => i && s.start < keep[i - 1].end - .001 && s.firstCue !== keep[i - 1].lastCue + 1)) {
+    if (keep.some((s, i) => i && s.start < keep[i - 1].end - .001
+        && s.firstCue !== keep[i - 1].lastCue && s.firstCue !== keep[i - 1].lastCue + 1)) {
         throw new Error('Keep ranges overlap across omitted speech');
     }
     const merged = [];
@@ -70,7 +76,11 @@ function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profi
         && !merged.some(span => cue.start >= span.start - .001 && cue.end <= span.end + .001)) throw new Error(`Cut would truncate speech ${cue.id}`);
     const missing = protectedSpans.filter(cue => !merged.some(s => cue.start >= s.start - .002 && cue.end <= s.end + .002));
     if (missing.length) throw new Error(`Retain public-copy evidence: ${missing.map(c => `${c.id} ${c.start.toFixed(3)}-${c.end.toFixed(3)}`).join(', ')}`);
-    if (profile?.preserveContinuity && merged.length !== 1) throw new Error('This performance/continuous passage must not be internally spliced');
+    // A continuous performance must remain one uninterrupted kept span, but a
+    // song introduction and a closing reaction may surround that span.
+    if (profile?.preserveContinuity && merged.filter(span => span.role === 'performance').length > 1) {
+        throw new Error('This performance/continuous passage must not be internally spliced');
+    }
     if (!profile && (!keep.some(s => s.role === 'setup') || !keep.some(s => s.role === 'payoff'))) throw new Error('Story needs setup and payoff');
     const duration = round(merged.reduce((n, s) => n + s.end - s.start, 0));
     if (!profile && sourceDuration > 60 && duration > sourceDuration * .75) throw new Error('Compact edit still retains over 75% of the source; remove redundant complete exchanges');
@@ -128,13 +138,23 @@ function absoluteEditPlan(timeline, sourceId, window) {
     return { version: 1, mode: 'editorial', sourceId, sourceWindow: { start: window.start, end: window.end }, keep, removed };
 }
 
+const CUT_AUDIO_FADE_SECONDS = .08;
+function audioPieceFilter(input, start, end, hold = 0, label = 'ta') {
+    const sourceDuration = Math.max(0, end - start);
+    const fade = Math.min(CUT_AUDIO_FADE_SECONDS, sourceDuration / 2);
+    const fadeIn = fade > .001 ? `,afade=t=in:st=0:d=${round(fade)}` : '';
+    const fadeOut = fade > .001
+        ? `,afade=t=out:st=${round(Math.max(0, sourceDuration - fade))}:d=${round(fade)}` : '';
+    return `[${input}]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS${fadeIn}${fadeOut}`
+        + (hold ? `,apad=pad_dur=${hold}` : '') + `[${label}]`;
+}
+
 function audioTimelineFilter(timeline, origin = 0, input = '0:a:0', output = 'baseaudio') {
     const pieces = timeline.holds?.length ? require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionPieces(timeline)
         : timeline.keep.map(s => ({ ...s, hold: 0 }));
-    const rows = pieces.map((s, i) => `[${input}]atrim=start=${origin + s.start}:end=${origin + s.end},asetpts=PTS-STARTPTS`
-        + (s.hold ? `,apad=pad_dur=${s.hold}` : '') + `[ta${i}]`);
+    const rows = pieces.map((s, i) => audioPieceFilter(input, origin + s.start, origin + s.end, s.hold, `ta${i}`));
     rows.push(`${pieces.map((_, i) => `[ta${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[${output}]`);
     return rows.join(';');
 }
 
-module.exports = { protectedStorySpans, protectedStoryCues, storyReviewEvidence, assertTimeline, validateStoryPlan, mapTimelineCues, sourceTimeForOutput, absoluteEditPlan, audioTimelineFilter, srtText };
+module.exports = { protectedStorySpans, protectedStoryCues, storyReviewEvidence, assertTimeline, validateStoryPlan, mapTimelineCues, sourceTimeForOutput, absoluteEditPlan, audioPieceFilter, audioTimelineFilter, srtText };

@@ -37,7 +37,11 @@ async function detectGames(options, config, source, info, files) {
     if (!rows.some(r => r.source === 'audio_transcript')) throw new Error('Missing game transcript; coverage is unknown');
     const exclusions = tools.resolvedExclusions(options.config, info.roomId);
     const windows = tools.detectionWindows(rows, duration, config);
-    const signature = tools.sha({ source, version: tools.VERSION, config, exclusions, duration });
+    // Visual provider/cadence changes must reuse the expensive text-detection
+    // plan. Keep the detection signature bound only to inputs that affect the
+    // transcript/event decision; visual review has its own cache key.
+    const { visual: _visualConfig, ...detectionConfig } = config;
+    const signature = tools.sha({ source, version: tools.VERSION, config: detectionConfig, exclusions, duration });
     let plan, existingSessionId;
     if (fs.existsSync(files.plan)) {
         const old = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
@@ -93,7 +97,8 @@ async function generateStreamGames(options = {}) {
     const root = options.config || loader.getConfig(), info = recordingInfo(options.mediaPath, options.context);
     if (!tools.gameEnabled(root, info.roomId)) return { status: 'disabled' };
     options = { ...options, config: root };
-    const config = tools.getGameConfig(root), files = pathsFor(options.mediaPath, root, config), release = acquire(files.lock);
+    let config = tools.getGameConfig(root);
+    const files = pathsFor(options.mediaPath, root, config), release = acquire(files.lock);
     try {
         return await require('../workflow-runtime').loadWorkflow('ai/usage').runClipUsage({
             kind: 'games', directory: files.directory, mediaPath: options.mediaPath, recording: info,
@@ -101,6 +106,8 @@ async function generateStreamGames(options = {}) {
             sendMarkdown: options.notifyUsage || require('../wechat_work_markdown').sendWeChatMarkdown, io: options.usageIO
         }, async () => {
         const source = sourceSnapshot({ source: options });
+        if (config.otherGames?.enabled) config = require('../workflow-runtime').loadWorkflow('clipping/gameCatalog')
+            .resolveGameCatalog(config, { ...options, roomId: info.roomId });
         const plan = await detectGames(options, config, source, info, files);
         if (options.planOnly) return { status: plan.status, events: plan.events.length, parts: plan.parts.length, planPath: files.plan };
         // Every text window was inspected. Absence is a completed result, not a media job.
@@ -125,6 +132,9 @@ async function generateStreamGames(options = {}) {
                 ranges: timeline.ranges, sheets: timeline.sheets };
             writeJsonAtomic(files.plan, plan);
         }
+        // An over-eager `other` verdict is not an error, only a shorter episode. Compare the
+        // detector's claims with what is kept and leave a contact sheet of anything large.
+        await require('./stream_game_coverage').guardCoverage({ plan, timeline, options, config, files });
         // Kept in a separate module so detection can resume before media/upload infrastructure is needed.
         return await require('./stream_game_render').renderGames(plan, options, config, files);
         });

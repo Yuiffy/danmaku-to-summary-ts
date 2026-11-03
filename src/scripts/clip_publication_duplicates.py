@@ -19,7 +19,7 @@ def _source_keys(clip, metadata):
     if (clip.get('publicationKind') or metadata.get('publicationKind')) == 'social_post':
         url = (metadata.get('source') or {}).get('url') or clip.get('source')
         return {('social_post', str(url).split('?')[0].split('#')[0].rstrip('/'))} if url else set()
-    source = clip.get('sourceMediaPath') or (metadata.get('source') or {}).get('mediaPath')
+    source = (metadata.get('candidateBundle') or {}).get('originalSourceMediaPath') or clip.get('sourceMediaPath') or (metadata.get('source') or {}).get('mediaPath')
     keys = set()
     if source:
         normalized = ntpath.normcase(ntpath.normpath(source))
@@ -55,6 +55,9 @@ def _purpose(clip, metadata):
 
 
 def _ranges(clip, metadata):
+    if metadata.get('candidateBundle'):
+        return [(row['originalWindow']['start'], row['originalWindow']['end'])
+                for row in metadata['candidateBundle'].get('mappings', [])]
     # A social post has one source identity, independent of rendered hold times.
     if _purpose(clip, metadata) == ('social_post',):
         return [(0, 1)]

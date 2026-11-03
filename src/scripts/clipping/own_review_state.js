@@ -25,7 +25,9 @@ function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
     if (plan.aiStatus?.ranking?.sourceSha256 === evidence.sourceSha256) {
         plan.aiStatus.ranking = presentation.enrichSkippedRanking(plan.aiStatus.ranking, candidates);
     }
-    const rejected = [...(plan.aiStatus?.validation?.rejected || []), ...(plan.aiStatus?.rejectedAfterAlignment || [])];
+    const rejected = [...(plan.aiStatus?.validation?.rejected || []), ...(plan.aiStatus?.rejectedAfterAlignment || []),
+        ...(plan.publication?.deferred || []).map(clip => ({ ...clip, reason: 'editorial_deferred',
+            publication: clip.publication, curation: clip.curation }))];
     const requestId = plan.aiStatus?.requests?.find(request => request.phase === 'global-rerank')?.requestId;
     if (requestId && rejected.some(item => !item.title)) {
         for (const directory of [path.join(outputRoot, '.selection-cache'), path.join(outputRoot, '.selection-cache/.attempt-outcomes')]) {
@@ -50,7 +52,8 @@ function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
         const key = crypto.createHash('sha256').update(JSON.stringify({
             source: source.mediaPath, candidateIndex: rejection.candidateIndex, reason: rejection.reason,
             startCueId: rejection.startCueId, endCueId: rejection.endCueId,
-            startTime: rejection.startTime, endTime: rejection.endTime
+            startTime: rejection.startTime, endTime: rejection.endTime,
+            ...(rejection.reason === 'editorial_deferred' ? { start: rejection.start, end: rejection.end } : {})
         })).digest('hex').slice(0, 20);
         const directory = path.join(outputRoot, 'rejected_candidates');
         const metadataPath = path.join(directory, `rejected-${key}.json`);
@@ -90,8 +93,11 @@ function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
             version: 1, mode: 'own_stream_fun_review', status: 'selection_rejected', reviewIndex: index,
             generatedAt: new Date().toISOString(), source, window,
             selectionSource: rejection.selectionSource || 'model_global_rerank', reviewPresentation,
-            copy: { title: rejection.title || `\u88ab\u5254\u9664\u5019\u9009 ${rejection.candidateIndex ?? rejection.index ?? '?'}`, description: '', coverText: '' },
+            copy: { title: rejection.title || `\u88ab\u5254\u9664\u5019\u9009 ${rejection.candidateIndex ?? rejection.index ?? '?'}`,
+                description: rejection.reason === 'editorial_deferred' ? rejection.description || '' : '',
+                coverText: rejection.reason === 'editorial_deferred' ? rejection.coverText || '' : '' },
             recommendationScore: rejection.score ?? null, publicCopyPending: true, uploadReady: false,
+            ...(rejection.publication ? { publication: rejection.publication } : {}), ...(rejection.curation ? { curation: rejection.curation } : {}),
             ...(clipIntent?.signals.length ? { clipIntent } : {}),
             selectionRejection: { minClipSeconds: plan.config?.minClipSeconds, maxClipSeconds: plan.config?.maxClipSeconds,
                 ...rejection, sourceSha256: evidence.sourceSha256 },

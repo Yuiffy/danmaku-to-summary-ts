@@ -75,15 +75,13 @@ describe('independent silent visual game opening', () => {
       expect(probes[0][1].every((frame: Data) => frame.index > 8)).toBe(true);
     }
   });
-  test.each([false, true])('a 73-second sparse gap is probed without approving ambiguous pixels (%s)', async uncertain => {
+  test.each([false, true])('a 73-second gap locates the earlier unambiguous first transition before any later unclear probe (%s)', async uncertain => {
     const { options, io } = harness({}, uncertain ? 110 + 73 / 3 : undefined);
     options.audio.end = 200; options.localAudioEvidence.primary.end = 200;
     options.frames = [{ index: 1, time: 110 }, { index: 2, time: 183 }];
     options.frameObservations = [{ index: 1, activity: 'other' }, { index: 2, activity: 'gameplay' },
       { index: 200, activity: 'gameplay' }];
-    if (uncertain) {
-      await expect(verifyVisualOpening(options, io)).rejects.toThrow(/No bounded earliest/);
-    } else {
+    {
       const review = await verifyVisualOpening(options, io);
       expect(review.start).toBe(117);
       expect(review.bracket.end - review.bracket.start).toBeLessThanOrEqual(30);
@@ -91,6 +89,7 @@ describe('independent silent visual game opening', () => {
       expect(io.request.mock.calls.some(([prompt]) => prompt.includes('search interval'))).toBe(true);
       const probe = io.request.mock.calls.find(([prompt]) => prompt.includes('search interval'))!;
       expect(probe[1].every((sample: Data) => sample.index > 200)).toBe(true);
+      if (uncertain) expect(review.samples.every((s: Data) => s.time < 110 + 73 / 3)).toBe(true);
     }
   });
   test('retains the last certain non-game frame before the first game pixel without inventing speech', async () => {
@@ -125,6 +124,32 @@ describe('independent silent visual game opening', () => {
     }
   });
 
+  test('a real earlier preparation row retains the entire unreadable launch without inventing its first visible pixel', async () => {
+    const lead = { transcriptIndex: 2, start: 110, end: 115, text: 'Still unrelated.' };
+    const { options, io } = harness({ retainedLeadIn: lead });
+    options.audio.end = 200; options.localAudioEvidence.primary.end = 200;
+    options.frames = [{ index: 1, time: 110 }, { index: 2, time: 183 }];
+    options.frameObservations = [{ index: 1, activity: 'other' }, { index: 2, activity: 'gameplay' }];
+    const original = io.request.getMockImplementation()!;
+    io.request.mockImplementation(async (prompt, samples) => {
+      if (prompt.includes('COMPLETE preceding original-audio ASR')) {
+        expect(prompt).toContain('a missing precise pixel timestamp alone is not a reason for uncertain');
+        return original(prompt, samples);
+      }
+      return { text: JSON.stringify({ reason: 'Source shows previous activity then unreadable launch then actual target game',
+        frames: samples.map(s => ({ index: s.index, activity: s.time < 130 ? 'other' : s.time < 170 ? 'uncertain' : 'game',
+          description: 'Actual original pixels at ' + s.time })) }) };
+    });
+    const review = await verifyVisualOpening(options, io);
+    expect(review).toMatchObject({ version: 3, timingSource: 'original_visual_context', start: 110, sampleSeconds: 30, resolutionSeconds: null });
+    expect(validateVisualOpening(review, source, options.audio, io)).toBe(110);
+    expect(review.frames.some((f: Data) => f.activity === 'uncertain')).toBe(true);
+    const changed = structuredClone(review); changed.frames[0].activity = 'uncertain';
+    expect(() => validateVisualOpening(changed, source, options.audio, io)).toThrow(/begins during/);
+    const absent = structuredClone(review); absent.contextReview.retainedLeadIn = null;
+    expect(() => validateVisualOpening(absent, source, options.audio, io)).toThrow(/method changed/);
+  });
+
   test('unreadable earlier pixels and later scene brackets are rejected', async () => {
     const unknown = harness({}, 112);
     await expect(verifyVisualOpening(unknown.options, unknown.io)).rejects.toThrow(/pixels remain uncertain/);
@@ -133,6 +158,18 @@ describe('independent silent visual game opening', () => {
     expect(() => openingBoundary(review)).toThrow(/first unambiguous/);
     review.frames[1].activity = 'other'; review.bracket.start = 117.25;
     expect(() => openingBoundary(review)).toThrow(/first unambiguous/);
+  });
+
+  test.each([true, false])('a faint fade found only at quarter-second sampling requires real earlier preparation (%s)', async retain => {
+    const lead = { transcriptIndex: 2, start: 110, end: 115, text: 'Still unrelated.' };
+    const { options, io } = harness({ retainedLeadIn: retain ? lead : null }, 117.25);
+    if (!retain) await expect(verifyVisualOpening(options, io)).rejects.toThrow(/method changed/);
+    else {
+      const review = await verifyVisualOpening(options, io);
+      expect(review).toMatchObject({ version: 3, start: 110, timingSource: 'original_visual_context' });
+      expect(review.frames.some((f: Data) => f.activity === 'uncertain')).toBe(true);
+      expect(validateVisualOpening(review, source, options.audio, io)).toBe(110);
+    }
   });
 
   test('changed source pixels, receipt source, or original response cannot pass revalidation', async () => {

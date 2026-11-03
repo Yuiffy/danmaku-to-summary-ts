@@ -3,7 +3,7 @@
 // Editorial scores are not probabilities. Never compare recall/heat scores with this scale.
 const MODEL_SOURCES = new Set(['model_global_rerank', 'model_full_context', 'model_chunked']);
 const DEFAULTS = Object.freeze({ mode: 'all', roomIds: ['25788785'], minScore: 80,
-    maxStandalone: 18, standoutScore: 92,
+    maxStandalone: 18, standoutScore: 92, hardLimit: false,
     bundles: { enabled: false, minScore: 70, protectScore: 90, maxGroups: 2, maxMembers: 3,
         maxSeconds: 300, minCombinedScore: 85, minScoreGain: 5, maxCandidates: 20 } });
 
@@ -19,6 +19,7 @@ function resolvePolicy(raw = {}, roomId) {
     for (const field of ['minScore', 'standoutScore']) range(field, policy[field], 0, 100);
     if (policy.standoutScore < policy.minScore) throw new Error('standoutScore must be >= minScore');
     range('maxStandalone', policy.maxStandalone, 1, 100, true);
+    if (typeof policy.hardLimit !== 'boolean') throw new Error('Invalid publicationPolicy.hardLimit');
     for (const field of ['minScore', 'protectScore', 'minCombinedScore', 'minScoreGain']) range(`bundles.${field}`, policy.bundles[field], 0, 100);
     for (const [field, min, max] of [['maxGroups', 1, 5], ['maxMembers', 2, 4], ['maxCandidates', 2, 50]]) {
         range(`bundles.${field}`, policy.bundles[field], min, max, true);
@@ -39,29 +40,35 @@ function editorialScore(clip) {
 function selectPublication(clips, raw = {}, roomId) {
     const policy = resolvePolicy(raw, roomId);
     const rows = clips.map((clip, index) => ({ index: index + 1, clip, score: editorialScore(clip) }));
-    const ranked = rows.filter(row => row.score !== null && row.score >= policy.minScore)
+    const ranked = rows.filter(row => row.score !== null && row.score >= policy.minScore
+        && (!row.clip.curation || row.clip.curation.status === 'original'))
         .sort((a, b) => b.score - a.score || a.clip.start - b.clip.start || a.index - b.index);
     const protectedRows = ranked.filter(row => row.score >= policy.standoutScore);
-    const selected = policy.mode === 'all' ? rows : policy.mode === 'score' ? ranked
-        : ranked.slice(0, Math.max(policy.maxStandalone, protectedRows.length));
+    const selected = policy.mode === 'all' ? rows.filter(row => !row.clip.curation || row.clip.curation.status === 'original') : policy.mode === 'score' ? ranked
+        : ranked.slice(0, policy.hardLimit ? policy.maxStandalone : Math.max(policy.maxStandalone, protectedRows.length));
     const selectedIds = new Set(selected.map(row => row.index));
     const decisions = rows.map(row => ({ index: row.index, candidateIndex: row.clip.candidateIndex ?? null,
         start: row.clip.start, end: row.clip.end, title: row.clip.title, score: row.score,
         selected: selectedIds.has(row.index), protected: policy.mode !== 'all' && row.score !== null && row.score >= policy.standoutScore,
-        reason: policy.mode === 'all' ? 'legacy_all' : row.score === null ? 'unscored'
+        ...(row.clip.curation ? { curation: row.clip.curation } : {}),
+        reason: row.clip.curation && row.clip.curation.status !== 'original' ? `curation_${row.clip.curation.status}`
+            : policy.mode === 'all' ? 'legacy_all' : row.score === null ? 'unscored'
             : row.score < policy.minScore ? 'below_score' : !selectedIds.has(row.index) ? 'batch_budget'
                 : row.score >= policy.standoutScore ? 'standout' : 'selected' }));
     const deferred = rows.filter(row => !selectedIds.has(row.index)).map(row => ({ ...row.clip,
         publication: decisions[row.index - 1] }));
-    const effective = policy.mode === 'shadow' ? rows : rows.filter(row => selectedIds.has(row.index));
+    const effective = (policy.mode === 'shadow' ? rows : rows.filter(row => selectedIds.has(row.index)))
+        .filter(row => !row.clip.curation || row.clip.curation.status === 'original');
     return { clips: effective.map(row => policy.mode === 'all' ? row.clip : { ...row.clip, publication: decisions[row.index - 1] }),
         report: { version: 1, policy, inputCount: clips.length, recommendedCount: selected.length,
             renderedCount: effective.length, deferredCount: deferred.length,
-            protectedOverflow: ['curated', 'shadow'].includes(policy.mode) ? Math.max(0, protectedRows.length - policy.maxStandalone) : 0,
+            protectedOverflow: !policy.hardLimit && ['curated', 'shadow'].includes(policy.mode) ? Math.max(0, protectedRows.length - policy.maxStandalone) : 0,
             decisions, deferred, bundles: { status: 'disabled', proposals: [] } } };
 }
 
 const REASONS = { legacy_all: '原模式', unscored: '没有可比较的模型分数', below_score: '低于分数底线',
+    curation_covered: '其他UP已完整覆盖，跳过自制', curation_rejected: '缺少独立发布价值',
+    curation_needs_review: '同题核查未完成', curation_budget: '本场制作名额以外',
     batch_budget: '本场优先名额以外', standout: '高分独立保留', selected: '优先独立投稿' };
 function summaryLines(report) {
     if (!report || report.policy.mode === 'all') return [];
@@ -75,7 +82,7 @@ function publicationMarkdown(report) {
     const lines = ['# 本场发布取舍', '', ...summaryLines(report), '',
         '评分仅用于编辑比较，不代表播放量预测。待选项没有被删除，也没有获得投稿授权。', '',
         '| 原候选序号 | 分数 | 决定 | 标题 |', '| --- | --- | --- | --- |'];
-    for (const row of report.decisions) lines.push(`| ${row.index} | ${row.score ?? '未知'} | ${REASONS[row.reason]} | ${String(row.title || '').replace(/\|/g, '／').replace(/[\r\n]/g, ' ')} |`);
+    for (const row of report.decisions) lines.push(`| ${row.index} | ${row.score ?? '未知'} | ${REASONS[row.reason]}${row.curation?.peer ? `（${row.curation.peer.bvid}）` : ''} | ${String(row.title || '').replace(/\|/g, '／').replace(/[\r\n]/g, ' ')} |`);
     lines.push('', '## 关联合辑建议', '', '建议保留各段完整起因与收束，按原时间顺序拼接；新合辑需重新检查文案、归属和字幕，不能继承单片审核。');
     const bundles = report.bundles || {};
     if (!bundles.proposals?.length) lines.push('', `本次没有合辑建议（${bundles.status || 'disabled'}）。`);

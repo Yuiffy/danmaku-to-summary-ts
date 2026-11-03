@@ -48,6 +48,20 @@ class LocalActivityReviewTests(unittest.TestCase):
     def test_bound_independent_lyrics_preserve_complete_source_enclosure(self):
         check_local_activity(self.event, self.source)
 
+    def test_operator_watch_boundary_expansion_keeps_original_assessment_bound(self):
+        event = dict(self.event, id='watch-1', kind='watch', start=100, end=140,
+            operatorBoundaryEdit={'version': 1, 'method': 'operator_selected_boundary',
+                'sourceWindow': {'start': 100, 'end': 116}, 'selectedWindow': {'start': 100, 'end': 140}},
+            reviewIssues=['operator_boundary_edit_pending_human_review'])
+        self.response['requestBinding']['candidates'] = [{'id': 'watch-1', 'start': 100, 'end': 116, 'audioIndices': [1]}]
+        self.raw['results'][0] = dict(self.raw['results'][0], id='watch-1', performer=None,
+            events=[{'kind': 'watch', 'start': {'audioIndex': 1, 'seconds': 0}, 'end': {'audioIndex': 1, 'seconds': 16}}])
+        self.response['text'] = json.dumps(self.raw)
+        response_path = self.save('RESPONSE.json', self.response)
+        event['verification']['responsePath'] = response_path
+        event['verification']['responseSha256'] = file_digest(response_path)
+        check_local_activity(event, self.source)
+
     def test_optional_native_listening_rechecks_original_audio_and_local_timestamps(self):
         request = json.loads((self.root/'LOCAL_INPUT.json').read_text())
         raw = dict(timeBasis='audio_local_seconds', observations=[dict(id='song-1', ownership='host',

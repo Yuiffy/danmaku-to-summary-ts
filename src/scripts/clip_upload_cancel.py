@@ -10,6 +10,29 @@ class UploadCancelled(RuntimeError):
     pass
 
 
+def exclude_idle(api, ids, reason):
+    """A live worker does not own unrelated, unqueued candidates. Lock only the transaction."""
+    with api.queue_transaction() as queue:
+        selected = set(ids)
+        if any(selected.intersection(int(i) for i in job.get("clipIds", [])
+                                    if int(i) not in job.get("cancellationAcknowledgedIds", []))
+               for job in queue.get("jobs", []) if job.get("status") in ("pending", "retry_wait", "running", "blocked")):
+            return False
+        registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
+        missing = [i for i in ids if str(i) not in registry.get("clips", {})]
+        if missing:
+            raise ValueError(f"unknown clip ids: {missing}")
+        api.sync_clip_statuses(registry, ids)
+        for i in ids:
+            clip = registry["clips"][str(i)]
+            clip["editorialExclusion"] = {"reason": reason, "excludedAt": api.now_iso()}
+            if clip.get("status") != "uploaded":
+                clip["status"] = "cancelled"
+            clip["updatedAt"] = api.now_iso()
+        api.save_json(api.REGISTRY_PATH, registry)
+        return True
+
+
 def requested_ids(job):
     return {int(i) for i in job.get("cancellationRequests", {})}
 
@@ -197,3 +220,53 @@ class UploadControl:
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+
+def exclude(args, api):
+    """Cancel selected local candidates and persist an editorial upload veto."""
+    ids = api.parse_int_list(args.ids)
+    reason = str(args.note or "").strip()
+    if not ids or not reason:
+        print("[ERROR] exclusion requires IDs and a reason", file=sys.stderr)
+        return 2
+    try:
+        if exclude_idle(api, ids, reason):
+            print(f"[OK] excluded idle clip ids: {','.join(map(str, ids))}; future enqueue is blocked")
+            return 0
+    except ValueError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        return 2
+    if not api.acquire_lock():
+        print("[ERROR] stop the upload worker before excluding clips", file=sys.stderr)
+        return 3
+    try:
+        with api.queue_transaction() as queue:
+            registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
+            missing = [i for i in ids if str(i) not in registry.get("clips", {})]
+            if missing:
+                print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
+                return 2
+            api.sync_clip_statuses(registry, ids)
+            for i in ids:
+                clip = registry["clips"][str(i)]
+                clip["editorialExclusion"] = {"reason": reason, "excludedAt": api.now_iso()}
+                if clip.get("status") != "uploaded":
+                    clip["status"] = "cancelled"
+                clip["updatedAt"] = api.now_iso()
+            for job in queue.get("jobs", []):
+                if job.get("status") not in ("pending", "retry_wait", "running"):
+                    continue
+                removed = [int(i) for i in job.get("clipIds", []) if int(i) in ids]
+                if not removed:
+                    continue
+                job["clipIds"] = [i for i in job["clipIds"] if int(i) not in ids]
+                job.setdefault("editorialExclusions", []).append({"clipIds": removed, "reason": reason})
+                job["updatedAt"] = api.now_iso()
+                if not job["clipIds"]:
+                    api.clear_job_retry_metadata(job)
+                    api.mark_job(job, "cancelled", cancelledAt=api.now_iso(), cancellationReason=reason)
+            api.save_json(api.REGISTRY_PATH, registry)
+        print(f"[OK] excluded clip ids: {','.join(map(str, ids))}; future enqueue is blocked")
+        return 0
+    finally:
+        api.release_lock()

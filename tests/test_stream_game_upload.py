@@ -229,6 +229,15 @@ class GameUploadTests(unittest.TestCase):
                              'frames': [{'index': i+1, 'activity': 'other', 'description': 'Unobstructed talking scene'} for i in range(4)]})
         review.check_artifacts(self.data)
         resolution_data = copy.deepcopy(self.data)
+        # A new review reuses original audio in its previous evidence directory.
+        reused = copy.deepcopy(self.data)
+        reused['activities'][0]['verification']['evidenceDirectory'] = str(self.root/'new-review')
+        review.check_artifacts(reused)
+        for key, value in [('start', 1), ('source', {**identity, 'mediaBytes': '999'}), ('audioPath', str(self.source))]:
+            changed = copy.deepcopy(reused)
+            changed['activities'][0]['verification']['boundaryReview']['excerptReviews'][0]['localAudioEvidence']['primary'][key] = value
+            with self.subTest(reused_audio_field=key), self.assertRaises(ValueError):
+                review.check_artifacts(changed)
         resolution_review = resolution_data['activities'][0]['verification']['endFrameReview']
         original_sample = copy.deepcopy(resolution_review['samples'][0])
         full_file = self.root/'closing-full-resolution.jpg'; extraction(full_file, 50, original_resolution=True)
@@ -406,8 +415,47 @@ class GameUploadTests(unittest.TestCase):
         self.data['activities'][0]['verification'] = verdict
         return verdict
 
+    def test_protocol14_retains_unknown_launch_pixels_only_after_a_real_independent_preparation_row(self):
+        verdict = self.silent_start_fixture()
+        opening = verdict['startFrameReview']; opening.update(version=3, sampleSeconds=30, resolutionSeconds=None,
+            timingSource='original_visual_context', start=.5)
+        opening['bracket']['start'] = 0
+        unknown = next(f for s, f in zip(opening['samples'], opening['frames']) if s['time'] == 4)
+        unknown['activity'] = 'uncertain'; unknown['description'] = 'Unreadable launch screen retained completely'
+        for batch in opening['batches']:
+            raw = json.loads(Path(batch['responsePath']).read_text(encoding='utf-8'))
+            row = json.loads(raw['text'])
+            row['frames'] = [next(f for f in opening['frames'] if f['index'] == index) for index in batch['indices']]
+            raw['text'] = json.dumps(row)
+            Path(batch['responsePath']).write_text(json.dumps(raw), encoding='utf-8')
+            batch['responseSha256'] = review.file_digest(batch['responsePath'])
+        row = review.read_independent_audio(opening['localAudioEvidence']['primary'], self.data['sourceSnapshot'])[0]
+        context = dict(decision='keep', reason='Full preceding context closed; actual preparation before all unclear imagery is retained',
+            windowStartsUnrelated=True, earlierContextClosed=True, allPossibleSetupRetained=True,
+            ownGameTransition=True, retainedContentAllowed=True, retainedLeadIn=dict(transcriptIndex=1, **row))
+        response = Path(opening['contextReview']['responsePath'])
+        raw = json.loads(response.read_text(encoding='utf-8')); raw['text'] = json.dumps(context)
+        response.write_text(json.dumps(raw), encoding='utf-8')
+        opening['contextReview'] = dict(**context, responsePath=str(response), responseSha256=review.file_digest(response))
+        observation = dict(index=1, heardWords=None, timingSource='original_visual_context')
+        verdict.update(protocolVersion=14, start=.5)
+        verdict['audioObservations'][0] = observation
+        verdict['boundaryReview'].update(start=.5, startFrameReview=opening)
+        verdict['boundaryReview']['audioObservations'][0] = observation
+        excerpt = verdict['boundaryReview']['excerptReviews'][0]
+        excerpt.update(timingSource='original_visual_context', boundaryAnchor='before_retained_context', seconds=.5)
+        check = lambda value: review.check_visual_start(value, opening['window'], excerpt, 60, self.data['sourceSnapshot'])
+        self.assertEqual(check(verdict), .5)
+        changed = copy.deepcopy(verdict); changed['startFrameReview']['frames'][0]['activity'] = 'uncertain'
+        with self.assertRaises(ValueError): check(changed)
+        changed = copy.deepcopy(verdict); changed['startFrameReview']['contextReview']['retainedLeadIn'] = None
+        with self.assertRaises(ValueError): check(changed)
+        changed = copy.deepcopy(verdict); changed['protocolVersion'] = 13
+        with self.assertRaises(ValueError): check(changed)
+
     def test_protocol12_silent_start_recomputes_original_visual_cut_and_keeps_spoken_end(self):
         verdict = self.silent_start_fixture()
+        verdict['evidenceDirectory'] = str(self.root/'new-review')
         self.assertIsNone(verdict['audioObservations'][0]['heardWords'])
         review.check_artifacts(self.data)
         self.save(); self.approve(); review.validate_game_review(self.data)

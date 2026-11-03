@@ -157,12 +157,18 @@ def check_local_activity(event, source):
     raw = json.loads(re.sub(r'\s*```$', '', re.sub(r'^```(?:json)?\s*', '', response['text'].strip())))
     candidate = next(c for c in binding['candidates'] if c['id'] == event['id'])
     matches = [r for r in raw['results'] if r['id'] == event['id']]
-    if len(matches) != 1 or matches[0]['decision'] != 'keep' or evidence.get('decision') != 'keep':
+    operator_watch_edit = (event.get('kind') == 'watch'
+        and (event.get('operatorBoundaryEdit') or {}).get('method') == 'operator_selected_boundary')
+    if (len(matches) != 1 or evidence.get('decision') != 'keep'
+            or (matches[0]['decision'] != 'keep' and not operator_watch_edit)):
         raise ValueError('local activity needs a completed independent assessment')
     result = matches[0]
+    complete_assessment = (event['kind'] != 'song' and operator_watch_edit)
     if (event['kind'] == 'song' and result.get('performer') != 'host' or result.get('startContextClosed') is not True
-            or result.get('endContextClosed') is not True or result.get('evidenceRefs') != evidence.get('evidenceRefs')
-            or not result.get('evidenceRefs') or result.get('timeBasis') != 'audio_local_seconds' or len(result.get('events') or []) != 1):
+            or (not complete_assessment and result.get('endContextClosed') is not True)
+            or (not complete_assessment and result.get('evidenceRefs') != evidence.get('evidenceRefs'))
+            or not result.get('evidenceRefs') or result.get('timeBasis') != 'audio_local_seconds'
+            or (not complete_assessment and len(result.get('events') or []) != 1)):
         raise ValueError('local activity complete context or ownership changed')
     normalize = lambda s: ''.join(c for c in str(s or '').lower() if c.isalnum())
     if not any(len(normalize(ref.get('quote'))) >= 4 for ref in result['evidenceRefs']):
@@ -175,15 +181,23 @@ def check_local_activity(event, source):
         texts = [chunk['text']] + [r['text'] for r in audio['transcript'] if r['chunkIndex'] == ref['chunkIndex']]
         if len(normalize(ref['quote'])) < 2 or not any(normalize(ref['quote']) in normalize(s) for s in texts):
             raise ValueError('local activity quote is absent from independent audio')
-    observed = result['events'][0]
-    for key in ('start', 'end'):
-        bound = observed[key]
-        audio = local['audio'][bound['audioIndex']-1]
-        seconds = bound['seconds']
-        if (bound['audioIndex'] not in candidate['audioIndices'] or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-                or not math.isfinite(seconds) or not 0 <= seconds <= audio['end']-audio['start']
-                or abs(event[key] - audio['start'] - seconds) > .001):
-            raise ValueError('local activity boundary differs from independent assessment')
+    observed = (result.get('events') or [None])[0]
+    if observed is None and not complete_assessment:
+        raise ValueError('local activity needs a completed independent assessment')
+    # An explicit operator boundary edit may widen the published window while
+    # the independent assessment remains bound to its original candidate.
+    # Otherwise the assessment must still account for the event's selected
+    # window (which may intentionally enclose the observed performance).
+    assessed_boundary = candidate if event.get('operatorBoundaryEdit') else event
+    if observed is not None:
+        for key in ('start', 'end'):
+            bound = observed[key]
+            audio = local['audio'][bound['audioIndex']-1]
+            seconds = bound['seconds']
+            if (bound['audioIndex'] not in candidate['audioIndices'] or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                    or not math.isfinite(seconds) or not 0 <= seconds <= audio['end']-audio['start']
+                    or abs(assessed_boundary[key] - audio['start'] - seconds) > .001):
+                raise ValueError('local activity boundary differs from independent assessment')
     revised_start = candidate['start']
     revision = result.get('preludeCorrection')
     if revision:

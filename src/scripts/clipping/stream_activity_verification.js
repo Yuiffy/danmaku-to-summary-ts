@@ -32,11 +32,16 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
     const chat = { model, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...inputs.map(input =>
         input.mimeType.startsWith('audio/') ? { type: 'input_audio', input_audio: { data: fs.readFileSync(input.path).toString('base64'), format: 'mp3' } }
             : { type: 'image_url', image_url: { url: `data:${input.mimeType};base64,${fs.readFileSync(input.path).toString('base64')}` } })] }],
-        temperature: .1, max_tokens: settings.maxTokens || 8192, response_format: { type: 'json_object' } };
+        temperature: .1, max_tokens: settings.maxTokens || 8192, response_format: { type: 'json_object' },
+        // Always-thinking providers (ZAI GLM-5.x) spend the whole token budget on reasoning for
+        // ambiguous contact sheets and never emit JSON. Bound it when the stage asks for that.
+        ...(provider === 'zai' && settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}) };
     const native = provider === 'gemini' || settings.apiMode === 'gemini_native';
+    // A configured endpoint may include the /v1 suffix already; zai's /api/paas/v4 has no such tail.
     const baseUrl = String(credentials.baseUrl || 'https://api.tu-zi.com').replace(/\/(?:v1)?\/?$/u, '');
     const url = provider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
-        : native ? `${baseUrl}/v1beta/models/${model}:generateContent` : `${baseUrl}/v1/chat/completions`;
+        : native ? `${baseUrl}/v1beta/models/${model}:generateContent`
+            : `${baseUrl}${provider === 'zai' ? '' : '/v1'}/chat/completions`;
     const { mediaUsage, recordAiUsage } = require('../workflow-runtime').loadWorkflow('ai/usage');
     const started = Date.now(), audios = inputs.filter(input => input.mimeType.startsWith('audio/'));
     const attempt = { provider, model, requestStarted: true,
@@ -60,7 +65,24 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
     data = await response.json();
     const candidate = native ? data.candidates?.[0] : data.choices?.[0];
     const finish = candidate?.finishReason || candidate?.finish_reason;
-    if (!['STOP', 'stop'].includes(finish)) throw new Error(`Activity verification incomplete: ${finish || 'missing candidate'}`);
+    if (!['STOP', 'stop'].includes(finish)) {
+        Object.assign(attempt, mediaUsage(data.usageMetadata || data.usage), { status: 'failure',
+            finishReason: String(finish || 'missing candidate'), elapsedMs: Date.now() - started,
+            requestId: response.headers?.get?.('x-request-id') || null, responseId: data.responseId || data.id || null,
+            httpStatus: response.status, usageFinal: true });
+        recordAiUsage(attempt);
+        attempt.usageRecorded = true;
+        // A reasoning model can spend the whole budget before emitting JSON. One retry with a
+        // larger budget is far cheaper than failing the recording and re-running every stage.
+        const truncated = /length|max_tokens|maxoutputtoken/iu.test(String(finish || ''));
+        const current = Number(settings.maxTokens) || 8192;
+        if (truncated && !settings.escalatedMaxTokens && current < 32768) {
+            const maxTokens = Math.min(current * 2, 32768);
+            console.warn(`[MEDIA_TOKEN_ESCALATE] ${model} finish=${finish} max_tokens ${current}→${maxTokens}`);
+            return requestMediaVerification(prompt, inputs, root, { ...settings, maxTokens, escalatedMaxTokens: true });
+        }
+        throw new Error(`Activity verification incomplete: ${finish || 'missing candidate'}`);
+    }
     const text = native ? candidate.content?.parts?.filter(p => typeof p.text === 'string').map(p => p.text).join('') : candidate.message?.content;
     if (!text) throw new Error('Activity verification returned no JSON');
     Object.assign(attempt, mediaUsage(data.usageMetadata || data.usage), { status: 'success', finishReason: 'completed',
@@ -69,6 +91,7 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
     recordAiUsage(attempt);
     return { text, meta: { model, apiMode: native ? 'gemini_native' : 'openai_chat', attempts: [attempt] } };
     } catch (error) {
+        if (attempt.usageRecorded) { error.attempts = [attempt, ...(error.attempts || [])]; throw error; }
         Object.assign(attempt, mediaUsage(data?.usageMetadata || data?.usage), { status: 'failure',
             elapsedMs: Date.now() - started, requestId: response?.headers?.get?.('x-request-id') || null,
             responseId: data?.responseId || data?.id || null, httpStatus: response?.status || null,

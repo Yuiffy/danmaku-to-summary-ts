@@ -247,6 +247,47 @@ describe('render held topic candidate by reserved ID', () => {
     expect(parse).not.toHaveBeenCalled();
   });
 
+  test.each([true, false])('human-selected backup binds approval to the rendered ordinary artifacts (feedback=%s)', async feedback => {
+    metadata.source.mediaPath = path.join(dir, 'source.mp4');
+    fs.writeFileSync(metadata.source.mediaPath, 'source video');
+    fs.writeFileSync(metadata.source.srtPath, 'source subtitles');
+    metadata.curation = { status: 'budget' };
+    metadata.creativeResult = { status: 'kept_original' };
+    metadata.copy.description = 'Source-backed description';
+    const file = metadata.output.metadataPath;
+    fs.writeFileSync(file, JSON.stringify(metadata));
+    const approved = updateCandidate(file, { candidateId: 17, action: 'approve', reviewNote: 'Web selected backup' }, {});
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu');
+    const cut = jest.spyOn(manual, 'cutTask').mockImplementation(async task => {
+      const output = { metadataPath: file, mediaPath: path.join(dir, 'ordinary.mp4'),
+        srtPath: path.join(dir, 'ordinary.srt'), coverPath: path.join(dir, 'cover.jpg'), burnedSubtitles: true };
+      for (const artifact of [output.mediaPath, output.srtPath, output.coverPath]) fs.writeFileSync(artifact, artifact);
+      fs.writeFileSync(file, JSON.stringify({ ...task.sourceMetadata, mode: 'topic_candidate_manual_cut', status: 'success', output }));
+      fs.writeFileSync(task.reviewPath, 'Review');
+      return { output };
+    });
+    const selected = { candidateId: 17, requireApproval: true, expectedSha256: approved.candidateSrtSha256,
+      reviewNote: 'Web selected backup', ...(feedback ? { feedbackAuthorized: 'yes' } : {}) };
+    await renderCandidate(file, selected, {});
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const { fileDigest, sourceSnapshot } = require('./clipping/source_snapshot');
+    expect(saved.uploadReady).toBe(true);
+    expect(saved.curation.status).toBe('budget');
+    expect(saved.ownStreamHumanReview).toMatchObject({ clipId: 17, authority: 'human', status: 'approved',
+      source: sourceSnapshot(saved), digests: { video: fileDigest(saved.output.mediaPath),
+        subtitles: fileDigest(saved.output.srtPath), cover: fileDigest(saved.output.coverPath) } });
+    expect(saved.ownStreamHumanReview.acceptanceMode).toBe(feedback ? 'feedback' : undefined);
+    expect(generate).not.toHaveBeenCalled();
+    // A crash between completed rendering and receipt persistence must recover
+    // the human choice without cutting again or inheriting automatic authority.
+    delete saved.ownStreamHumanReview;
+    saved.uploadReady = false;
+    fs.writeFileSync(file, JSON.stringify(saved));
+    await renderCandidate(file, selected, {});
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).ownStreamHumanReview.clipId).toBe(17);
+    expect(cut).toHaveBeenCalledTimes(1);
+  });
+
   test('queued boundary failure replans, versions and renders the same ID with fresh evidence and copy', async () => {
     const root = { ai: { text: { provider: 'daiYu' } }, clipTopics: { keywords: ['SUI'],
       review: { enabled: true, mode: 'preflight', strategy: 'single', qualityRules: true,

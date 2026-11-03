@@ -20,9 +20,23 @@ function persistPreflightPlan(file, source, sourceHash, groups, candidates, diag
         fs.writeFileSync(temporary, JSON.stringify({ version: 1, strategy: 'preflight_v1', status: 'prepared_before_render',
             source, sourceSrtSha256: sourceHash, groups, candidates: candidates.map(clip => ({
                 window: clip.window, editorial: clip.editorial, preflight: clip.preflight, selected: selectedCandidates.includes(clip) })),
-            requests: diagnostics.requests, failures: diagnostics.failures }, null, 2), 'utf8');
+            requests: diagnostics.requests, failures: diagnostics.failures, ...(diagnostics.curation?.length ? { curation: diagnostics.curation } : {}) }, null, 2), 'utf8');
         fs.renameSync(temporary, file);
     } finally { try { fs.unlinkSync(temporary); } catch { /* already renamed */ } }
+}
+
+function persistPreparedPlan({ usePreflight, options, source, sourceSrtHash, planPath, diagnostics, aiSegmentedClips, clipsToGenerate, failures }) {
+    if (!usePreflight) return;
+    try {
+        if (sourceFileHash(options.srtPath) !== sourceSrtHash) throw new Error('Source subtitles changed during preflight');
+        persistPreflightPlan(planPath, source.mediaPath, sourceSrtHash, diagnostics.preflightGroups, aiSegmentedClips, diagnostics, clipsToGenerate);
+    } catch (error) {
+        failures.push({ stage: 'preflight', severity: 'warning', error: error.message });
+        for (const clip of clipsToGenerate) {
+            clip.preflight.status = 'needs_review'; clip.preflight.applied = false;
+            clip.preflight.quality.issues.push(error.message);
+        }
+    }
 }
 
 function isPreflightEnabled(config) {
@@ -337,4 +351,4 @@ function preflightSelections(plan, group, config) {
     });
 }
 
-module.exports = { isPreflightEnabled, preflightRequestOptions, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan, requestMatches };
+module.exports = { isPreflightEnabled, preflightRequestOptions, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan, persistPreparedPlan, requestMatches };

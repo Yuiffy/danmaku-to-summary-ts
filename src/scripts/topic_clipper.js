@@ -1607,20 +1607,11 @@ async function generateTopicClips(options = {}) {
         if (useEditorial) failures.push(...buildTopicDedupeFailures(renderableClips, selectedRenderableClips, { dedupeMatchText: false }));
     }
 
-    if (usePreflight) {
-        try {
-            if (sourceFileHash(options.srtPath) !== sourceSrtHash) throw new Error('Source subtitles changed during preflight');
-            persistPreflightPlan(planPath, source.mediaPath, sourceSrtHash,
-                diagnostics.preflightGroups, aiSegmentedClips, diagnostics, clipsToGenerate);
-        } catch (error) {
-            failures.push({ stage: 'preflight', severity: 'warning', error: error.message });
-            for (const clip of clipsToGenerate) {
-                clip.preflight.status = 'needs_review';
-                clip.preflight.applied = false;
-                clip.preflight.quality.issues.push(error.message);
-            }
-        }
-    }
+    const curatedTopics = await require('./clipping/editorial_styles').curateSource(clipsToGenerate, 'topic', { rootConfig: options.config || {}, config, info, options: { ...options, mediaPath: source.mediaPath }, parsed, outputRoot });
+    diagnostics.curation = curatedTopics.filter(clip => clip.curation).map(clip => ({ window: clip.window, curation: clip.curation }));
+    clipsToGenerate.splice(0, clipsToGenerate.length, ...curatedTopics);
+    require('./clipping/preflight_runner').persistPreparedPlan({ usePreflight, options, source, sourceSrtHash,
+        planPath, diagnostics, aiSegmentedClips, clipsToGenerate, failures });
     console.log(`\n🎬 共 ${clipsToGenerate.length} 段候选,仅执行已完成前置审核的切片...\n`);
 
     const results = [];
@@ -1684,6 +1675,7 @@ async function generateTopicClips(options = {}) {
             recordedAt: info.recordedAt,
             streamTitle: info.streamTitle,
             window,
+            ...(clip.curation ? { curation: clip.curation } : {}),
             editorial: clip.editorial,
             aiReview,
             copy,
@@ -1720,7 +1712,7 @@ async function generateTopicClips(options = {}) {
         });
 
         try {
-            if (usePreflight && clip.preflight?.status !== 'ready') {
+            if (usePreflight && clip.preflight?.status !== 'ready' || clip.curation && clip.curation.status !== 'original') {
                 const metadata = createMetadata();
                 metadata.status = 'pending_preflight';
                 metadata.uploadReady = false;

@@ -26,20 +26,35 @@ test('a daiYu verifier without its endpoint never sends its key to the tuZi defa
         .rejects.toThrow('daiYu audio/video verification baseUrl is not configured');
     expect(fetch).not.toHaveBeenCalled();
 });
-test.each(['transport', 'http', 'incomplete'])('failed %s verification records every attempt and preserves returned tokens', async mode => {
+test.each(['transport', 'http'])('failed %s verification records every attempt and preserves returned tokens', async mode => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-usage-'));
     const send = jest.fn(async () => true);
     try {
         if (mode === 'transport') fetch.mockRejectedValueOnce(new Error('ECONNRESET'));
-        else fetch.mockResolvedValueOnce({ ok: mode === 'incomplete', status: mode === 'http' ? 429 : 200,
-            json: async () => ({ error: { message: 'rate limited' }, candidates: [{ finishReason: 'MAX_TOKENS' }],
-                usageMetadata: { promptTokenCount: 90, candidatesTokenCount: 12 } }) });
+        else fetch.mockResolvedValueOnce({ ok: false, status: 429,
+            json: async () => ({ error: { message: 'rate limited' }, usageMetadata: { promptTokenCount: 90, candidatesTokenCount: 12 } }) });
         await expect(usage.runClipUsage({ kind: 'songs', directory: dir, mediaPath: 'test.flv', webhookUrl: 'test', sendMarkdown: send },
             () => v.requestMediaVerification('test', [], { ai: { text: { tuZi: { apiKey: 'test-secret' } } } },
                 { provider: 'tuZi', apiMode: 'gemini_native', model: 'fixture' }))).rejects.toThrow();
         const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'AI_USAGE.songs.json'), 'utf8'));
         expect(ledger.summary).toMatchObject({ requests: 1, failedRequests: 1, unknownUsageRequests: mode === 'transport' ? 1 : 0,
             knownTokens: { promptTokens: mode === 'transport' ? null : 90, completionTokens: mode === 'transport' ? null : 12 } });
+        expect(send).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a truncated media review retries once with a larger token budget instead of failing the recording', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-truncated-'));
+    const send = jest.fn(async () => true);
+    fetch.mockClear();
+    try {
+        fetch.mockResolvedValue({ ok: true, status: 200,
+            json: async () => ({ candidates: [{ finishReason: 'MAX_TOKENS' }], usageMetadata: { promptTokenCount: 90, candidatesTokenCount: 12 } }) });
+        await expect(usage.runClipUsage({ kind: 'games', directory: dir, mediaPath: 'test.flv', webhookUrl: 'test', sendMarkdown: send },
+            () => v.requestMediaVerification('test', [], { ai: { text: { tuZi: { apiKey: 'test-secret' } } } },
+                { provider: 'tuZi', apiMode: 'gemini_native', model: 'fixture' }))).rejects.toThrow(/incomplete: MAX_TOKENS/u);
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(fetch.mock.calls.map(call => JSON.parse(call[1].body).generationConfig.maxOutputTokens)).toEqual([8192, 16384]);
         expect(send).toHaveBeenCalledTimes(1);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

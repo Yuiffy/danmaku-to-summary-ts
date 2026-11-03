@@ -64,6 +64,18 @@ test('duplicate IDs, missing assignments and forced-mode contradictions are reje
     expect(() => parseStyleChoices(JSON.stringify({ choices: [row, row] }), [candidate, { ...candidate, id: 2 }])).toThrow();
     expect(() => parseStyleChoices(JSON.stringify({ choices: [row] }), [candidate], 'precision')).toThrow();
 });
+
+test('required precision failure holds automatic publication but keeps the ordinary media for manual review', async () => {
+    const f = fixture();
+    f.artifact.output.mediaPath = 'ordinary.mp4';
+    f.artifact.publicationReview = { status: 'passed' };
+    f.io.precision.mockRejectedValue(new Error('encoder failed'));
+    const [result] = await applyEditorialChoices([f.artifact], { enabled: true, mode: 'precision', requirePrecision: true }, f.io);
+    expect(result).toMatchObject({ uploadReady: false, precisionRequired: true, style: 'ordinary',
+        output: { mediaPath: 'ordinary.mp4', burnedSubtitles: true }, publicationDecision: { action: 'needs_human' } });
+    expect(result.publicationReview).toBeUndefined();
+    expect(f.io.save).toHaveBeenCalledWith(result);
+});
 test('automatic precision can reference an actual preceding question but cannot invent or duplicate one', () => {
     const c = { ...candidate, precedingAudience: [{ time: 90.12, text: '喜欢什么题材？' }] };
     const row = { id: 1, style: 'precision', reason: '补提问再接回答', contextDanmakuAt: 90.12 };

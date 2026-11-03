@@ -45,6 +45,12 @@ def validate_precision_metadata_qa(metadata, baseline):
 
 
 def _validate_metadata_qa(metadata, *, automatic=True):
+    if metadata.get('mode') == 'keyword_topic_bundle' or metadata.get('candidateBundle'):
+        try:
+            from .precision_bundle_review import validate_bundle
+        except ImportError:
+            from precision_bundle_review import validate_bundle
+        validate_bundle(metadata)
     if metadata.get("type") == "social_post_video":
         try:
             from .social_post_review import validate_social_post_review

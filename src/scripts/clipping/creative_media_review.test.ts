@@ -4,6 +4,15 @@ const initial = { music: { id: 'bgm' }, effects: [{ id: 'M1', sound: { id: 'laug
     editorialProfile: { kind: 'story', music: 'playful' }, assetDigests: { bgm: 'music-hash', laugh: 'sound-hash' } };
 const failed = { status: 'failed', issues: ['original_audio_changed_outside_effects'] };
 
+test('a bundle can require original-audio verification even without added sounds or music', async () => {
+    const audit = jest.fn(async () => ({ status: 'passed', issues: [] }));
+    const result = await renderAndAuditCreative({ effects: [] }, {
+        render: jest.fn(async () => ({})), inspect: jest.fn(), audit, history: [], forceAudioAudit: true
+    });
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(result.audioQa.status).toBe('passed');
+});
+
 test('a rejected music mix is rerendered without music and passes fresh inspection and audio QA', async () => {
     const history = [], render = jest.fn(async plan => ({ media: plan.music ? 'rejected' : 'clean' })), inspect = jest.fn();
     const audit = jest.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce({ status: 'passed', issues: [] });

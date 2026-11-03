@@ -834,6 +834,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     stageTimings: asrResult?.timings || null,
                     timingSummary: asrTimingSummary || null,
                     speakerProcessing,
+                    timingDiagnostics: normalized.timing_diagnostics || asrResult?.timing_diagnostics || asrResult?.timingDiagnostics || null,
                     emotionAnalysis: normalized.emotion_analysis || asrResult?.emotion_analysis || asrResult?.emotionAnalysis || null,
                     segments: normalized.segments.length,
                     generatedAt: new Date().toISOString()

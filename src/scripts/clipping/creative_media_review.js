@@ -1,12 +1,12 @@
 'use strict';
 
 /** Optional music can be removed once; the replacement render must satisfy every original gate. */
-async function renderAndAuditCreative(initialPlan, { render, inspect, audit, history }) {
+async function renderAndAuditCreative(initialPlan, { render, inspect, audit, history, forceAudioAudit = false }) {
     let plan = initialPlan;
     for (let attempt = 0; ; attempt++) {
         const rendered = await render(plan);
         await inspect(rendered, plan);
-        const audioQa = attempt > 0 || plan.music || plan.contextQuestion || plan.effects.some(row => row.sound) ? await audit(plan) : null;
+        const audioQa = forceAudioAudit || attempt > 0 || plan.music || plan.contextQuestion || plan.effects.some(row => row.sound) ? await audit(plan) : null;
         if (audioQa) history.push({ stage: 'audio_technical_qa', attempt: attempt + 1, result: audioQa });
         if (!audioQa || audioQa.status === 'passed') return { plan, rendered, audioQa };
         const repairable = new Set(['original_audio_changed_outside_effects', 'background_music_too_quiet']);

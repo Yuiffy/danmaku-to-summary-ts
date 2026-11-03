@@ -55,6 +55,37 @@ export function rebuiltPrecisionCandidate(artifact: Record<string, any>, sourceS
     return clip;
 }
 
+/** Explicit single-host confirmation only admits a local edit; it is never an actor or publication approval. */
+export function singleHostLocalCandidate(artifact: Record<string, any>, sourceSha256: string,
+    snapshot: unknown, note: string): { clip: ExperimentClip; exemption: Record<string, any> } {
+    const draft = artifact.renderedSubtitles;
+    const allowed = new Set(['precision_not_completed', 'publicCopyPending', 'artifact_not_upload_ready',
+        'attribution_not_passed', 'attribution_evidence_stale']);
+    if (!note.trim() || artifact.mode !== 'own_stream_fun_review' || artifact.selectionRejection
+        || artifact.rebuildRequired || artifact.preRenderHold || artifact.output?.burnedSubtitles !== true
+        || artifact.output?.mediaError || artifact.output?.coverError || !artifact.output?.coverPath
+        || ['title', 'description', 'coverText'].some(key => !String(artifact.copy?.[key] || '').trim())
+        || draft?.version !== 1 || !draft.review?.note || draft.sourceSha256 !== sourceSha256
+        || JSON.stringify(draft.sourceSnapshot) !== JSON.stringify(snapshot)
+        || draft.window?.start !== artifact.window?.start || draft.window?.end !== artifact.window?.end
+        || (artifact.publicationReview?.issues || []).some((issue: string) => !allowed.has(issue))) {
+        throw new Error('Single-host local edit requires a current rendered source and no unrelated review failures');
+    }
+    // A prepared draft's whole-window evidence inventory is not a set of approved public-copy citations.
+    // Preserve it for audit; the local story and media reviewers must verify the new retained content.
+    const clip: ExperimentClip = { start: artifact.window.start, end: artifact.window.end, ...artifact.copy,
+        attributionRequired: false, publicCopyPending: false };
+    const topic = artifact.topicEditPlan;
+    if (topic?.sourceSha256 === sourceSha256 && topic.sourceStart === clip.start && topic.sourceEnd === clip.end) {
+        clip.topicEditPlan = topic;
+    }
+    return { clip,
+    exemption: { version: 1, authority: 'user', scope: 'local_precision_revision_only', note: note.trim(),
+        sourceSha256, sourceSnapshot: snapshot, window: { start: artifact.window.start, end: artifact.window.end },
+        previousReview: artifact.attributionReview || null, previousGrounding: artifact.grounding || null,
+        audioVisualReviewed: false, uploadAuthorized: false } };
+}
+
 export function buildExperimentSelection(clips: ExperimentClip[], speech: Subtitle[], settings: ExperimentSettings, sourceSha256?: string) {
     if (!Number.isFinite(settings.ratio) || settings.ratio <= 0 || settings.ratio > 1
         || !Number.isInteger(settings.maxClips) || settings.maxClips < 0) throw new Error('Invalid precision experiment sample limits');

@@ -11,7 +11,7 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 
 - Work in `D:\workspace\myrepo\danmaku-to-summary-ts`.
 - Keep queue state in the ignored `data/runtime/manual_clip_queue.json`.
-- Keep intermediate scripts, screenshots, and temporary media under the source recording's `temp` area or the repository `tmp/`; do not create a `deliverables` folder in the repository.
+- Keep scripts and small research evidence in ignored project task directories. Put large temporary media in the recording root's `_workspaces/<task>/scratch/`, created by `python src/scripts/media_workspace_retention.py new --name <task>`; never in repository `temp/` or `tmp/`. Archive final outputs and editorial evidence first, then run `close --name <task>` to start the minimum seven-day cache retention period. Existing production recording-local temp paths remain compatible. See `docs/clip-media-retention.md`.
 - Keep final manual clips beside the recording in `manual_requested_clips` unless the user explicitly gives another output directory.
 - Read `docs/old-sui-clip-search-playbook.md`, `docs/manual-clip-queue.md`, and `docs/post-stream-residual-audit.md` when the task involves old recordings or automatic selection.
 - Recording search roots are split by lifecycle: search the active D-drive root first, then the E-drive archive for older or already-moved recordings. The archive is a source location only; manual clip outputs remain mapped to D for easy cleanup.
@@ -78,6 +78,11 @@ Both automatic own-stream and keyword production use their `editorialStyles`
 setting: auto chooses among all three based on the complete baseline subtitles;
 ordinary/highlight_first/precision fixes one mode. The workspace config editor
 offers these choices.
+Production fixes precision with requirePrecision for automatic publication. A failed
+precision attempt keeps its ordinary baseline visible in Web, and deferred selection
+candidates keep their numeric IDs, subtitles and source playback. Explicit human
+choice may publish either through the existing review/render/enqueue flow; keep
+that choice bound to the current artifacts rather than retrying precision automatically.
 `opManifests` is a nonempty unique pool sampled equally once per front-loaded
 revision. Production uses the separate “鹿饼伤心了／鹿饼根本就没心” and
 “鹿饼的切片你都要看” manifests. The selected concrete asset stays hash-bound
@@ -112,6 +117,15 @@ Subtitle or collection retry never authorizes resubmitting an already successful
 For 精剪/精切, read [references/precision-editing.md](references/precision-editing.md) for how AI chooses
 content, cuts, visual emphasis, placement, audio and final review. The shared automated pipeline uses
 these same rules; a one-clip experiment must not become a hardcoded rule for unrelated material.
+
+For a user-selected same-recording multi-topic keyword bundle, use the numeric
+`precision-bundle --ids ... --title ... --description ... --cover-text ... --note ...`
+registry command described in `docs/clip-precision-experiment.md`. It creates one
+separate pending-review precision artifact, preserves member IDs and records the
+original-to-bundle timeline; it never enqueues or uploads.
+With explicit publication authorization, use `approve-bundle --revision ... --review-note ...`
+to validate/register one submission and absorb its original members, then enqueue the returned ID.
+The command records user authorization without claiming human audio/visual review.
 
 ### Numeric candidate corrections
 

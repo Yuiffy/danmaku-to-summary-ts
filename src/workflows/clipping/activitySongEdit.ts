@@ -17,3 +17,20 @@ export function selectSongExcerpt(event: Data, edit: Data): Data {
     reviewIssues: [...new Set([...(event.reviewIssues || []), 'media_verification_unconfirmed',
       'performance_boundary_provisional', 'operator_selected_excerpt_pending_review'])] };
 }
+
+/** Move the start of a pending song a little earlier while preserving its confirmed end. */
+export function adjustSongStart(event: Data, edit: Data): Data {
+  if (!event || event.kind !== 'song' || event.id !== edit.activityId || !String(edit.note || '').trim()
+    || ![edit.start, edit.end].every(Number.isFinite) || edit.start < 0 || edit.start >= event.start
+    || edit.end !== event.end || event.start - edit.start > 30) {
+    throw new Error('Song start adjustment requires an explicit small earlier start and the existing end');
+  }
+  return { ...event, start: edit.start, end: edit.end, startObserved: false, endObserved: false,
+    provisionalWindow: { start: edit.start, end: edit.end },
+    operatorBoundaryEdit: { version: 1, method: 'operator_adjusted_start', note: edit.note,
+      sourceWindow: { start: event.start, end: event.end }, selectedWindow: { start: edit.start, end: edit.end },
+      audioVisualReviewed: false, automaticBoundaryApproved: false },
+    verification: { ...event.verification, decision: 'uncertain', reason: edit.note },
+    reviewIssues: [...new Set([...(event.reviewIssues || []), 'media_verification_unconfirmed',
+      'performance_boundary_provisional', 'operator_adjusted_start_pending_review'])] };
+}

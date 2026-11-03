@@ -74,7 +74,8 @@ async function detectSummaryActivities(options, config, source, info, files, aud
         if (plan.rawEvents.some(e => e.end > duration + .01)) throw new Error('Summary activity exceeds the source recording duration');
         plan.coverage = { status: 'complete', duration, method: 'summary_shared_input',
             windows: [{ start: 0, end: duration, status: 'inspected', evidenceRows: summary.rows.length }] };
-        const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || [], options.boundaryFeedback) : null;
+        const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || [], options.boundaryFeedback,
+            options.manualSongEdit || options.manualWatchEdit ? [options.manualSongEdit?.activityId || options.manualWatchEdit.activityId] : []) : null;
         const retriedIds = retryEvents?.map(event => event.id);
         plan.status = 'verifying'; save();
         const candidates = retryEvents || stages.selectEvents(plan.rawEvents, pending);

@@ -162,17 +162,19 @@ describe('original gameplay evidence review', () => {
       .toMatchObject({ provider: 'gemini', apiMode: 'gemini_native', model: 'native-model' });
   });
 
-  test.each(['spoken', 'silent', 'unbound', 'retained'])('default local boundary route and cached resume preserve starts (%s)', async (mode) => {
-    const silent = mode !== 'spoken';
-    const retained = mode === 'retained', candidateEnd = retained ? 500 : 300, firstGame = retained ? 307 : silent ? 107 : 100;
+  test.each(['spoken', 'silent', 'unbound', 'retained', 'silent_end', 'expanded'])('default local boundary route and cached resume preserve starts (%s)', async (mode) => {
+    const silent = !['spoken', 'silent_end'].includes(mode);
+    const expanded = mode === 'expanded', retained = mode === 'retained' || expanded;
+    const candidateEnd = expanded ? 1300 : retained ? 500 : 300, firstGame = expanded ? 907 : retained ? 307 : silent ? 107 : 100;
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-default-route-'));
     try {
       const mediaPath = path.join(directory, 'source.flv'), srtPath = path.join(directory, 'source.srt');
-      fs.writeFileSync(srtPath, '1\n00:01:40,000 --> 00:01:42,000\n准备启动游戏了\n\n2\n'
-        + (retained ? '00:08:10,000 --> 00:08:20,000' : '00:04:50,000 --> 00:05:00,000') + '\n今天游戏先玩到这里\n');
+      fs.writeFileSync(srtPath, '1\n' + (expanded ? '00:08:20,000 --> 00:08:22,000' : '00:01:40,000 --> 00:01:42,000') + '\n准备启动游戏了\n\n2\n'
+        + (expanded ? '00:21:30,000 --> 00:21:40,000' : retained ? '00:08:10,000 --> 00:08:20,000' : '00:04:50,000 --> 00:05:00,000') + '\n今天游戏先玩到这里\n');
       const config = require('./stream_game_plan').getGameConfig({});
-      if (retained) config.contextSeconds = 360;
-      const originalRows = [{ start: 1, end: 2, text: '今天先聊日常' }, { start: 100, end: 102, text: silent ? '聊完今天的话题' : '准备启动游戏了' },
+      if (mode === 'retained') config.contextSeconds = 360;
+      const originalRows = [{ start: expanded ? 350 : 1, end: expanded ? 351 : 2, text: '今天先聊日常' },
+        { start: expanded ? 500 : 100, end: expanded ? 502 : 102, text: silent ? '聊完今天的话题' : '准备启动游戏了' },
         { start: candidateEnd - 10, end: candidateEnd, text: '今天游戏先玩到这里' }];
       const checkRequest = (inputs: any[], settings: any) => {
         expect(inputs.every(input => input.mimeType.startsWith('image/'))).toBe(true);
@@ -198,6 +200,8 @@ describe('original gameplay evidence review', () => {
           checkRequest(inputs, settings);
           expect(prompt).toContain('ASR and images, NOT audio');
           const launch = prompt.includes('Locate the start');
+          if (mode === 'silent_end' && !launch) return { text: JSON.stringify({ decision: 'uncertain', observed: false,
+            reason: 'No independently established closing phrase', heardWords: null }) };
           if (mode === 'unbound' && launch) return { text: JSON.stringify({ decision: 'keep', observed: true,
             reason: 'Independent opening words cannot match source subtitles', boundaryAnchor: 'before_phrase',
             heardWords: '另一份听写里的准备句', seconds: 100, quoteSeconds: 100 }) };
@@ -210,6 +214,10 @@ describe('original gameplay evidence review', () => {
         boundaryRequest: jest.fn(async () => { throw new Error('Native audio must be explicitly configured'); }),
         openingRequest: jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
           checkRequest(inputs, settings);
+          if (expanded && prompt.includes('COMPLETE preceding original-audio ASR') && Math.min(...inputs.map(f => f.time)) > 500) {
+            return { text: JSON.stringify({ decision: 'uncertain', reason: 'Window begins during possible earlier setup', windowStartsUnrelated: false,
+              earlierContextClosed: false, allPossibleSetupRetained: false, ownGameTransition: true, retainedContentAllowed: true, retainedLeadIn: null }) };
+          }
           if (prompt.includes('COMPLETE preceding original-audio ASR')) return { text: JSON.stringify({ decision: 'keep',
             reason: 'The whole original lead-in is unrelated, with no possible earlier setup, then a silent original game transition',
             windowStartsUnrelated: true, earlierContextClosed: true, allPossibleSetupRetained: true,
@@ -221,18 +229,25 @@ describe('original gameplay evidence review', () => {
         }),
         closingRequest: jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
           checkRequest(inputs, settings);
+          if (mode === 'silent_end') {
+            if (prompt.startsWith('Independently review')) return { text: JSON.stringify({ decision: 'keep', reason: 'Whole independent tail ends in unrelated activity',
+              ownTargetGame: true, allPossibleHandlingRetained: true, laterContextUnrelated: true, retainedContentAllowed: true,
+              retainedTail: { transcriptIndex: 1, ...originalRows[2] } }) };
+            return { text: JSON.stringify({ reason: 'Original target menus then unrelated chat', frames: inputs.map(frame =>
+              ({ index: frame.index, activity: frame.time < candidateEnd ? 'game' : 'other', description: 'Actual original ending pixels' })) }) };
+          }
           const frames = JSON.parse(prompt.match(/Images are (\[.*?\])\./s)[1]);
           return { text: JSON.stringify({ reason: 'Game has closed', frames: frames.map((frame: any) =>
             ({ index: frame.index, activity: 'other', description: 'Talking scene after closing' })) }) };
         }) };
-      const candidate = { id: 'game-1', gameId: 'elden-ring', start: retained ? 300 : 100, end: candidateEnd, chapters: [], evidenceIds: ['T1', 'T2'] };
+      const candidate = { id: 'game-1', gameId: 'elden-ring', start: expanded ? 900 : retained ? 300 : 100, end: candidateEnd, chapters: [], evidenceIds: ['T1', 'T2'] };
       const plan = { source: { mediaPath }, duration: candidateEnd + 100, streamerName: 'Host' };
       const result = await verification.verifyGame(candidate, plan, options, config, { directory });
-      const expectedStart = retained ? 100 : silent ? 106.75 : 100;
+      const expectedStart = expanded ? 500 : retained ? 100 : silent ? 106.75 : 100;
       const timingSource = retained ? 'original_visual_context' : 'original_visual_transition';
       expect(result).toMatchObject({ version: 4, decision: 'keep', evidenceMethod: 'independent_local_asr', start: expectedStart, end: candidateEnd });
       if (silent) {
-        expect(result).toMatchObject({ protocolVersion: 13, startFrameReview: { start: expectedStart },
+        expect(result).toMatchObject({ protocolVersion: 14, startFrameReview: { start: expectedStart },
           audioObservations: [{ index: 1, heardWords: null, timingSource }, { index: 2, heardWords: '今天游戏先玩到这里' }] });
         expect(result.boundaryReview.excerptReviews[0]).not.toHaveProperty('quoteSource');
       }
@@ -240,11 +255,16 @@ describe('original gameplay evidence review', () => {
         expect(fs.existsSync(path.join(result.evidenceDirectory, 'boundary-start-unresolved.json'))).toBe(true);
         expect(options.localBoundaryRequest.mock.calls.filter(([prompt]) => prompt.includes('Locate the start'))).toHaveLength(2);
       }
+      if (mode === 'silent_end') {
+        expect(result).toMatchObject({ endFrameReview: { version: 2, end: candidateEnd, timingSource: 'original_closing_context' },
+          audioObservations: [{ index: 1, heardWords: '准备启动游戏了' }, { index: 2, heardWords: null, timingSource: 'original_closing_context' }] });
+        expect(result.boundaryReview).not.toHaveProperty('spokenEnd');
+      }
       const openingCalls = options.openingRequest.mock.calls.length;
       expect(await verification.verifyGame(candidate, plan, options, config, { directory })).toMatchObject({ decision: 'keep', start: result.start });
       expect(options.openingRequest).toHaveBeenCalledTimes(openingCalls);
-      expect(options.transcribe).toHaveBeenCalledTimes(2);
-      expect(options.localBoundaryRequest).toHaveBeenCalledTimes(mode === 'unbound' ? 3 : 2);
+      expect(options.transcribe).toHaveBeenCalledTimes(expanded ? 3 : 2);
+      expect(options.localBoundaryRequest).toHaveBeenCalledTimes(mode === 'unbound' || expanded ? 3 : 2);
       expect(options.boundaryRequest).not.toHaveBeenCalled();
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });

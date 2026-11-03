@@ -61,13 +61,14 @@ export function assertOrderedActivityParts(parts: Array<{ start: number; end: nu
 }
 
 /** Explicit recovery selects unresolved candidates only, preserving confirmed siblings. */
-export function retryBoundaryEvents<T extends VerifiedEvent>(raw: T[], events: VerifiedEvent[], selected: ActivityKind[], rejected: VerifiedEvent[] = [], feedback: any[] = []): T[] {
+export function retryBoundaryEvents<T extends VerifiedEvent>(raw: T[], events: VerifiedEvent[], selected: ActivityKind[], rejected: VerifiedEvent[] = [], feedback: any[] = [], manualIds: string[] = []): T[] {
   const represented = new Set([...events, ...rejected].map(event => event.id));
   if (selectEvents(raw, selected).some(event => !represented.has(event.id))) {
     throw new Error('Original activity identities were merged or lost; use an explicit reviewed revision');
   }
   const ids = new Set(selectEvents(events, selected).filter(event => event.verification?.decision === 'uncertain').map(event => event.id));
   for (const item of feedback) ids.add(item.id);
+  for (const id of manualIds) ids.add(id);
   const candidates = raw.filter(event => ids.has(event.id));
   if (candidates.length !== ids.size) throw new Error('Boundary retry is missing original candidate identities');
   if (!candidates.length) throw new Error('No unresolved activity boundaries to retry');
@@ -175,4 +176,5 @@ export function mergeManifestClips(existing: ManifestClip[], metadataPaths: stri
   }
   return clips;
 }
-export { selectSongExcerpt } from './activitySongEdit';
+export { selectSongExcerpt, adjustSongStart } from './activitySongEdit';
+export { selectWatchBoundary } from './activityWatchEdit';

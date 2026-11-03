@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 """Short-id registry and queue for reviewed Bilibili clip uploads."""
-
 from __future__ import annotations
 
 import argparse
@@ -57,7 +56,7 @@ MAX_AUTOMATIC_JOB_RETRIES = 8
 BILIBILI_SUBMISSION_RATE_LIMIT_CODE = 137022
 SUBMISSION_RATE_LIMIT_BASE_DELAY_SECONDS = 20 * 60
 SUBMISSION_RATE_LIMIT_MAX_DELAY_SECONDS = 24 * 60 * 60
-ACCOUNT_ROLLING_UPLOAD_LIMIT = 90
+ACCOUNT_ROLLING_UPLOAD_LIMIT = 30
 ACCOUNT_ROLLING_WINDOW_SECONDS = 24 * 60 * 60
 ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS = 5
 ACCOUNT_ARCHIVE_REFRESH_SECONDS = 5 * 60
@@ -745,46 +744,7 @@ def enqueue(args: argparse.Namespace) -> int:
 
 
 def exclude_clips(args: argparse.Namespace) -> int:
-    """Cancel selected local candidates and persist an editorial upload veto."""
-    ids = parse_int_list(args.ids)
-    reason = str(args.note or "").strip()
-    if not ids or not reason:
-        print("[ERROR] exclusion requires IDs and a reason", file=sys.stderr)
-        return 2
-    if not acquire_lock():
-        print("[ERROR] stop the upload worker before excluding clips", file=sys.stderr)
-        return 3
-    try:
-        with queue_transaction() as queue:
-            registry = load_json(REGISTRY_PATH, default_registry())
-            missing = [i for i in ids if str(i) not in registry.get("clips", {})]
-            if missing:
-                print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
-                return 2
-            sync_clip_statuses(registry, ids)
-            for i in ids:
-                clip = registry["clips"][str(i)]
-                clip["editorialExclusion"] = {"reason": reason, "excludedAt": now_iso()}
-                if clip.get("status") != "uploaded":
-                    clip["status"] = "cancelled"
-                clip["updatedAt"] = now_iso()
-            for job in queue.get("jobs", []):
-                if job.get("status") not in ("pending", "retry_wait", "running"):
-                    continue
-                removed = [int(i) for i in job.get("clipIds", []) if int(i) in ids]
-                if not removed:
-                    continue
-                job["clipIds"] = [i for i in job["clipIds"] if int(i) not in ids]
-                job.setdefault("editorialExclusions", []).append({"clipIds": removed, "reason": reason})
-                job["updatedAt"] = now_iso()
-                if not job["clipIds"]:
-                    clear_job_retry_metadata(job)
-                    mark_job(job, "cancelled", cancelledAt=now_iso(), cancellationReason=reason)
-            save_json(REGISTRY_PATH, registry)
-        print(f"[OK] excluded clip ids: {','.join(map(str, ids))}; future enqueue is blocked")
-        return 0
-    finally:
-        release_lock()
+    return clip_upload_cancel.exclude(args, sys.modules[__name__])
 
 
 def cancel_job(args: argparse.Namespace) -> int:
@@ -2009,9 +1969,9 @@ def run_one_job() -> bool:
             )
     registry = clip_upload_state.commit_worker_statuses(worker_state_io(), registry, ids)
     commit_queue_snapshot(
-        queue,
-        job_ids=(job_id,),
-        queue_fields=("accountRollingUploadGuard", "submissionRateLimit"),
+        queue, job_ids=(job_id,),
+        queue_fields=("accountRollingUploadGuard", "submissionRateLimit",
+                      "submissionRateLimitHistory", "submissionRateLimitHistorySince"),
     )
     return True
 

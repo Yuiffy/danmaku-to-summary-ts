@@ -125,7 +125,7 @@ def recalculate_account_upload_guard(
         state.pop("blockedUntil", None)
         return state
 
-    # Enough oldest events must expire to leave at most 89 before the next submit.
+    # Enough oldest events must expire to leave a slot before the next submit.
     release_index = len(events) - limit
     release_event_at = parse_utc_timestamp(events[release_index].get("at"))
     if release_event_at is None:

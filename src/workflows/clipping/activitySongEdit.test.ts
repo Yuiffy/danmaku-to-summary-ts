@@ -1,4 +1,4 @@
-import { selectSongExcerpt } from './activitySongEdit';
+import { adjustSongStart, selectSongExcerpt } from './activitySongEdit';
 
 const event = { id: 'song', kind: 'song', start: 100, end: 1500, performance: 'full',
   verification: { decision: 'uncertain', nativeListening: { path: 'bound.json', sha256: 'original' } },
@@ -24,4 +24,11 @@ test.each([
 test('does not reopen independently confirmed songs', () => {
   expect(() => selectSongExcerpt({ ...event, verification: { decision: 'keep' } },
     { activityId: 'song', start: 1150, end: 1490, note: 'feedback' })).toThrow();
+});
+
+test('operator can move a confirmed song start slightly earlier for a pending revision', () => {
+  const result = adjustSongStart({ ...event, verification: { decision: 'keep' } },
+    { activityId: 'song', start: 80, end: 1500, note: '保留正式开唱前的连续啦啦啦和前奏' });
+  expect(result).toMatchObject({ start: 80, end: 1500, verification: { decision: 'uncertain' },
+    operatorBoundaryEdit: { method: 'operator_adjusted_start', sourceWindow: { start: 100, end: 1500 } } });
 });

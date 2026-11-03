@@ -10,6 +10,12 @@ from src.scripts import clip_upload_registry as registry
 
 
 class ClipUploadRegistryTests(unittest.TestCase):
+    def setUp(self):
+        # Registry behavior tests supply their policy; never read host production config.
+        config = patch.object(registry, 'load_upload_runtime_config', return_value={})
+        config.start()
+        self.addCleanup(config.stop)
+
     def test_queue_mutation_lock_rejects_overlapping_writer(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory) / "runtime"
@@ -62,7 +68,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         ).isoformat()
         self.assertEqual(registry.next_pending_job(queue)["id"], "later")
 
-    def test_rolling_upload_guard_releases_after_oldest_of_ninety_expires(self):
+    def test_rolling_upload_guard_releases_after_oldest_at_limit_expires(self):
         now = dt.datetime(2026, 9, 3, 1, 0, tzinfo=dt.timezone.utc)
         oldest = now - dt.timedelta(hours=23)
         queue = {}
@@ -83,7 +89,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
                 + registry.ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS
             )
         )
-        self.assertEqual(state["recentCount"], 90)
+        self.assertEqual(state["recentCount"], registry.ACCOUNT_ROLLING_UPLOAD_LIMIT)
         self.assertEqual(registry.account_upload_available_slots(state), 0)
         self.assertEqual(
             registry.parse_utc_timestamp(state["blockedUntil"]), expected
@@ -660,6 +666,36 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(cooldown["delaySeconds"], 40 * 60)
         self.assertEqual(job["submissionRateLimitAttempts"], 2)
 
+    def test_worker_persists_each_137022_across_retries_and_later_success(self):
+        fixture = self.make_fixture(count=1)
+
+        def limited(group, job):
+            return subprocess.CompletedProcess([], 75, stdout="137022")
+
+        for attempt in range(1, 3):
+            saved_registry, saved_queue = self.run_job_with(fixture, limited)
+            history = saved_queue.get("submissionRateLimitHistory", [])
+            self.assertEqual(len(history), attempt)
+            self.assertEqual(history[-1], {
+                "at": saved_queue["submissionRateLimit"]["updatedAt"],
+                "code": 137022, "jobId": "upload-test",
+            })
+            self.assertEqual(saved_queue["submissionRateLimitHistorySince"], history[0]["at"])
+            expired = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)).isoformat()
+            saved_queue["submissionRateLimit"]["cooldownUntil"] = expired
+            saved_queue["jobs"][0]["retryAt"] = expired
+            fixture.update(registry=saved_registry, queue=saved_queue)
+
+        def success(group, job):
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        _, saved_queue = self.run_job_with(fixture, success)
+        self.assertEqual(saved_queue["jobs"][0]["status"], "done")
+        self.assertNotIn("submissionRateLimit", saved_queue)
+        self.assertEqual(saved_queue["submissionRateLimitHistory"], history)
+        self.assertEqual(saved_queue["submissionRateLimitHistorySince"], history[0]["at"])
+
     def test_success_clears_expired_account_rate_limit_streak(self):
         fixture = self.make_fixture(count=1)
         fixture["queue"]["submissionRateLimit"] = {
@@ -772,7 +808,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_registry["clips"]["1"]["status"], "uploaded")
         self.assertEqual(saved_registry["clips"]["2"]["status"], "queued")
         self.assertEqual(saved_registry["clips"]["3"]["status"], "queued")
-        self.assertEqual(guard["recentCount"], 90)
+        self.assertEqual(guard["recentCount"], registry.ACCOUNT_ROLLING_UPLOAD_LIMIT)
         self.assertEqual(job["status"], "retry_wait")
         self.assertEqual(job["retryKind"], "account_rolling_upload_limit")
         self.assertEqual(job["retryAt"], guard["blockedUntil"])
@@ -1046,6 +1082,23 @@ class ClipUploadRegistryTests(unittest.TestCase):
             self.assertEqual(registry.exclude_clips(args), 0)
             queue = registry.load_json(fixture["queue_path"], {})
             self.assertEqual(queue["jobs"][0]["status"], "cancelled")
+
+    def test_editorial_exclusion_of_idle_candidates_does_not_stop_an_unrelated_live_worker(self):
+        fixture = self.make_fixture(count=2)
+        fixture['runtime'].mkdir(parents=True, exist_ok=True)
+        fixture['queue']['jobs'][0].update(status='running', clipIds=[2])
+        registry.save_json(fixture['registry_path'], fixture['registry'])
+        registry.save_json(fixture['queue_path'], fixture['queue'])
+        args = type('Args', (), {'ids': '1', 'note': 'User selected an existing peer submission'})()
+        with patch.object(registry, 'RUNTIME_DIR', fixture['runtime']), patch.object(
+            registry, 'REGISTRY_PATH', fixture['registry_path']
+        ), patch.object(registry, 'QUEUE_PATH', fixture['queue_path']), patch.object(
+            registry, 'acquire_lock', side_effect=AssertionError('Must not stop unrelated worker')
+        ):
+            self.assertEqual(registry.exclude_clips(args), 0)
+            saved = registry.load_json(fixture['registry_path'], {})
+            self.assertEqual(saved['clips']['1']['status'], 'cancelled')
+            self.assertEqual(registry.load_json(fixture['queue_path'], {}), fixture['queue'])
 
     def test_cancel_one_running_clip_preserves_siblings_and_concurrent_enqueue(self):
         fixture = self.make_fixture(count=3)

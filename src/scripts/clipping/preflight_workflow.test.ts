@@ -101,6 +101,22 @@ describe('pre-render topic workflow', () => {
     expect(fs.readFileSync(srt, 'utf8')).toBe(original);
   });
 
+  test('peer-covered or budget candidates remain registered Web drafts with preview and original subtitles', async () => {
+    const curate = jest.spyOn(require('./editorial_styles'), 'curateSource').mockImplementation(async (clips: any[]) =>
+      clips.map((clip, index) => ({ ...clip, curation: { status: index ? 'budget' : 'covered', reason: '待人工选择',
+        peer: index ? undefined : { bvid: 'BV1234567890' } } })));
+    try {
+      const job = run(), results = await job.promise;
+      expect(job.mediaGenerator).not.toHaveBeenCalled();
+      expect(job.coverGenerator).not.toHaveBeenCalled();
+      expect(job.register).toHaveBeenCalled();
+      expect(results).toHaveLength(2);
+      expect(results.every(result => result.status === 'pending_preflight' && !result.uploadReady
+        && result.output.mediaPath === null && result.candidateSubtitles.path && result.reviewPreview.status === 'ready')).toBe(true);
+      expect(results[0].curation.peer.bvid).toBe('BV1234567890');
+    } finally { curate.mockRestore(); }
+  });
+
   test('provider failure prepares review previews but does not burn or approve fallback clips', async () => {
     request.mockRejectedValue(new Error('provider failed'));
     const job = run();

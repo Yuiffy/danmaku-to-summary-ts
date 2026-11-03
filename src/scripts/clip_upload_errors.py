@@ -30,6 +30,7 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "submission recovery authorization invalid",
     "automatic publication authorization invalid",
     "duplicate source content",
+    "[quality_policy]",
 )
 
 

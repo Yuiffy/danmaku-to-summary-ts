@@ -17,6 +17,21 @@ test('ordinary controls do not run per-clip enhancement or require an AI review'
         experiment: { enabled: true } } }, info: { roomId: 'room' } })).toBe(metadata);
 });
 
+test('explicit keyword precision may use the shared creative runner without an own-stream room match', async () => {
+    const creative = jest.spyOn(require('./creative_runner'), 'runCreativeEnhancement').mockResolvedValue({
+        creativeResult: { status: 'edited' }
+    });
+    try {
+        const metadata: any = { publicationKind: 'keyword_topic', precisionExperiment: { selected: true } };
+        const result = await runEnhancements(metadata, {
+            config: { enhancements: { enabled: true, workflow: 'creative', roomIds: ['live-room'] } },
+            info: { roomId: 'streamer-uid' }, options: { allowKeywordTopicPrecision: true }
+        });
+        expect(creative).toHaveBeenCalledTimes(1);
+        expect(result.creativeResult.status).toBe('edited');
+    } finally { creative.mockRestore(); }
+});
+
 test('all eligible creative clips are selected without another model request while unresolved copy and attribution remain blocked', async () => {
     const generate = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu');
     const clips = [

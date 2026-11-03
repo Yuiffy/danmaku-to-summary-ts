@@ -5,6 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+try:
+    from .clip_publication_duplicates import duplicate_errors
+except ImportError:
+    from clip_publication_duplicates import duplicate_errors
+
 
 def candidate_action(api, clip, action, options=None, timeout=1800):
     script = "render_topic_candidate.js" if clip.get("pendingCut") else "render_own_revision.js"
@@ -262,6 +267,19 @@ def cut_candidates(args, api):
                 options.update(require_approval="yes", expected_sha256=expected)
             elif clip_id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue()), clip_id if is_published(clip) else None):
                 raise ValueError(f"{clip_id} is owned by the upload worker")
+
+            # Enqueue already performs this check, but doing it before the
+            # expensive render prevents feedback retries from producing a new
+            # failed revision when the source window is already published.
+            # Keep the same injected metadata reader and duplicate policy so
+            # this remains a read-only preflight with identical semantics.
+            registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
+            duplicate = duplicate_errors(
+                [clip], registry.get("clips", {}).values(),
+                lambda value: api.load_json(Path(value), {}),
+            )
+            if duplicate:
+                raise ValueError("; ".join(duplicate))
             print(f"[worker] candidate {clip_id}: burning subtitles and generating cover", flush=True)
             candidate_action(api, clip, "render", options, timeout=getattr(args, "timeout_seconds", 1800))
             metadata_path = Path(clip["metadataPath"])

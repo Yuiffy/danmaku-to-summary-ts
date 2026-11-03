@@ -245,7 +245,10 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
 }
 
 async function runEnhancements(metadata, context) {
-    if (!enhancementEnabled(context.config?.enhancements, context.info?.roomId)) return metadata;
+    const keywordTopicPrecision = metadata?.publicationKind === 'keyword_topic'
+        && metadata.precisionExperiment?.selected === true
+        && context.options?.allowKeywordTopicPrecision === true;
+    if (!enhancementEnabled(context.config?.enhancements, context.info?.roomId) && !keywordTopicPrecision) return metadata;
     if (context.config.enhancements.experiment?.enabled === true && metadata.precisionExperiment?.selected !== true) return metadata;
     if (context.config.enhancements.workflow === 'creative') {
         if (metadata.precisionExperiment?.selected !== true) return metadata;

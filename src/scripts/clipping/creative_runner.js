@@ -402,6 +402,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             const mediaPath = path.join(directory, `${name}.creative.mp4`);
             const mediaReview = await require('./creative_media_review').renderAndAuditCreative(plan, {
                 history,
+                forceAudioAudit: Boolean(baseline.candidateBundle),
                 render: checkedPlan => withMedia(mediaProfile => topic.cutClipMedia(source, baseline.window, renderSrt, mediaPath,
                     { ...mediaConfig(mediaProfile), creativePlan: checkedPlan, creativeSettings: limits, creativeAssets: assets,
                         burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false })),

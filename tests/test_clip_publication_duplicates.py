@@ -93,6 +93,16 @@ class ClipPublicationDuplicatesTests(unittest.TestCase):
         self.new.update(start=100, duration=100)
         self.assertEqual(self.errors(), [])
 
+    def test_keyword_bundle_compares_original_member_windows_in_both_directions(self):
+        source = self.old['sourceMediaPath']
+        self.new.update(publicationKind='keyword_topic_bundle', sourceMediaPath=source, start=0, duration=40)
+        bundle = {'source': {'mediaPath': 'synthetic-source.mp4'}, 'candidateBundle': {
+            'originalSourceMediaPath': source, 'mappings': [{'originalWindow': {'start': 4546.289, 'end': 4716.22}},
+                {'originalWindow': {'start': 6000, 'end': 6020}}]}}
+        self.assertTrue(self.errors(metadata={'new.json': bundle}))
+        self.new.update(status='queued'); self.old.update(status='review', uploadState={})
+        self.assertTrue(self.errors(clips=[self.old], metadata={'new.json': bundle}))
+
 
 if __name__ == '__main__':
     unittest.main()

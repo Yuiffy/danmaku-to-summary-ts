@@ -12,6 +12,7 @@ const { verifyGame, PROTOCOL_VERSION, mediaSettings } = require('./stream_game_v
 const { restoreFrameNamedChapters } = require('./stream_game_names');
 const { repairUnsupportedChapters } = require('./stream_game_editorial');
 const { buildParts, sha, includedRanges, mergeEvents } = require('./stream_game_plan');
+const { selectFocus } = require('./stream_game_focus');
 const execFileAsync = promisify(execFile);
 const scripts = path.resolve(__dirname, '..');
 
@@ -73,29 +74,16 @@ function renderedResult(plan, files, bundles) {
 function clock(seconds) { const n = Math.max(0, Math.floor(seconds)); return `${String(Math.floor(n / 3600)).padStart(2, '0')}:${String(Math.floor(n / 60) % 60).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`; }
 function publicCopy(plan, game, parts, episode, submission, submissions) {
     const chapters = parts.flatMap(p => p.chapters || [{ title: p.title, ...p.chapter }]);
-    const unique = [...new Set(chapters.map(c => c.title))];
-    const labels = unique.filter(t => !/开始|启动|设置|探索与|游戏探索/u.test(t));
-    const normalize = value => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
-    const nameKeys = new Set(), named = [];
-    for (const kind of ['boss', 'location']) for (const chapter of chapters.filter(c => c.kind === kind && c.nameEvidence)) {
-        const key = normalize(chapter.nameEvidence);
-        if (nameKeys.has(key)) continue;
-        nameKeys.add(key); named.push(chapter.title.length <= 24 ? chapter.title : String(chapter.nameEvidence).replace(/\s+/gu, ''));
-    }
-    const phaseLabels = (labels.length ? labels : unique).filter(label => ![...nameKeys].some(key => normalize(label).includes(key)));
-    const focusLabels = [...new Set([...named, ...phaseLabels])], selected = [];
-    for (const label of focusLabels) {
-        if (selected.length === 3) break;
-        if ([...selected, label].join('、').length <= 40) selected.push(label);
-    }
-    const focus = selected.join('、') || '探索与推进';
-    const title = `${game.name} 第${String(episode).padStart(2, '0')}集${submissions > 1 ? `（${submission}/${submissions}）` : ''}｜${focus} ${plan.recordedAt.slice(0, 10)}`;
+    const focus = selectFocus(chapters, { end: Math.max(...parts.map(p => Number(p.end) || 0)) }).focus;
+    const title = game.members
+        ? `游戏联动｜${game.name}${submissions > 1 ? `（${submission}/${submissions}）` : ''} ${plan.recordedAt.slice(0, 10)}`
+        : `${game.name} 第${String(episode).padStart(2, '0')}集${submissions > 1 ? `（${submission}/${submissions}）` : ''}｜${focus} ${plan.recordedAt.slice(0, 10)}`;
     const lines = [`${plan.streamerName}《${game.name}》直播游玩记录。`, `直播日期：${plan.recordedAt}；直播标题：${plan.streamTitle.replace(/_merged(?:_best_effort)?$/u, '')}。`,
         '保留原始游戏音画、探索和挑战过程。中文字幕可在播放器中开关。'];
     if (parts.length > 1) lines.push(...parts.map((p, i) => `P${i + 1} ${p.title}`));
     else lines.push('本集时间轴：', ...parts[0].chapters.map(c => `${clock(c.start - parts[0].start)} ${c.title}`));
     if (lines.join('\n').length > 1900) throw new Error('Game description needs a shorter chapter list');
-    return { title, description: lines.join('\n'), coverText: `${game.name}\n第${episode}集` };
+    return { title, description: lines.join('\n'), coverText: `${game.name}\n第${String(episode).padStart(2, '0')}集` };
 }
 function clippedCues(segments, part) {
     return segments.filter(c => c.end > part.start && c.start < part.end).map(c => ({ ...c,
@@ -137,6 +125,16 @@ async function renderGames(plan, options, config, files) {
         writeJsonAtomic(files.plan, plan);
         return renderedResult(plan, files, bundles);
     }
+    if (options.continuousEventIds?.length || plan.gameContinuation) {
+        Object.assign(plan, require('../workflow-runtime').loadWorkflow('clipping/gameSessions').retainGameContinuation(plan,
+            options.continuousEventIds || plan.gameContinuation.ids));
+        writeJsonAtomic(files.plan, plan);
+    }
+    if (options.combineGames || plan.sessionCombination) {
+        const combined = require('../workflow-runtime').loadWorkflow('clipping/gameSessions').combineGameSessions(plan, config);
+        Object.assign(plan, combined.plan); config = combined.config;
+        writeJsonAtomic(files.plan, plan);
+    }
     if (Number.isFinite(plan.renderDurationLimit) && plan.renderDurationLimit > 0) config = { ...config,
         maxSingleVideoSeconds: Math.min(config.maxSingleVideoSeconds || 3600, plan.renderDurationLimit),
         maxPartSeconds: Math.min(config.maxPartSeconds, plan.renderDurationLimit),
@@ -145,12 +143,19 @@ async function renderGames(plan, options, config, files) {
     if (!plan.events.length) return { status: 'no_gameplay', planPath: files.plan };
     const root = options.config, capabilities = await accountCapabilities(options, files.directory);
     if (!capabilities.collectionAllowed || !capabilities.externalSubtitlesAllowed) throw new Error('Game collection/subtitle account permissions are unavailable');
+    // Reconcile leaves short islands that overlap a longer session. An island mostly inside an
+    // accepted session is the same original footage, so the parent verdict already covers it and
+    // re-reviewing it would only burn the same frames for a verdict the parent settled.
+    const overlapSeconds = (a, b) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+    const absorbed = event => plan.events.some(parent => parent.id !== event.id
+        && parent.verification?.decision === 'keep' && overlapSeconds(parent, event) >= (event.end - event.start) * .5);
     for (const event of plan.events) {
         const method = options.boundaryEvidenceMethod || config.ai.boundaryEvidenceMethod || 'independent_local_asr';
         if ([3, 4].includes(event.verification?.version) && event.verification.protocolVersion >= 11 && event.verification.protocolVersion <= PROTOCOL_VERSION
             && (event.verification.evidenceMethod || 'native_audio') === method
             && ['keep', 'exclude'].includes(event.verification.decision)
             && !options.reviewEventIds?.includes(event.id)) continue;
+        if (absorbed(event)) continue;
         await restoreFrameNamedChapters(event, plan, options, config, files, mediaSettings(root, config, 'frames'));
         event.verification = await (options.verify || verifyGame)(event, plan, options, config, files);
         while (event.verification.decision === 'uncertain' && (event.verification.frameObservations || []).some(f => f.activity === 'gameplay')
@@ -166,8 +171,37 @@ async function renderGames(plan, options, config, files) {
         }
         writeJsonAtomic(files.plan, plan);
     }
+    for (const event of plan.events.filter(e => e.verification?.decision === 'uncertain' && e.verification.nonGameReview?.decision === 'uncertain')) {
+        const witnessEvent = plan.events.find(e => e.gameId === event.gameId && e.start > event.verification.nonGameReview.primary?.end
+            && e.verification?.decision === 'keep' && e.verification.verificationKind !== 'preparation_only');
+        if (!witnessEvent) continue;
+        try {
+            const { readOriginalTranscript } = require('./stream_game_audio');
+            event.verification = await require('../workflow-runtime').loadWorkflow('clipping/gamePreparation').verifyPreparation({ event,
+                witnessEvent, source: plan.source, directory: files.directory, root, settings: mediaSettings(root, config, 'frames'),
+                additionalFrames: options.preparationFrames?.[event.id],
+                gameName: config.games.find(g => g.id === event.gameId).name, host: plan.streamerName,
+                excludedCategories: require('./stream_game_plan').resolvedExclusions(root, plan.roomId) }, {
+                readJson: file => JSON.parse(fs.readFileSync(file, 'utf8')), digest: fileDigest,
+                readTranscript: readOriginalTranscript, writeJson: writeJsonAtomic,
+                cache: require('./selection_cache').withSelectionCache,
+                request: options.preparationRequest || options.verifyRequest || require('./stream_activity_verification').requestMediaVerification });
+            event.start = event.verification.start; event.end = event.verification.end;
+            event.startObserved = true; event.endObserved = true; event.reviewIssues = [];
+            event.chapters = event.chapters.filter(c => c.start >= event.start && c.start < event.end);
+        } catch (error) { event.verification.preparationIssue = error.message; }
+        writeJsonAtomic(files.plan, plan);
+    }
     const accepted = plan.events.filter(e => e.verification?.decision === 'keep');
-    const uncertain = plan.events.filter(e => e.verification?.decision === 'uncertain');
+    // A rejected island inside an accepted session is other content (another game, chat) and stays
+    // out of the parent export; an island that only lacked its own verdict is already covered.
+    for (const event of accepted) {
+        const excluded = plan.events.filter(e => e.id !== event.id && e.verification?.decision === 'exclude'
+            && e.start >= event.start - .5 && e.end <= event.end + .5);
+        if (excluded.length) event.excludedRanges = [...(event.excludedRanges || []),
+            ...excluded.map(e => ({ start: e.start, end: e.end }))];
+    }
+    const uncertain = plan.events.filter(e => e.verification?.decision === 'uncertain' && !absorbed(e));
     if (uncertain.length) throw new Error(`Game media review unresolved: ${uncertain.map(e => e.verification.reason).join('; ')}`);
     if (!accepted.length) return { status: 'no_verified_gameplay', planPath: files.plan };
     const allParts = capabilities.multipartAllowed ? buildParts(accepted, config) : singleParts(accepted, config, capabilities);

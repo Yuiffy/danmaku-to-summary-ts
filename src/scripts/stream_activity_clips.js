@@ -89,6 +89,18 @@ async function main(argv = process.argv.slice(2)) {
             manualSongEdit: { activityId: options['activity-id'], start: Number(options.start), end: Number(options.end), note: options.note } });
         console.log(`ACTIVITY_SONG_RECUT_RESULT ${JSON.stringify(result)}`); return result;
     }
+    if (command === 'edit-watch') {
+        if (!options.metadata || !options['activity-id'] || !options.start || !options.end || !options.note) throw new Error('edit-watch requires --metadata --activity-id --start --end --note');
+        const row = JSON.parse(fs.readFileSync(path.resolve(options.metadata), 'utf8'));
+        if (!['songs', 'watch'].includes(row.kind) || row.type !== 'stream_activity_submission') throw new Error('edit-watch requires an activity submission');
+        const plan = JSON.parse(fs.readFileSync(row.planPath, 'utf8'));
+        const result = await workflow.generateStreamActivities({ ...row.source, kind: 'watch', context: { roomId: row.roomId },
+            summaryPath: plan.summary.path, retryBoundaries: true, revisionNote: options.note,
+            retainActivityIds: [options['activity-id']], selectionNote: options.note,
+            manualWatchEdit: { activityId: options['activity-id'], start: Number(options.start), end: Number(options.end),
+                note: options.note, name: options.name, publicName: options['public-name'] } });
+        console.log(`ACTIVITY_WATCH_EDIT_RESULT ${JSON.stringify(result)}`); return result;
+    }
     if (command === 'review') {
         if (!options.metadata || !options.note) throw new Error('review requires --metadata and --note');
         const result = await workflow.reviewStreamActivity({ metadataPath: options.metadata, note: options.note });

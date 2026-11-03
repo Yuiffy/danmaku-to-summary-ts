@@ -6,6 +6,21 @@ const { loadWorkflow } = require('../workflow-runtime');
 const { writeJsonAtomic } = require('./candidate_subtitles');
 const { createClipResourceAdaptiveScheduler } = require('./resource_scheduler');
 
+async function curateSource(clips, kind, { rootConfig, config, info, options, parsed, outputRoot }) {
+    if (!rootConfig.clipCuration?.enabled) return clips;
+    const settings = rootConfig.ownStreamClips?.enhancements || config.enhancements || {};
+    return loadWorkflow('clipping/peerCoverageRuntime').curateClipWindows(clips, {
+        kind, config: rootConfig, info, sourceSrt: options.srtPath, sourceMedia: options.mediaPath,
+        outputRoot, statePath: path.resolve(__dirname, '../../..', 'data/runtime/clip_peer_support.json'),
+        segments: parsed.segments, planOnly: options.planOnly
+    }, async (phase, prompt) => {
+        if (rootConfig.ai?.text?.enabled === false || config.ai?.enabled === false) throw new Error('AI is disabled');
+        return (await require('./enhancement_runner').requestStage({ ...settings.stageDefaults, ...settings.stages?.selection }, settings.budget,
+            { ...info, sessionId: info.sessionId || options.srtPath },
+            `curation-${phase}`, prompt)).text;
+    });
+}
+
 // Both producers supply their parsed source and media facade; no parent CLI imports.
 async function applyStyles(results, context) {
     const { config, rootConfig, info, topic, parsed, danmaku, options } = context;
@@ -57,7 +72,7 @@ async function applyStyles(results, context) {
             const precisionExperiment = { version: 1, selected: true, reason, selectionMode: 'editorial_style' };
             const clip = { ...baseline.copy, ...(context.clips?.[baseline.window.index - 1] || {}), ...baseline.window,
                 attributionRequired: baseline.attributionRequired, attributionReview: baseline.attributionReview,
-                grounding: baseline.grounding, precisionExperiment };
+                grounding: baseline.publicationKind === 'keyword_topic' ? undefined : baseline.grounding, precisionExperiment };
             const precisionConfig = { ...config, enhancements: { ...settings, enabled: true, workflow: 'creative' } };
             const contextQuestion = contextDanmakuAt === undefined ? undefined
                 : loadWorkflow('clipping/creativeContext').contextQuestion(contextDanmakuAt, danmaku, baseline.window);
@@ -98,4 +113,4 @@ async function finishTopicStylesAndReview(results, context, io) {
     }, io);
     finals.forEach((result, index) => { results[results.indexOf(result)] = reviewed[index]; });
 }
-module.exports = { applyStyles, finishTopicStylesAndReview };
+module.exports = { applyStyles, finishTopicStylesAndReview, curateSource };

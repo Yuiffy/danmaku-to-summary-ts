@@ -327,7 +327,10 @@ async function generateStreamActivities(options = {}) {
     const config = planTools.getActivityConfig(root), files = pathsFor(options.mediaPath, root, config);
     if (options.manualSongEdit && (!options.retryBoundaries || options.kind !== 'songs' || options.reviseVerifier
         || options.retryPublication || options.planOnly || options.scan || options.calibrate)) throw new Error('Manual song excerpts require a pending song revision without AI calibration');
-    if (options.retainActivityIds && (selected.length !== 1 || options.planOnly || options.retryBoundaries
+    if (options.manualWatchEdit && (!options.retryBoundaries || options.kind !== 'watch' || options.reviseVerifier
+        || options.retryPublication || options.planOnly || options.scan || options.calibrate
+        || !options.retainActivityIds?.includes(options.manualWatchEdit.activityId))) throw new Error('Manual watch edits require a pending watch revision and a single retained activity');
+    if (options.retainActivityIds && (selected.length !== 1 || options.planOnly || (options.retryBoundaries && !options.manualWatchEdit)
         || options.retryPublication || options.repairTiming || !String(options.selectionNote || '').trim())) {
         throw new Error('First-render selection requires run --kind songs|watch and a substantive --selection-note');
     }
@@ -377,10 +380,28 @@ async function generateStreamActivities(options = {}) {
         if (fs.existsSync(files.plan)) {
             const previous = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
             if (previous.contentSha256 !== planDigest(previous)) throw new Error('Activity plan changed outside the reviewed workflow');
+            // Final human boundary feedback gets its own extra budget round instead of
+            // sharing the per-stream AI cap with automated retries.
+            const extendBoundaryBudgetForFeedback = () => {
+                const base = previous.boundaryBudget?.limit || config.verification.maxBatchRequests;
+                previous.boundaryBudget = { limit: base + config.verification.maxBatchRequests, extendedFor: 'final_boundary_feedback' };
+                previous.contentSha256 = planDigest(previous);
+                writeJsonAtomic(files.plan, previous);
+                writeJsonAtomic(files.songs, planTools.songRecord(previous));
+            };
             if (options.manualSongEdit) {
                 if (!previous.uploadManifestPath) throw new Error('Manual song excerpt requires an existing pending submission');
                 const event = previous.events.find(row => row.id === options.manualSongEdit.activityId);
-                const edited = stages.selectSongExcerpt(event, options.manualSongEdit);
+                const edited = options.manualSongEdit.start < event.start
+                    ? stages.adjustSongStart(event, options.manualSongEdit)
+                    : stages.selectSongExcerpt(event, options.manualSongEdit);
+                options.calibrate = async candidates => ({ events: candidates.map(candidate => candidate.id === edited.id ? edited
+                    : previous.events.find(row => row.id === candidate.id)), rejected: [], requests: 0, cacheHits: 0, audioSeconds: 0 });
+            }
+            if (options.manualWatchEdit) {
+                if (!previous.uploadManifestPath) throw new Error('Manual watch edit requires an existing pending submission');
+                const event = previous.events.find(row => row.id === options.manualWatchEdit.activityId);
+                const edited = stages.selectWatchBoundary(event, options.manualWatchEdit);
                 options.calibrate = async candidates => ({ events: candidates.map(candidate => candidate.id === edited.id ? edited
                     : previous.events.find(row => row.id === candidate.id)), rejected: [], requests: 0, cacheHits: 0, audioSeconds: 0 });
             }
@@ -393,8 +414,12 @@ async function generateStreamActivities(options = {}) {
                 if (previous.status !== 'planned' || !sameSource(previous.source, source) || options.reviseVerifier) {
                     throw new Error('Boundary retry requires a source-bound planned activity or existing pending submission');
                 }
-                const candidates = stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []);
-                if ((previous.efficiency?.boundaryRequests || 0) >= config.verification.maxBatchRequests) throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                const candidates = stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || [], [],
+                    options.manualSongEdit || options.manualWatchEdit ? [options.manualSongEdit?.activityId || options.manualWatchEdit.activityId] : []);
+                if ((previous.efficiency?.boundaryRequests || 0) >= (previous.boundaryBudget?.limit || config.verification.maxBatchRequests)) {
+                    if (options.reviewBoundaryIds) extendBoundaryBudgetForFeedback();
+                    else throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                }
                 const id = crypto.randomUUID(), backupDirectory = path.join(files.directory, 'temp', 'boundary-revisions', id);
                 fs.mkdirSync(backupDirectory, { recursive: true });
                 for (const file of [files.plan, files.songs]) fs.copyFileSync(file, path.join(backupDirectory, path.basename(file)));
@@ -414,7 +439,8 @@ async function generateStreamActivities(options = {}) {
                         : JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
                     const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
                     if (!rows.length && (!options.retryBoundaries
-                        || !stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []).length)) {
+                        || !stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || [], [],
+                            options.manualSongEdit || options.manualWatchEdit ? [options.manualSongEdit?.activityId || options.manualWatchEdit.activityId] : []).length)) {
                         throw new Error('Publication retry has no pending submission for the selected kind');
                     }
                     for (const row of rows) {
@@ -431,8 +457,13 @@ async function generateStreamActivities(options = {}) {
                         { id, note: options.revisionNote, kinds: selected, backupDirectory, startedAt: new Date().toISOString() }] };
                 }
                 if (options.retryBoundaries || options.repairTiming) {
-                    const candidates = options.retryBoundaries ? stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || [], options.boundaryFeedback) : [];
-                    if (options.retryBoundaries && !options.reviseVerifier && !options.manualSongEdit && (previous.efficiency?.boundaryRequests || 0) >= (previous.boundaryBudget?.limit || config.verification.maxBatchRequests)) throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                    const candidates = options.retryBoundaries ? stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || [], options.boundaryFeedback,
+                        options.manualSongEdit || options.manualWatchEdit ? [options.manualSongEdit?.activityId || options.manualWatchEdit.activityId] : []) : [];
+                    if (options.retryBoundaries && !options.reviseVerifier && !options.manualSongEdit
+                        && (previous.efficiency?.boundaryRequests || 0) >= (previous.boundaryBudget?.limit || config.verification.maxBatchRequests)) {
+                        if (options.reviewBoundaryIds) extendBoundaryBudgetForFeedback();
+                        else throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                    }
                     const registryPath = path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json');
                     const registry = options.readRegistry ? options.readRegistry()
                         : fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')) : { clips: {} };

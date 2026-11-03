@@ -1310,7 +1310,7 @@ async function generateOwnStreamClipJob(context) {
         recordedAt: info.recordedAt,
         streamTitle: info.streamTitle,
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
-        ...(clip.publication ? { publication: clip.publication } : {}), ...(clip.sourceReview ? { sourceReview: clip.sourceReview } : {}), ...(clip.clipIntent ? { clipIntent: clip.clipIntent } : {}),
+        ...(clip.curation ? { curation: clip.curation } : {}), ...(clip.publication ? { publication: clip.publication } : {}), ...(clip.sourceReview ? { sourceReview: clip.sourceReview } : {}), ...(clip.clipIntent ? { clipIntent: clip.clipIntent } : {}),
         window,
         candidate: clip.base || null,
         viewingAngles: anglesForWindow(clip, window, subtitleEvidence, danmaku),
@@ -1631,19 +1631,8 @@ async function generateOwnStreamClipsInternal(options = {}) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
-    const publication = publicationPolicy.selectPublication(require('../core/media/RecordingCoverage.ts').filterCampaignCoverage(clips, options.mediaPath), {
-        ...config.publicationPolicy, ...(options.publicationMode ? { mode: options.publicationMode } : {})
-    }, info.roomId);
-    clips = publication.clips;
+    clips = await require('./clipping/own_publication_selection').selectOwnPublication(clips, { options, config, rootConfig, info, parsed, outputRoot, reviewMetadata, aiDiagnostics });
     if (timingRuntime) clips = timingRuntime.retainTimingRecoveryIds(clips, options.timingRecovery);
-    if (publication.report.policy.mode !== 'all') {
-        const report = publication.report;
-        const label = options.planPath ? path.basename(options.planPath, path.extname(options.planPath)) + '_' : '';
-        report.reviewPath = path.join(outputRoot, `${label}PUBLICATION_REVIEW.md`);
-        report.bundles = await require('./clipping/publication_bundles').proposeBundles(report, parsed, info, config, rootConfig, aiDiagnostics);
-        reviewMetadata.publication = report;
-        fs.writeFileSync(report.reviewPath, publicationPolicy.publicationMarkdown(report), 'utf8');
-    }
     const source = { mediaPath: options.mediaPath,
         kind: topicClipper.chooseClipSource(options.mediaPath, options.mediaPath)?.kind || 'video', uploadReady: true };
     const automatic = config.automaticPublication;

@@ -7,18 +7,32 @@ const DEFAULTS = Object.freeze({ enabled: false, roomIds: ['25788785'], outputDi
     maxPartsPerSubmission: 60, maxSingleVideoSeconds: 3600, requireOriginalStreamCopy: false, autoUpload: false, authorizationNote: '',
     ai: { provider: 'daiYu', model: 'gpt-6-luna', timeoutMs: 600000, maxTokens: 12000,
         boundaryEvidenceMethod: 'independent_local_asr' },
+    visual: { sampleSeconds: 120, aiSampleSeconds: 300, aiOtherSampleSeconds: 600,
+        aiBoundaryPaddingSeconds: 240, maxFramesPerBatch: 12, coverageGuard: 'warn',
+        coverageMinDroppedMinutes: 20, coverageDroppedRatio: 0.15,
+        localEvidence: { sceneCutThreshold: 0.48, deathThreshold: 0.62, deathMinGapSeconds: 8 } },
     games: [{ id: 'elden-ring', name: '艾尔登法环', aliases: ['艾尔登法环', '艾登法环', '法环', '老头环', 'ELDEN RING'],
         tid: 17, tags: ['岁己', '小岁', '艾尔登法环', '老头环', '游戏实况', '虚拟主播'], collection: {} }] });
 const sha = value => crypto.createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 function getGameConfig(root = {}) {
     const raw = root.streamGameClips || {};
-    const c = { ...DEFAULTS, ...raw, ai: { ...DEFAULTS.ai, ...raw.ai } };
+    const c = { ...DEFAULTS, ...raw, ai: { ...DEFAULTS.ai, ...raw.ai },
+        visual: { ...DEFAULTS.visual, ...raw.visual, localEvidence: { ...DEFAULTS.visual.localEvidence, ...raw.visual?.localEvidence } } };
     if (!['daiYu', 'tuZi', 'gemini'].includes(c.ai.provider)) throw new Error('Invalid game ai.provider');
     if (!['independent_local_asr', 'native_audio'].includes(c.ai.boundaryEvidenceMethod)) throw new Error('Invalid game boundaryEvidenceMethod');
     for (const key of ['enabled', 'autoUpload', 'requireOriginalStreamCopy']) if (typeof c[key] !== 'boolean') throw new Error(`Invalid streamGameClips.${key}`);
     if (!Array.isArray(c.roomIds) || !c.roomIds.length) throw new Error('Games need an explicit room allowlist');
     for (const key of ['chunkSeconds', 'contextSeconds', 'maxEvidenceChars', 'targetPartSeconds', 'maxPartSeconds', 'maxPartsPerSubmission', 'maxSingleVideoSeconds']) {
         if (!Number.isFinite(c[key]) || c[key] <= 0) throw new Error(`Invalid game ${key}`);
+    }
+    for (const key of ['sampleSeconds', 'aiSampleSeconds', 'aiOtherSampleSeconds', 'aiBoundaryPaddingSeconds', 'maxFramesPerBatch']) {
+        if (!Number.isFinite(c.visual?.[key]) || c.visual[key] <= 0) throw new Error(`Invalid game visual.${key}`);
+    }
+    if (!Number.isInteger(c.visual.maxFramesPerBatch) || c.visual.maxFramesPerBatch > 24) throw new Error('Invalid game visual.maxFramesPerBatch');
+    if (!['off', 'warn', 'fail'].includes(c.visual.coverageGuard)) throw new Error('Invalid game visual.coverageGuard');
+    if (!Number.isFinite(c.visual.coverageMinDroppedMinutes) || c.visual.coverageMinDroppedMinutes < 0
+        || !Number.isFinite(c.visual.coverageDroppedRatio) || c.visual.coverageDroppedRatio < 0 || c.visual.coverageDroppedRatio > 1) {
+        throw new Error('Invalid game visual coverage thresholds');
     }
     if (c.targetPartSeconds > c.maxPartSeconds || c.maxPartSeconds > 3600 || !Number.isInteger(c.maxPartsPerSubmission)
         || c.maxPartsPerSubmission > 100) throw new Error('Invalid game P limits');

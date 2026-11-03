@@ -4,7 +4,7 @@ const { renderPrecisionRevision } = require('./precision_revision');
 const { fileDigest } = require('./source_snapshot');
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
-test.each(['edited', 'rebuilt', 'campaign', 'campaign_wrong_date', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
+test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-revision-'));
     const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
     const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
@@ -46,6 +46,18 @@ test.each(['edited', 'rebuilt', 'campaign', 'campaign_wrong_date', 'no_attributi
         original.publicationReview = { status: 'passed', issues: [], technical: { passed: true }, artifactWindow: { start: 100, end: 160 },
             checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true },
             ...await require('../workflow-runtime').loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original) };
+    }
+    if (outcome === 'single_host') {
+        original.uploadReady = false;
+        original.publicCopyPending = true;
+        original.attributionRequired = true;
+        original.copy = { title: '看看这里', description: '单人游戏', coverText: '找到LT' };
+        original.attributionReview.status = 'needs_review';
+        original.renderedSubtitles = { version: 1, sourceSha256: buildSubtitleEvidence(sourceCues).sourceSha256,
+            sourceSnapshot: require('./source_snapshot').sourceSnapshot(original), window: { start: 100, end: 160 },
+            path: output.srtPath, revision: 0, renderedRevision: 0, sha256: fileDigest(output.srtPath),
+            renderedSha256: fileDigest(output.srtPath), review: { note: 'Source window checked' } };
+        original.publicationReview = { status: 'needs_review', issues: ['attribution_not_passed', 'precision_not_completed'] };
     }
     fs.writeFileSync(metadataPath, JSON.stringify(original));
     const reviewPlanPath = path.join(dir, 'PLAN.json');
@@ -95,16 +107,24 @@ test.each(['edited', 'rebuilt', 'campaign', 'campaign_wrong_date', 'no_attributi
         if (insetPlanPath) fs.writeFileSync(insetPlanPath, JSON.stringify({ version: 1, clipId: 17,
             sourceMetadataSha256: '0'.repeat(64), timelineSha256: '1'.repeat(64), insets: [] }));
         const promise = renderPrecisionRevision({ id: 17, registryPath, note: '重做精切', insetPlanPath, resumeFrom, soundLevelOverridesPath,
+            singleHostNote: outcome === 'single_host' ? '用户确认单人游戏直播，含NPC台词' : undefined,
             coverTextPosition: outcome === 'sound_override' ? 'bottom' : undefined }, dependencies);
         if (outcome === 'campaign_wrong_date') await expect(promise).rejects.toThrow('Creative enhancement is not enabled for this room');
         else if (['source_changed', 'stale_subtitles', 'pending', 'foreign_inset', 'invalid_sound_override', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline'].includes(outcome)) await expect(promise).rejects.toThrow(/changed|active|not bound|baseline/);
         else {
             const result = await promise;
-            expect(result.status).toBe(['edited', 'campaign', 'no_attribution_review', 'sound_override', 'automatic_edited'].includes(outcome) ? 'pending_review' : 'failed');
+            expect(result.status).toBe(['edited', 'single_host', 'campaign', 'no_attribution_review', 'sound_override', 'automatic_edited'].includes(outcome) ? 'pending_review' : 'failed');
             const saved = JSON.parse(fs.readFileSync(result.metadataPath, 'utf8'));
             if (outcome === 'rebuilt') expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
             expect(saved.uploadReady).toBe(false); expect(saved.precisionRevision.uploadAuthorized).toBe(false);
             expect(saved.precisionRevision.clipId).toBe(17);
+            if (outcome === 'single_host') {
+                expect(saved.attributionRequired).toBe(false);
+                expect(saved.attributionReview).toBeUndefined();
+                expect(saved.precisionRevision.attributionExemption).toMatchObject({ authority: 'user',
+                    scope: 'local_precision_revision_only', uploadAuthorized: false, audioVisualReviewed: false });
+                expect(enhance.mock.calls[0][1].clip.attributionRequired).toBe(false);
+            }
             if (outcome === 'sound_override') {
                 expect(enhance.mock.calls[0][1].options.creativeSoundLevelOverrides).toEqual([{ momentId: 'M1', levelDb: 0 }]);
                 expect(enhance.mock.calls[0][1].options.creativeCoverTextPosition).toBe('bottom');
@@ -122,5 +142,85 @@ test.each(['edited', 'rebuilt', 'campaign', 'campaign_wrong_date', 'no_attributi
         expect(fs.readFileSync(output.mediaPath, 'utf8')).toBe('original artifact');
         expect(fs.existsSync(metadataPath + '.cut.lock')).toBe(false);
         if (['stale_subtitles', 'pending', 'foreign_inset', 'invalid_sound_override', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline'].includes(outcome)) expect(enhance).not.toHaveBeenCalled();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('keyword topic precision accepts a manual-cut candidate without an own-stream plan', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-revision-'));
+    const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
+    const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
+    const output = { metadataPath, mediaPath: path.join(dir, 'ordinary.mp4'), srtPath: path.join(dir, 'ordinary.srt'),
+        coverPath: path.join(dir, 'ordinary.jpg'), burnedSubtitles: true };
+    const sourceCues = [{ start: 101, end: 103, text: '歌曲引入' }];
+    fs.writeFileSync(source.mediaPath, 'source video'); fs.writeFileSync(source.srtPath, 'source evidence');
+    for (const file of [output.mediaPath, output.srtPath, output.coverPath]) fs.writeFileSync(file, 'ordinary artifact');
+    const original: any = { mode: 'topic_candidate_manual_cut', publicationKind: 'keyword_topic', roomId: 'room',
+        uploadReady: true, source, output, window: { index: 'E1-1', start: 100, end: 160, duration: 60 },
+        copy: { title: '歌曲引入与岁己前辈', description: '完整话题', coverText: '岁己前辈？' } };
+    fs.writeFileSync(metadataPath, JSON.stringify(original));
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 4100: { metadataPath, reviewIndex: 1, status: 'review' } } }));
+    const registryBefore = fs.readFileSync(registryPath, 'utf8'), before = fs.readFileSync(metadataPath, 'utf8');
+    const enhance = jest.fn(async baseline => {
+        expect(baseline.output.metadataPath).not.toBe(metadataPath);
+        expect(baseline.precisionExperiment.selected).toBe(true);
+        expect(baseline.creativeResult).toBeUndefined();
+        const mediaPath = path.join(path.dirname(baseline.output.metadataPath), 'edited.mp4');
+        fs.writeFileSync(mediaPath, 'edited video');
+        return { ...baseline, output: { ...baseline.output, mediaPath }, creativeResult: { status: 'edited' },
+            creativePlan: { effects: [{ id: 'M1' }] }, qaResult: { status: 'passed' } };
+    });
+    const dependencies: any = { enhance, rootConfig: { ownStreamClips: { enhancements: { enabled: true,
+        roomIds: ['live-room-id'], workflow: 'creative' } } }, topic: { getClipTopicsConfig: require('../topic_clipper').getClipTopicsConfig,
+        parseTopicSrt: file => ({ segments: file === source.srtPath ? sourceCues : [{ start: 1, end: 3, text: '歌曲引入' }] }),
+        parseDanmakuXml: async () => [] } };
+    try {
+        const result = await renderPrecisionRevision({ id: 4100, registryPath, note: '关键词候选也允许精切' }, dependencies);
+        expect(result.status).toBe('pending_review');
+        const saved = JSON.parse(fs.readFileSync(result.metadataPath, 'utf8'));
+        expect(saved.precisionRevision.clipId).toBe(4100);
+        expect(saved.precisionRevision.uploadAuthorized).toBe(false);
+        expect(saved.uploadReady).toBe(false);
+        expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
+        expect(fs.readFileSync(registryPath, 'utf8')).toBe(registryBefore);
+        expect(fs.readFileSync(metadataPath, 'utf8')).toBe(before);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('keyword topic precision accepts a feedback-reviewed rebuilt baseline for local editing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-feedback-'));
+    const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
+    const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
+    const output = { metadataPath, mediaPath: path.join(dir, 'ordinary.mp4'), srtPath: path.join(dir, 'ordinary.srt'),
+        coverPath: path.join(dir, 'ordinary.jpg'), burnedSubtitles: true };
+    const sourceCues = [{ start: 101, end: 103, text: '歌曲引入' }];
+    fs.writeFileSync(source.mediaPath, 'source video'); fs.writeFileSync(source.srtPath, 'source evidence');
+    for (const file of [output.mediaPath, output.srtPath, output.coverPath]) fs.writeFileSync(file, 'ordinary artifact');
+    const snapshot = require('./source_snapshot').sourceSnapshot({ source, output });
+    const original: any = { mode: 'topic_candidate_manual_cut', publicationKind: 'keyword_topic', roomId: 'room',
+        uploadReady: true, source, output, window: { index: 'E1-1', start: 100, end: 160, duration: 60 },
+        copy: { title: '歌曲引入与岁己前辈', description: '完整话题', coverText: '岁己前辈？' },
+        renderedSubtitles: { version: 1, sourceSha256: buildSubtitleEvidence(sourceCues).sourceSha256,
+            sourceSnapshot: snapshot, window: { start: 100, end: 160 },
+            review: { note: '用户反馈接受当前底版', acceptanceMode: 'feedback' } } };
+    fs.writeFileSync(metadataPath, JSON.stringify(original));
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 4100: { metadataPath, reviewIndex: 1, status: 'review' } } }));
+    const enhance = jest.fn(async baseline => {
+        expect(baseline.output.metadataPath).not.toBe(metadataPath);
+        expect(baseline.precisionExperiment.selected).toBe(true);
+        const mediaPath = path.join(path.dirname(baseline.output.metadataPath), 'edited.mp4');
+        fs.writeFileSync(mediaPath, 'edited video');
+        return { ...baseline, output: { ...baseline.output, mediaPath }, creativeResult: { status: 'edited' },
+            creativePlan: { effects: [{ id: 'M1' }] }, qaResult: { status: 'passed' } };
+    });
+    const dependencies: any = { enhance, rootConfig: { ownStreamClips: { enhancements: { enabled: true,
+        roomIds: ['live-room-id'], workflow: 'creative' } } }, topic: { getClipTopicsConfig: require('../topic_clipper').getClipTopicsConfig,
+        parseTopicSrt: file => ({ segments: file === source.srtPath ? sourceCues : [{ start: 1, end: 3, text: '歌曲引入' }] }),
+        parseDanmakuXml: async () => [] } };
+    try {
+        const result = await renderPrecisionRevision({ id: 4100, registryPath, note: '反馈底版直接制作本地精切' }, dependencies);
+        expect(result.status).toBe('pending_review');
+        expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
+        expect(fs.readFileSync(registryPath, 'utf8')).toContain('"status":"review"');
+        expect(fs.readFileSync(metadataPath, 'utf8')).toBe(JSON.stringify(original));
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

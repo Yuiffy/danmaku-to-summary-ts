@@ -6,6 +6,7 @@ export interface EditorialStylesConfig {
     mode?: 'auto' | ClipStyle;
     opManifest?: string;
     opManifests?: string[];
+    requirePrecision?: boolean;
 }
 
 /** Pick once before rendering; the concrete manifest is then bound into the review timeline. */
@@ -67,6 +68,7 @@ export async function applyEditorialChoices<T extends Record<string, any>>(artif
     if (!settings.enabled) return artifacts;
     const mode = settings.mode || 'auto';
     if (!['auto', 'ordinary', 'highlight_first', 'precision'].includes(mode)) throw new Error('Invalid editorialStyles.mode');
+    if (settings.requirePrecision && mode !== 'precision') throw new Error('Required precision must use precision mode');
     const results: T[] = [];
     for (const [index, baseline] of artifacts.entries()) {
         if (!baseline.uploadReady || baseline.publicCopyPending || baseline.preRenderHold || baseline.output?.mediaError
@@ -90,6 +92,15 @@ export async function applyEditorialChoices<T extends Record<string, any>>(artif
         } catch (error) {
             current = { ...baseline, style: 'ordinary', editorialStyle: { version: 1, requestedMode: mode,
                 selected: choice?.style || null, status: 'kept_original', failure: (error as Error).message } };
+        }
+        if (settings.requirePrecision) {
+            current = { ...current, precisionRequired: true };
+            if (current.style !== 'precision' || current.creativeResult?.status !== 'edited'
+                || current.editorialStyle?.status !== 'completed') {
+                current = { ...current, uploadReady: false, publicationDecision: { version: 1, action: 'needs_human',
+                    reasons: ['精切未完成，普通底版保留供Web浏览和人工选择投稿'] } };
+                delete current.publicationReview;
+            }
         }
         await io.save(current);
         results.push(current);

@@ -44,6 +44,46 @@ test('story edit preserves complete approved cues, order and public-copy evidenc
     expect(() => assertTimeline({ ...timeline, duration: 60 }, 60)).toThrow('duration');
 });
 
+test('a bounded action lead retains silent gameplay before the reaction and maps its complete caption', () => {
+    const plan = { keep: draft.keep.map(row => row.fromCue === 'C4' ? { ...row, actionBeforeSeconds: 5 } : row) };
+    const timeline = validateStoryPlan(plan, cues, 60);
+    expect(timeline.keep[1].start).toBe(25);
+    const mapped = mapTimelineCues(cues, timeline);
+    expect(mapped.map(c => c.id)).toEqual(['C1', 'C4', 'C6']);
+    expect(mapped[1].start).toBeCloseTo(9.22);
+    expect(sourceTimeForOutput(mapped[1].start, timeline)).toBe(30);
+    expect(absoluteEditPlan(timeline, 'source', { start: 100, end: 160 }).keep[1].start).toBe(125);
+});
+
+test('continuous performance may be wrapped by an introduction and a closing reaction', () => {
+    const plan = { keep: [
+        { fromCue: 'C1', toCue: 'C1', role: 'setup', reason: '歌曲引入' },
+        { fromCue: 'C2', toCue: 'C3', role: 'performance', reason: '连续两句' },
+        { fromCue: 'C6', toCue: 'C6', role: 'reaction', reason: '岁己前辈问句' },
+    ] };
+    expect(() => validateStoryPlan(plan, cues, 60, [], { preserveContinuity: true })).not.toThrow();
+    expect(() => validateStoryPlan({ ...plan, keep: [...plan.keep.slice(0, 2),
+        { fromCue: 'C5', toCue: 'C5', role: 'performance', reason: '拆开的演唱' }] }, cues, 60, [], { preserveContinuity: true }))
+        .toThrow('must not be internally spliced');
+});
+
+test('action leads clamp at source start and omitted speech, and merge adjacent retained padding', () => {
+    const plan = { keep: draft.keep.map(row => ({ ...row, actionBeforeSeconds: 12 })) };
+    const timeline = validateStoryPlan(plan, cues, 60);
+    expect(timeline.keep.map(span => span.start)).toEqual([0, 24, 44]);
+    expect(mapTimelineCues(cues, timeline).map(c => c.id)).toEqual(['C1', 'C4', 'C6']);
+    const adjacent = { keep: [{ ...draft.keep[0], actionBeforeSeconds: 12 },
+        { fromCue: 'C2', toCue: 'C2', role: 'payoff', reason: '动作连贯', actionBeforeSeconds: 12 }] };
+    expect(validateStoryPlan(adjacent, cues, 60).keep).toHaveLength(1);
+    expect(validateStoryPlan({ keep: draft.keep.map(row => ({ ...row, actionBeforeSeconds: 0 })) }, cues, 60))
+        .toEqual(validateStoryPlan(draft, cues, 60));
+});
+
+test.each([-1, 12.01, NaN, Infinity, '5', null])('invalid explicit action lead %p fails without changing speech boundaries', value => {
+    const plan = { keep: draft.keep.map((row, i) => i === 1 ? { ...row, actionBeforeSeconds: value } : row) };
+    expect(() => validateStoryPlan(plan, cues, 60)).toThrow('actionBeforeSeconds');
+});
+
 test('render concatenates source ranges before effects and subtitles, with audible normalized accents and separate music ducking', () => {
     const timeline = validateStoryPlan(draft, cues, 60), settings = creativeSettings({ style: 'compact', soundEffects: true, filters: true });
     const assets = { laugh: { kind: 'sound', sampleStart: 2, sampleSeconds: 1.8 }, music: { kind: 'music', sampleSeconds: 10 } };
@@ -86,5 +126,8 @@ test('a post-speech reaction pause shifts captions, media and audio reference to
     const graph = buildCreativeFilter(plan, { width: 640, height: 360 }, 0, 8, 'caption.ass', null, {});
     expect(graph).toContain('tpad=stop_mode=clone:stop_duration=0.8');
     expect(graph).toContain('apad=pad_dur=0.8');
-    expect(require('./creative_timeline').audioTimelineFilter(timeline)).toContain('apad=pad_dur=0.8');
+    const audio = require('./creative_timeline').audioTimelineFilter(timeline);
+    expect(audio).toContain('apad=pad_dur=0.8');
+    expect(audio).toContain('afade=t=in:st=0:d=0.08');
+    expect(audio).toContain('afade=t=out:st=5.92:d=0.08');
 });

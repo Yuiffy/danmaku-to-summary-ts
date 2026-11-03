@@ -607,6 +607,10 @@ python src/scripts/clip_upload_registry.py rebuild --id 123 --review-note "已�
 自有直播修订完成独立人物和成片审核后，可沿原 ID 使用 `precision`。
 精切读取修订后的窗口、发布文案及当前媒体哈希；旧选材计划中的待核标记不覆盖新审核，
 旧窗口的 keep/drop 计划也不套用到新窗口。来源、字幕、封面、文案或审核变化仍须重新处理。
+关键词候选（`local_review` / `topic_candidate_manual_cut`）也可沿原 ID 使用同一 `precision`
+入口；它们直接以当前普通成片的窗口和文案作为精切基线，不要求 own-stream 选材计划，
+也不把候选的全量弹幕背景证据当作必须逐条保留的精切范围。精切仍须通过独立成片质检，
+生成的修订保存在 `precision_revisions/<ID>/`，不会自动选择、入队或投稿。
 
 若原字幕存在已确认的时间轴错配，使用绑定原录播/字幕及证据哈希的校准转写描述符：
 

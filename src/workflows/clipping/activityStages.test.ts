@@ -63,6 +63,12 @@ test('final boundary feedback reopens only explicitly identified failed Ps with 
   expect(() => activityBoundaryFeedback({ ...row, activityReview: { ...row.activityReview, checks: { boundaries: true } } }, proof, registry, ['watch'])).toThrow();
 });
 
+test('manual boundary edits can reopen a confirmed candidate without changing sibling identities', () => {
+  const raw = [{ id: 'movie', kind: 'watch', start: 10, end: 100 }];
+  const events = [{ ...raw[0], verification: { decision: 'keep' } }];
+  expect(retryBoundaryEvents(raw, events, ['watch'], [], [], ['movie'])).toEqual(raw);
+});
+
 test.each([true, false])('a recovered shared summary resumes failed songs once, cache only (retry succeeds: %s)', async succeeds => {
   const run = jest.fn(async (kind, reuseSummaryOnly) => {
     if (kind === 'songs' && (!reuseSummaryOnly || !succeeds)) {

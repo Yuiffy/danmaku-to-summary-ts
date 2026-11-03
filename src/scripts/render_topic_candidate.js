@@ -107,7 +107,8 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
                     throw new Error('Rendered artifact does not match queued approval');
                 }
             }
-            return metadata;
+            await approveHumanCandidate(metadataPath, metadata, options, rootConfig);
+            return JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
         }
         if (options.feedbackAuthorized !== 'yes' && (!metadata.editorial?.copyGrounding || metadata.aiReview?.boundaryReview?.status === 'needs_review')) {
             const recovery = require('./workflow-runtime').loadWorkflow('clipping/topicRecovery');
@@ -131,6 +132,7 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
         }
         const task = prepareCandidate(metadata, metadataPath, options, rootConfig);
         const result = await manual.cutTask(task, rootConfig);
+        await approveHumanCandidate(result.output.metadataPath, task.sourceMetadata, options, rootConfig, result.output.coverPath);
         if (options.automaticReview === 'yes') {
             const final = JSON.parse(fs.readFileSync(result.output.metadataPath, 'utf8'));
             final.mode = 'local_review';
@@ -153,6 +155,15 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
         fs.closeSync(lock);
         fs.unlinkSync(lockPath);
     }
+}
+
+async function approveHumanCandidate(metadataPath, metadata, options, rootConfig, cover = metadata.output?.coverPath) {
+    if (options.feedbackAuthorized !== 'yes' && !(options.requireApproval && metadata.humanReview?.authority === 'user')) return;
+    await require('./review_rendered_clip').approveRenderedClip(metadataPath, {
+        id: Number(options.candidateId), reviewNote: options.reviewNote, feedbackAuthorized: options.feedbackAuthorized === 'yes',
+        sourceKind: metadata.humanReview?.copyGrounding?.sourceKind,
+        preparedCover: cover
+    }, rootConfig);
 }
 
 function acquireCandidateLock(metadataPath, candidateId) {

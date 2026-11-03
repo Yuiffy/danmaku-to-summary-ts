@@ -12,7 +12,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('A positive numeric clip ID is required');
     const registry = JSON.parse(fs.readFileSync(options.registryPath, 'utf8'));
     const record = registry.clips?.[String(id)];
-    if (!record?.metadataPath || !record.reviewPlanPath) throw new Error('Clip has no own-stream metadata/plan');
+    if (!record?.metadataPath) throw new Error('Clip has no metadata');
     if (['queued', 'rendering', 'uploading'].includes(record.status) || record.pendingRebuild) throw new Error('Clip has an active upload or subtitle revision');
     const metadataPath = path.resolve(record.metadataPath);
     const { lock, lockPath } = require('../render_topic_candidate').acquireCandidateLock(metadataPath, id);
@@ -20,10 +20,18 @@ async function renderPrecisionRevision(options, dependencies = {}) {
     try {
         const before = fs.readFileSync(metadataPath, 'utf8'), registered = JSON.parse(before);
         let original = registered;
-        if (original.mode !== 'own_stream_fun_review' || !original.uploadReady || original.rebuildRequired
-            || original.publicCopyPending || original.output?.mediaError || !original.output?.burnedSubtitles
+        const keywordTopic = original.publicationKind === 'keyword_topic'
+            || ['local_review', 'topic_candidate_manual_cut'].includes(original.mode);
+        if (!keywordTopic && !record.reviewPlanPath) throw new Error('Clip has no own-stream metadata/plan');
+        const singleHostNote = String(options.singleHostNote || '').trim();
+        if ((!keywordTopic && original.mode !== 'own_stream_fun_review')
+            || (keywordTopic && original.mode !== 'own_stream_fun_review'
+                && original.publicationKind !== 'keyword_topic'
+                && !['local_review', 'topic_candidate_manual_cut'].includes(original.mode))
+            || !original.uploadReady && !singleHostNote || original.rebuildRequired
+            || original.publicCopyPending && !singleHostNote || original.output?.mediaError || !original.output?.burnedSubtitles
             || (original.uploadId && original.uploadId !== id)) throw new Error('A reviewed ordinary own-stream clip is required');
-        const successfulAutomatic = original.creativeResult?.status === 'edited';
+        const successfulAutomatic = !keywordTopic && original.creativeResult?.status === 'edited';
         if (successfulAutomatic) {
             const saved = original.enhancement?.baseline;
             if (original.qaResult?.status !== 'passed' || original.audioQa?.status !== 'passed' || !saved?.window
@@ -44,7 +52,12 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const topic = dependencies.topic || require('../topic_clipper');
         const own = require('../own_stream_clipper');
         const rootConfig = dependencies.rootConfig || require('../config-loader').getConfig();
-        const config = own.getOwnStreamClipsConfig(rootConfig, original.roomId, original.recordedAt, Date.now(), true);
+        const config = keywordTopic ? topic.getClipTopicsConfig(rootConfig)
+            : own.getOwnStreamClipsConfig(rootConfig, original.roomId, original.recordedAt, Date.now(), true);
+        if (keywordTopic) {
+            config.enhancements = { ...(rootConfig.ownStreamClips?.enhancements || {}), ...(config.enhancements || {}),
+                enabled: true, workflow: 'creative' };
+        }
         if (options.style) {
             if (!['accent', 'compact'].includes(options.style)) throw new Error('Unknown precision style');
             const previousStyle = config.enhancements.creative?.style || 'accent';
@@ -58,8 +71,14 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         if (options.coverTextPosition && !['center', 'bottom'].includes(options.coverTextPosition)) {
             throw new Error('Unknown cover text position');
         }
-        if (config.enhancements?.workflow !== 'creative'
-            || !require('./enhancement_runner').enhancementEnabled(config.enhancements, original.roomId)) {
+        // Keyword candidates are explicit local revisions. Their metadata roomId is the
+        // streamer UID, while own-stream room allowlists use numeric live-room IDs, so
+        // applying the own-stream room gate here would reject an otherwise configured
+        // creative revision before it reaches the shared renderer.
+        const enhancementReady = config.enhancements?.workflow === 'creative'
+            && (keywordTopic ? config.enhancements.enabled === true
+                : require('./enhancement_runner').enhancementEnabled(config.enhancements, original.roomId));
+        if (!enhancementReady) {
             throw new Error('Creative enhancement is not enabled for this room');
         }
         const snapshot = sourceSnapshot(original);
@@ -100,14 +119,43 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         }
         const parsed = topic.parseTopicSrt(original.source.srtPath);
         const evidence = buildSubtitleEvidence(parsed.segments);
-        const plan = JSON.parse(fs.readFileSync(record.reviewPlanPath, 'utf8'));
-        let clip = plan.clips?.find(row => row.start === original.window.start && row.end === original.window.end);
-        if (original.renderedSubtitles) {
+        let clip;
+        if (keywordTopic) {
+            clip = { ...original.copy, ...original.window,
+                attributionRequired: original.attributionRequired, attributionReview: original.attributionReview,
+                // Topic grounding keeps discovery evidence for audit, but its full
+                // audience row inventory must not turn every danmaku into a
+                // protected span for an editorial creative cut.
+                grounding: undefined };
+        } else {
+            const plan = JSON.parse(fs.readFileSync(record.reviewPlanPath, 'utf8'));
+            clip = plan.clips?.find(row => row.start === original.window.start && row.end === original.window.end);
+        }
+        let attributionExemption;
+        if (singleHostNote) {
+            const reviewed = require('../review_rendered_clip');
+            reviewed.assertRenderedRevision(original);
+            if (reviewed.sourceEvidenceHash(original) !== evidence.sourceSha256) throw new Error('Original source evidence changed');
+            const local = loadWorkflow('clipping/experiment').singleHostLocalCandidate(original, evidence.sourceSha256, snapshot, singleHostNote);
+            clip = local.clip;
+            attributionExemption = local.exemption;
+            original = { ...original, uploadReady: true, publicCopyPending: false, attributionRequired: false, attributionExemption };
+            delete original.attributionReview;
+        } else if (original.renderedSubtitles) {
             if (JSON.stringify(original.renderedSubtitles.sourceSnapshot) !== JSON.stringify(snapshot)) {
                 throw new Error('Rebuilt baseline source changed');
             }
-            clip = loadWorkflow('clipping/experiment').rebuiltPrecisionCandidate(original, evidence.sourceSha256,
-                await loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original));
+            // A keyword candidate with explicit feedback acceptance is already
+            // source-bound and user-directed. It may enter a local precision
+            // revision without pretending that the ordinary baseline passed
+            // the independent publication review required by unattended upload.
+            // Other rebuilt candidates retain the stricter publication gate.
+            const feedbackAcceptedKeyword = keywordTopic
+                && original.renderedSubtitles.review?.acceptanceMode === 'feedback';
+            if (!feedbackAcceptedKeyword) {
+                clip = loadWorkflow('clipping/experiment').rebuiltPrecisionCandidate(original, evidence.sourceSha256,
+                    await loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original));
+            }
         }
         if (!clip || (clip.attributionRequired && evidence.sourceSha256 !== original.attributionReview?.sourceSha256)
             || loadWorkflow('clipping/experiment').experimentEligibility(clip, evidence.sourceSha256)) {
@@ -123,7 +171,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const subtitles = topic.parseTopicSrt(original.output.srtPath).segments;
         if (!subtitles.length || subtitles.some(cue => cue.start < 0 || cue.end <= cue.start
             || cue.end > original.window.duration + .001)) throw new Error('Invalid baseline subtitle timeline');
-        const danmaku = await own.parseDanmakuXml(original.source.xmlPath);
+        const danmaku = await (keywordTopic ? topic.parseDanmakuXml(original.source.xmlPath) : own.parseDanmakuXml(original.source.xmlPath));
         const contextQuestion = options.contextDanmakuAt === undefined ? undefined
             : loadWorkflow('clipping/creativeContext').contextQuestion(Number(options.contextDanmakuAt), danmaku, original.window);
         const parent = path.join(path.dirname(metadataPath), 'precision_revisions', String(id));
@@ -151,6 +199,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             sourceSnapshot: snapshot, style: config.enhancements.creative?.style || 'accent',
             avatarMode: config.enhancements.creative?.avatarMode || 'auto',
             ...(contextQuestion ? { contextQuestion } : {}),
+            ...(attributionExemption ? { attributionExemption } : {}),
             ...(options.allowCoverFaceOverlap ? { coverFaceOverlapApproved: true } : {}),
             ...(resumeDirectory ? { resumeFrom: resumeDirectory } : {}), uploadAuthorized: false };
         const baseline = { ...original, uploadId: id, reviewIndex: record.reviewIndex,
@@ -176,6 +225,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         let result = await enhance(baseline, { config, info: { roomId: original.roomId, recordedAt: original.recordedAt,
             sessionId: directory, selectionCacheDirectory: path.join(directory, 'temp') }, parsed, danmaku,
             source: { kind: 'video', mediaPath: original.source.mediaPath }, options: { ...original.source, config: rootConfig,
+                allowKeywordTopicPrecision: keywordTopic,
                 creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan, creativeSoundLevelOverrides: soundLevelOverrides,
                 creativeContextQuestion: contextQuestion, creativeEditorialFeedback: String(options.note || ''),
                 creativeCoverTextPosition: options.coverTextPosition,
@@ -215,9 +265,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
 
 module.exports = { renderPrecisionRevision };
 if (require.main === module) {
-    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' }, 'context-danmaku-at': { type: 'string' } } });
+    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'single-host-note': { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' }, 'context-danmaku-at': { type: 'string' } } });
     renderPrecisionRevision({ id: values.id, registryPath: values.registry, note: values.note, style: values.style,
-        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'], contextDanmakuAt: values['context-danmaku-at'] })
+        singleHostNote: values['single-host-note'], avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'], contextDanmakuAt: values['context-danmaku-at'] })
         .then(result => { console.log('PRECISION_RESULT: ' + JSON.stringify(result)); if (result.status !== 'pending_review') process.exitCode = 1; })
         .catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 }

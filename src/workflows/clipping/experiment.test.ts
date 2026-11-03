@@ -1,6 +1,7 @@
 import { assignExperiment, buildExperimentSelection, parseExperimentSelection, labelExperimentDescription, labelExperimentTitle,
     stripExperimentTitle, stripExperimentDescription,
-    PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown, rebuiltPrecisionCandidate } from './experiment';
+    PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown, rebuiltPrecisionCandidate,
+    singleHostLocalCandidate } from './experiment';
 import { createHash } from 'crypto';
 
 const clips = Array.from({ length: 20 }, (_, i) => ({ start: i * 100, end: i * 100 + 80, title: `Story ${i}` }));
@@ -8,6 +9,36 @@ const speech = clips.map(clip => ({ start: clip.start, end: clip.end, text: `${c
 const settings = { ratio: 0.25, maxClips: 5 };
 const copyHash = (copy: any) => createHash('sha256').update(['title', 'coverText', 'description']
     .map(key => String(copy[key] || '')).join('\0')).digest('hex');
+
+test('single-host confirmation admits only a local revision and preserves unrelated review failures', () => {
+    const snapshot = { media: 'bound-source' };
+    const artifact: any = { mode: 'own_stream_fun_review', window: { start: 10, end: 60 },
+        copy: { title: '找到LT终于打赢', description: '同一场BOSS战', coverText: 'LT在哪' },
+        output: { burnedSubtitles: true, coverPath: 'cover.jpg' },
+        renderedSubtitles: { version: 1, review: { note: 'source window' }, sourceSha256: 'source', sourceSnapshot: snapshot,
+            window: { start: 10, end: 60 } }, attributionRequired: true, publicCopyPending: true, uploadReady: false,
+        attributionReview: { status: 'needs_review', issues: ['actor_evidence_exceeds_budget'] },
+        publicationReview: { issues: ['precision_not_completed', 'publicCopyPending', 'artifact_not_upload_ready', 'attribution_not_passed'] } };
+    const before = JSON.stringify(artifact);
+    const result = singleHostLocalCandidate(artifact, 'source', snapshot, '用户确认单人直播，含游戏台词');
+    expect(result.clip.attributionRequired).toBe(false);
+    expect(result.clip.grounding).toBeUndefined();
+    expect(result.exemption).toMatchObject({ authority: 'user', scope: 'local_precision_revision_only',
+        audioVisualReviewed: false, uploadAuthorized: false, previousReview: artifact.attributionReview });
+    expect(JSON.stringify(artifact)).toBe(before);
+    const topic = { sourceSha256: 'source', sourceStart: 10, sourceEnd: 60, ranges: [] };
+    expect(singleHostLocalCandidate({ ...artifact, topicEditPlan: topic }, 'source', snapshot, 'confirmed').clip.topicEditPlan).toEqual(topic);
+    expect(() => singleHostLocalCandidate(artifact, 'source', snapshot, '')).toThrow();
+    expect(() => singleHostLocalCandidate(artifact, 'changed', snapshot, 'confirmed')).toThrow();
+    expect(() => singleHostLocalCandidate(artifact, 'source', { media: 'changed' }, 'confirmed')).toThrow();
+    for (const change of [{ rebuildRequired: true }, { preRenderHold: true }, { selectionRejection: {} },
+        { output: { ...artifact.output, mediaError: 'failed render' } },
+        { publicationReview: { issues: ['final_subtitles_not_passed'] } },
+        { publicationReview: { issues: ['source_window_incomplete'] } },
+        { renderedSubtitles: { ...artifact.renderedSubtitles, window: { start: 10, end: 61 } } }]) {
+        expect(() => singleHostLocalCandidate({ ...artifact, ...change }, 'source', snapshot, 'confirmed')).toThrow();
+    }
+});
 
 test('rebuilt precision uses the independently reviewed current window and copy, retaining only matching topic plans', () => {
     const factual = { title: '姓氏选了爷', description: '念出来像爷爷', coverText: '爷爷' };

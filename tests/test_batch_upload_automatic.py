@@ -12,6 +12,34 @@ from src.scripts.clip_upload_errors import has_terminal_upload_error
 
 
 class AutomaticUploadRecoveryTests(unittest.TestCase):
+    def test_editorial_hold_never_starts_sdk_upload_and_returns_terminal_nonzero(self):
+        import clip_upload_registry as registry_api
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            secrets = root / 'secrets.json'
+            secrets.write_text('{}', encoding='utf-8')
+            clip = {'idx': 1, 'title': 'Ordinary backup', 'path': str(root / 'clip.mp4')}
+            stack.enter_context(patch.object(upload.sys, 'argv', ['batch_upload.py', '--manifest', str(root / 'manifest.json'),
+                '--state', str(root / 'state.json'), '--delay', '0']))
+            stack.enter_context(patch.object(upload, 'parse_upload_manifest', return_value=[clip]))
+            stack.enter_context(patch.object(upload, 'find_secrets_path', return_value=secrets))
+            stack.enter_context(patch.object(upload, 'fetch_member_archives', return_value={}))
+            stack.enter_context(patch.object(upload, 'search_existing_titles', return_value={}))
+            stack.enter_context(patch.object(upload, 'build_credential', return_value=object()))
+            stack.enter_context(patch.object(upload, 'UploadPacing'))
+            stack.enter_context(patch.object(upload, 'save_upload_state'))
+            stack.enter_context(patch.object(registry_api.clip_upload_enqueue, 'quality_policy_errors',
+                return_value=['[QUALITY_POLICY] select ordinary backup in Web first']))
+            sdk = stack.enter_context(patch.object(upload.video_uploader, 'VideoUploader'))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            result = asyncio.run(upload.upload_one(clip, object(), '', [], 21, ''))
+            self.assertEqual(result['status'], 'quality_policy_hold')
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(asyncio.run(upload.main()), 2)
+            sdk.assert_not_called()
+            self.assertIn('失败: 1', output.getvalue())
+            self.assertTrue(has_terminal_upload_error(output.getvalue()))
+
     def test_real_pacing_boundary_stops_manual_pause_and_records_406_only_once(self):
         from bilibili_api.exceptions import NetworkException
         for already_paused in (False, True):

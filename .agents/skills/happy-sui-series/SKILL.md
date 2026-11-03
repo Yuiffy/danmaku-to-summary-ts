@@ -73,7 +73,13 @@ ASR 的字幕结束时间只是锚点，不能直接当最后一个音节的结�
 
 输出独立修订版，保留用户已看过的旧版。保存源绝对时间、成片时间、字幕映射、
 转场依据、来源身份、真实检查结果和下一集起点。任务脚本与研究证据放忽略的 `temp/`，
-最终视频和 sidecar 放录播旁 `manual_requested_clips`，不要把整套大媒体提交到 Git。
+但下载/重封装视频、音频、渲染分片与预览必须放录播根目录 `_workspaces/<任务名>/scratch/`，
+不要把大媒体放项目 `temp/` 或 `tmp/`。先用
+`python src/scripts/media_workspace_retention.py new --name <任务名>` 创建工作区；
+最终视频和 sidecar 放录播旁 `manual_requested_clips`。完成归档后用同一 CLI 的
+`close --name <任务名>` 登记缓存并启动至少 7 天保留期；未完成任务保持 active。
+来源清单、字幕、时间轴、审核证据和续作起点放 scratch 之外，定时清理仅删除已声明缓存。
+规则见 `docs/clip-media-retention.md`。不要把整套大媒体提交到 Git。
 
 先做完整解码、所有保留区间的原音对齐、字幕越界检查和关键画面对照，再核对完整保留文本的
 连续性以及全部公共文案。波形/VAD/ASR 和视觉检查不等于人耳完整听审；如实记录覆盖范围。

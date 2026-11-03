@@ -224,13 +224,13 @@ function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath,
     const graph = [];
     if (plan.timeline) {
         require('./creative_timeline').assertTimeline(plan.timeline, trimEnd - trimStart);
+        const { audioPieceFilter } = require('./creative_timeline');
         const pieces = plan.timeline.holds?.length ? require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionPieces(plan.timeline)
             : plan.timeline.keep.map(s => ({ ...s, hold: 0 }));
         pieces.forEach((s, i) => graph.push(
             `[0:v:0]trim=start=${trimStart + s.start}:end=${trimStart + s.end},setpts=PTS-STARTPTS,setsar=1`
                 + (s.hold ? `,tpad=stop_mode=clone:stop_duration=${s.hold},trim=duration=${round(s.end - s.start + s.hold)}` : '') + `[tv${i}]`,
-            `[0:a:0]atrim=start=${trimStart + s.start}:end=${trimStart + s.end},asetpts=PTS-STARTPTS`
-                + (s.hold ? `,apad=pad_dur=${s.hold}` : '') + `[ta${i}]`));
+            audioPieceFilter('0:a:0', trimStart + s.start, trimStart + s.end, s.hold, `ta${i}`)));
         // Joint A/V concat pads each audio section to the last video frame, accumulating dialogue drift.
         graph.push(`${pieces.map((_, i) => `[tv${i}]`).join('')}concat=n=${pieces.length}:v=1:a=0[cv0]`,
             `${pieces.map((_, i) => `[ta${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[ca0]`);

@@ -54,6 +54,11 @@ describe('independent full gameplay timeline', () => {
       expect(await visual.auditGameTimeline(plan, options, getGameConfig(root), { directory })).toEqual(first);
       expect(visualRequest).toHaveBeenCalledTimes(1);
       expect(extract).toHaveBeenCalledTimes(2);
+      const expanded = { ...getGameConfig(root), games: [...getGameConfig(root).games,
+        { id: 'another-game', name: '另一个游戏', aliases: ['另一个游戏'] }] };
+      const updated = await visual.auditGameTimeline(plan, options, expanded, { directory });
+      expect(updated.key).not.toBe(first.key);
+      expect(visualRequest).toHaveBeenCalledTimes(2);
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -83,6 +88,41 @@ describe('independent full gameplay timeline', () => {
       expect(visualRequest).toHaveBeenCalledTimes(1);
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
+  test('keeps an upstream audio quote mismatch uncertain when the frames do not agree', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-sample-quote-mismatch-'));
+    try {
+      const config = getGameConfig({}), source = { mediaPath: 'original.flv' };
+      const timeline = { key: 'quote-mismatch', samples: [{ index: 1, time: 60 }],
+        ranges: [{ first: 1, last: 1, kind: 'uncertain', note: 'Need original context' }] };
+      const transcribe = jest.fn(async () => ({ segments: [{ start: 2, end: 5, text: '本地转写内容' }] }));
+      const visualRequest = jest.fn(async () => ({ text: JSON.stringify({ kind: 'other', heardWords: '上游幻听内容', reason: 'unsupported quote',
+        frames: Array.from({ length: 5 }, (_, i) => ({ index: i + 1, activity: i < 3 ? 'other' : 'black', description: 'talking avatar fading to black' })) }) }));
+      const result = await visual.resolveUncertainSamples(timeline, { source, duration: 120, streamerName: 'Host' },
+        { config: {}, mediaPath: source.mediaPath, transcribe, visualRequest,
+          extract: async (args: string[]) => fs.writeFileSync(args.at(-1), Buffer.alloc(1280)) }, config,
+        { directory }, mediaSettings({}, config, 'visual'), path.join(directory, 'TIMELINE.json'));
+      expect(result.ranges[0].kind).toBe('uncertain');
+      expect(result.temporalReviews[0]).toMatchObject({ validationIssue: 'audio_quote_mismatch' });
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+  test('resolves an unverifiable quote from five agreeing frames instead of wedging the recording', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-sample-quote-frames-'));
+    try {
+      const config = getGameConfig({}), source = { mediaPath: 'original.flv' };
+      const timeline = { key: 'quote-frames', samples: [{ index: 1, time: 60 }],
+        ranges: [{ first: 1, last: 1, kind: 'uncertain', note: 'Need original context' }] };
+      const transcribe = jest.fn(async () => ({ segments: [{ start: 2, end: 5, text: '本地转写内容' }] }));
+      const visualRequest = jest.fn(async () => ({ text: JSON.stringify({ kind: 'other', heardWords: '魂大人别走', reason: 'on-screen subtitle',
+        frames: Array.from({ length: 5 }, (_, i) => ({ index: i + 1, activity: 'other', description: 'talking avatar with chat' })) }) }));
+      const result = await visual.resolveUncertainSamples(timeline, { source, duration: 120, streamerName: 'Host' },
+        { config: {}, mediaPath: source.mediaPath, transcribe, visualRequest,
+          extract: async (args: string[]) => fs.writeFileSync(args.at(-1), Buffer.alloc(1280)) }, config,
+        { directory }, mediaSettings({}, config, 'visual'), path.join(directory, 'TIMELINE.json'));
+      expect(result.ranges[0].kind).toBe('other');
+      expect(result.temporalReviews[0]).toMatchObject({ audioQuoteVerified: false, kind: 'other' });
+      expect(result.temporalReviews[0].validationIssue).toBeUndefined();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
 
   test('requires complete visual coverage and an allowed game', () => {
     const games = [{ id: 'elden-ring' }];
@@ -91,6 +131,31 @@ describe('independent full gameplay timeline', () => {
     expect(visual.parseTimeline({ text: JSON.stringify({ ranges }) }, 4, games).ranges).toHaveLength(2);
     expect(() => visual.parseTimeline({ text: JSON.stringify({ ranges }) }, 5, games)).toThrow(/every sample/);
     expect(() => visual.parseTimeline({ text: JSON.stringify({ ranges: [{ ...ranges[1], first: 1, gameId: 'another-game' }] }) }, 4, games)).toThrow();
+  });
+  test('uses local evidence to reduce the upstream image set and resumes in batches', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-timeline-batches-'));
+    try {
+      const root = { streamGameClips: { visual: { sampleSeconds: 120, aiSampleSeconds: 300,
+        aiOtherSampleSeconds: 600, aiBoundaryPaddingSeconds: 60, maxFramesPerBatch: 3 } } };
+      const config = getGameConfig(root);
+      const jpeg = await sharp({ create: { width: 480, height: 270, channels: 3, background: '#101010' } }).jpeg().toBuffer();
+      const visualRequest = jest.fn(async (prompt: string, inputs: any[]) => {
+        expect(inputs).toHaveLength(1);
+        const page = await sharp(inputs[0].path).metadata();
+        expect(page.width).toBe(1920);
+        const count = Number(prompt.match(/contains (\d+) selected samples/u)?.[1]);
+        return { text: JSON.stringify({ ranges: [{ first: 1, last: count, kind: 'gameplay', gameId: 'elden-ring', note: 'live game HUD' }] }) };
+      });
+      const plan = { source: { mediaPath: 'fixture.flv' }, duration: 1000, streamerName: 'Host',
+        events: [{ gameId: 'elden-ring', start: 0, end: 999 }] };
+      const extract = jest.fn(async (args: string[]) => fs.writeFileSync(args.at(-1), jpeg));
+      const result = await visual.auditGameTimeline(plan, { config: root, mediaPath: 'fixture.flv', visualRequest, extract }, config, { directory });
+      expect(visualRequest.mock.calls.length).toBeGreaterThan(1);
+      expect(result.visualSampling.omittedCount).toBeGreaterThan(0);
+      expect(result.visualSampling.selectedCount).toBeLessThan(result.visualSampling.totalCount);
+      expect(result.ranges.reduce((sum: number, row: any) => sum + row.last - row.first + 1, 0)).toBe(result.samples.length);
+      expect(result.ranges.some((row: any) => row.source === 'local_stable_interpolation')).toBe(true);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
   test('temporal review retains uncertainty and cannot promote an unsupported game', () => {
     const games = [{ id: 'elden-ring' }];
@@ -133,5 +198,51 @@ describe('independent full gameplay timeline', () => {
     const uncertainMerged = { ...plan, events: [{ ...plan.events[0], end: 1680, endObserved: false }],
       rawEvents: [plan.events[0], { ...plan.events[0], start: 1440, end: 1680, startObserved: false, endObserved: false }] };
     expect(visual.reconcileTimeline(uncertainMerged, timeline)[0]).toMatchObject({ start: 100, end: 1500 });
+  });
+});
+
+describe('verified session game anchor', () => {
+  const games = [
+    { id: 'elden-ring', name: '艾尔登法环', aliases: ['艾尔登法环', '老头环', 'ELDEN RING'] },
+    { id: 'game-phantom', name: '影之刃零', aliases: ['影之刃零'] }
+  ];
+  const config = { games, catalogEvidence: { games: ['影之刃零'] } };
+
+  test('a verified summary anchors the session to its own games', () => {
+    expect(visual.sessionAnchorIds(config)).toEqual(['game-phantom']);
+    expect(visual.sessionAnchorIds({ games })).toEqual([]);
+    expect(visual.anchorClause(config, ['game-phantom'])).toContain('影之刃零');
+    expect(visual.anchorClause(config, ['game-phantom'])).toContain('艾尔登法环');
+  });
+
+  test('a Souls-like HUD is not evidence for another allowed game', () => {
+    // The 2026-11-01 failure: 影之刃零 boss fights were labelled 艾尔登法环 by genre alone.
+    const response = { text: JSON.stringify({ ranges: [
+      { first: 1, last: 3, kind: 'gameplay', gameId: 'elden-ring', note: 'third-person action RPG with a boss health bar' },
+      { first: 4, last: 5, kind: 'other', note: 'talking avatar' }] }) };
+    const timeline = visual.parseTimeline(response, 5, games, ['game-phantom']);
+    expect(timeline.ranges[0].gameId).toBe('game-phantom');
+    expect(timeline.anchorCorrections).toEqual([{ first: 1, last: 3, from: 'elden-ring',
+      reason: '画面未读出该游戏自己的标题或独占界面文字，按本场已核实游戏归并。' }]);
+  });
+
+  test('quoted on-screen title text still proves a different game', () => {
+    const response = { text: JSON.stringify({ ranges: [
+      { first: 1, last: 2, kind: 'gameplay', gameId: 'elden-ring', note: 'title screen', textEvidence: 'ELDEN RING' },
+      { first: 3, last: 4, kind: 'gameplay', gameId: '影之刃零', note: 'original frame name' }] }) };
+    const timeline = visual.parseTimeline(response, 4, games, ['game-phantom']);
+    expect(timeline.ranges.map(row => row.gameId)).toEqual(['elden-ring', 'game-phantom']);
+    expect(timeline.anchorCorrections).toBeUndefined();
+  });
+
+  test('without a verified summary the allowlist keeps its old behaviour', () => {
+    const response = { text: JSON.stringify({ ranges: [{ first: 1, last: 2, kind: 'gameplay', gameId: 'elden-ring', note: 'boss bar' }] }) };
+    expect(visual.parseTimeline(response, 2, games, []).ranges[0].gameId).toBe('elden-ring');
+  });
+
+  test('an uncertain sample resolved to a lookalike is anchored too', () => {
+    const row = { kind: 'gameplay', gameId: 'elden-ring', reason: 'action RPG HUD',
+      heardWords: 'silence', frames: Array.from({ length: 5 }, (_, i) => ({ index: i + 1, activity: 'gameplay', description: 'action RPG' })) };
+    expect(visual.parseSampleReview({ text: JSON.stringify(row) }, games, ['game-phantom']).gameId).toBe('game-phantom');
   });
 });

@@ -15,6 +15,7 @@ export interface PublicationConfig {
     roomIds?: string[];
     policyVersion?: string;
     scope?: 'configured_keywords'; enabled?: boolean; keywords?: string[]; ignoredRoomIds?: string[];
+    requirePrecision?: boolean;
 }
 export interface PublicationDigests { video: string; subtitles: string; cover: string; copy: string; subtitleAudio?: string; timingAudio?: string; subtitleDiagnostic?: string; editorial?: string }
 /** Compatible with clipping/source_snapshot.js without importing a source CLI. */
@@ -234,6 +235,9 @@ function preflight(artifact: Artifact, input: PublicationInput): string[] {
     if (input.config.policyVersion === TOPIC_PUBLICATION_POLICY_VERSION) issues.push(...topicPreflightIssues(artifact, input));
     else if (artifact.publicationKind === 'keyword_topic') issues.push('topic_publication_policy_required');
     if (artifact.selectionRejection) issues.push('selection_rejected');
+    if ((input.config.requirePrecision || artifact.precisionRequired) && (artifact.style !== 'precision'
+        || artifact.creativeResult?.status !== 'edited' || artifact.editorialStyle?.status !== 'completed'
+        || artifact.qaResult?.status !== 'passed' || artifact.audioQa?.status !== 'passed')) issues.push('precision_not_completed');
     for (const key of ['publicCopyPending', 'preRenderHold', 'rebuildRequired']) if (artifact[key]) issues.push(key);
     if (artifact.uploadReady !== true) issues.push('artifact_not_upload_ready');
     if (artifact.output?.mediaError) issues.push('media_error');
