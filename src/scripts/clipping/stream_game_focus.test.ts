@@ -36,7 +36,7 @@ describe('game episode title focus', () => {
 
   test('falls back to named areas when a session has no boss chapters', () => {
     const chapters = [chapter('前往杀气塔外围', 0), chapter('高塔探索', 600), chapter('驿站', 1200)];
-    expect(focus.selectFocus(chapters, { end: 1800 }).focus).toBe('杀气塔、高塔探索、驿站');
+    expect(focus.selectFocus(chapters, { end: 1800 }).focus).toBe('杀气塔、高塔、驿站');
   });
 
   test('respects the title budget and the three label limit', () => {

@@ -48,9 +48,10 @@ function locationLabel(value) {
         previous = label;
         let stripped = label.replace(LOCATION_VERB, '').replace(HARD_TAIL, '');
         const withoutActivity = stripped.replace(SOFT_TAIL, '');
-        // "回魔法学院补探索" keeps its 探索: the remainder would end on a filler character,
-        // not on a place name like "高塔".
-        if (moved && withoutActivity !== stripped && !/[补再又多些了着过]$/u.test(withoutActivity)) stripped = withoutActivity;
+        // A short remainder is a place name ("高塔探索" → 高塔); a long one is the
+        // activity itself ("回魔法学院补探索"), especially when it ends on a filler.
+        if ((moved || displayUnits(withoutActivity) <= 5) && withoutActivity !== stripped
+            && !/[补再又多些了着过]$/u.test(withoutActivity)) stripped = withoutActivity;
         stripped = stripped.replace(/[与和的及等]+$/u, '');
         if (displayUnits(stripped) >= 2 && !/^[与和的及]/u.test(stripped)) label = stripped;
     } while (label !== previous);
