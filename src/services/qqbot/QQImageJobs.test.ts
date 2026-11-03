@@ -5,6 +5,7 @@ import { QQImageJobs } from './QQImageJobs';
 import { QQImageResult } from './QQImagePolicy';
 import { qqDigest, qqRequest } from './QQPolicy';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
+import { qqFailure } from './QQDiagnostics';
 
 const appId = '900000001', epoch = Date.parse('2026-10-29T02:00:00Z');
 const command = { mode: 'create' as const, instruction: '生成星空图片', characters: [] };
@@ -170,4 +171,22 @@ test('a fast provider failure returns a status notice on the original request wi
   f.fail(new Error('failed')); expect(await waiting).toMatchObject({ text: expect.stringContaining('失败') });
   await f.jobs.delivered(first); expect(f.jobs.admission(f.request('next'))).toBeUndefined();
   expect(f.io.generate).toHaveBeenCalledTimes(1); await f.jobs.close();
+});
+
+test.each([
+  ['image_sexual' as const, '太色了，生不出来，换张图或换个要求试试。'],
+  ['image_moderation' as const, '这个要求过不了审核，换张图或换个要求试试。'],
+])('an upstream %s refusal survives restart and delivers a short reason once without retrying', async (code, text) => {
+  const f = fixture(); await f.jobs.open(); const first = f.request('original');
+  await f.jobs.enqueue(first, command);
+  f.fail(qqFailure('image_http', code, { httpStatus: 400, requestId: 'rejected-123' }));
+  await f.jobs.idle(); await f.jobs.close();
+  const recovered = new QQImageJobs(root, appId, 900000, f.io); await recovered.open();
+  const next = f.request('notice');
+  expect(await recovered.pending(next)).toEqual({ text });
+  await recovered.delivered(next);
+  expect(await recovered.pending(f.request('after'))).toBeUndefined();
+  expect(f.io.generate).toHaveBeenCalledTimes(1);
+  expect(f.io.report).toHaveBeenCalledWith(expect.objectContaining({ failure: expect.objectContaining({ code }) }));
+  await recovered.close();
 });

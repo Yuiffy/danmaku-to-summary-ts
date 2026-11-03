@@ -91,7 +91,8 @@ export async function runQQBot(args: string[]): Promise<void> {
       baseUrl: 'https://api.bot.qq.com', tokenBaseUrl: 'https://api.bot.qq.com',
       userAgent: 'shikamochi-qqbot/0.1', reconnect: { maxAttempts: 10 }, logger: { info: () => {}, error: () => {} } });
     const records = new QQRecords(root, appId);
-    const imageInputs = new QQImageInputs(root, appId);
+    const imageInputs = new QQImageInputs(root, appId, undefined, (request, sourceRead) => report({
+      event: 'qq_image_source_read', requestId: request.key, scope: request.scope, sourceRead }));
     const generate = config.images?.enabled ? createQQImageGenerator(root, appId, config.images, settings, undefined, imageInputs) : undefined;
     if (generate && config.images?.background) {
       imageJobs = new QQImageJobs(root, appId, config.images.timeoutMs, { generate, now: Date.now, report,
@@ -129,7 +130,7 @@ export async function runQQBot(args: string[]): Promise<void> {
       }, sleep: (ms, signal) => sleep(ms, undefined, { signal }), report });
     bot.on('ready', (data: any) => {
       if (typeof data?.user?.id === 'string') worker!.setBotId(data.user.id);
-      report({ event: 'qq_ready' });
+      report({ event: 'qq_ready', imageSourceDiagnosticsVersion: 1 });
     });
     bot.on('resumed', () => report({ event: 'qq_resumed' }));
     bot.on('disconnected', () => report({ event: 'qq_disconnected' }));

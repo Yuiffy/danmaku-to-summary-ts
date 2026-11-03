@@ -11,6 +11,8 @@ export const QQ_FAILURE_CODES = {
   duplicate_tool: '重复工具操作', tool_limit: '超过工具次数上限', tool_failed: '资料工具执行失败',
   cleanup_failed: '资料会话清理失败', record_failed: '诊断记录保存失败', invalid_tokens: '用量结算不合法',
   image_unavailable: '图片适配器不可用', image_bytes: '图片内容缺失或不合法', image_size: '图片超过大小上限',
+  image_moderation: '生图请求被上游内容审核拒绝',
+  image_sexual: '生图请求被上游判定涉及性内容',
   send_failed: 'QQ 发送结果不确定', state_failed: '持久化检查点失败'
 } as const;
 export interface QQDiagnostic {

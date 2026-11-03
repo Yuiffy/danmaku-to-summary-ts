@@ -4,6 +4,7 @@ import { QUESTION_TOOLS } from '../live-vote/questions/QuestionAgent';
 import { aggregateEvidence } from '../live-vote/questions/QuestionTools';
 import { readLiveOverview } from '../live-vote/questions/LiveOverview';
 import { configuredQuestionRooms, questionScope } from '../live-vote/questions/QuestionScope';
+import { streamerKnowledge } from '../live-vote/questions/StreamerKnowledge';
 import { QQConfig, QQRequest } from './QQPolicy';
 
 export interface QQReadTool {
@@ -20,6 +21,8 @@ const descriptions: Record<string, string> = {
   search_recordings: '按主题词查原录播recordings、摘要highlights或切片clips；date为年/月/日或null查历史。query传null；withinEvidenceId锁定已有原录播及分段，跨场查找传null。结果limited表示覆盖受限。',
   read_context: '展开已有evidenceId前后90秒、最多21条原文，核对细节与归属。',
   read_recent: '读取当前仍录制场次的最近5/10分钟，返回字幕延迟和覆盖限制；不查历史。',
+  read_recording_openings: '按fromDate/toDate批量读多天开场字幕和录像时间点；最多8份、总384条，按录制时钟去重。nextOffset翻页，nextCueOffset在相同范围续读；录制起点不等于开播。',
+  read_recording_calendar: '按fromDate/toDate查看最多31天录制分布与星期。dayBoundaryHour=6可把凌晨续录归前一天；无资料不证明休息。按常识周期结合近期锚点推算，保留预计与调休限制。',
   list_recordings: '按日期分页浏览资料。preview=none列目录、head读开头、sample均匀抽样；不是全文检索。用小页找候选，再read_recordings精读。',
   read_recordings: '按本题recordingId/evidenceId批量分页读正文；startSeconds/endSeconds为资料内秒数，offset为行偏移；保留日期、分段、时间基准。',
   aggregate_evidence: '对已返回证据的时间偏移计算数量、总和、均值、中位数、最值，可按房间/日期分组；仅代表所选样本。'
@@ -46,7 +49,8 @@ export function createQQKnowledge(runtime: QuestionRuntime, config: NonNullable<
     let scope: string;
     try {
       const selected = questionScope(questions, config.roomId, request.text, QQ_QUESTION_ROOM_LIMIT);
-      scope = `本次查询资料范围：${JSON.stringify(selected.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`;
+      scope = `本次查询资料范围：${JSON.stringify(selected.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`
+        + streamerKnowledge(selected.map(room => room.roomId));
     } catch {
       scope = `本题提及的直播资料范围过多；单次直播检索最多${QQ_QUESTION_ROOM_LIMIT}位主播，请缩小检索范围。此限制不阻止聊天、看图和绘图工具。`;
     }
@@ -62,6 +66,8 @@ export function createQQKnowledge(runtime: QuestionRuntime, config: NonNullable<
           case 'search_recordings': return { ...await corpus.search(args), coverage: [...corpus.coverage].map(([roomId, value]) => ({ roomId, ...value })) };
           case 'read_context': return corpus.context(args);
           case 'read_recent': return corpus.recent(args);
+          case 'read_recording_openings': return corpus.openings(args);
+          case 'read_recording_calendar': return corpus.calendar(args);
           case 'list_recordings': return corpus.list(args);
           case 'read_recordings': return corpus.read(args);
           case 'aggregate_evidence': return aggregateEvidence(args, id => corpus.citation(id));

@@ -3,8 +3,9 @@ import * as os from 'os';
 import * as path from 'path';
 import sharp from 'sharp';
 import { Response } from 'node-fetch';
+import { Readable } from 'stream';
 import { createQQImageGenerator } from './QQImage';
-import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, qqImageConfirmationReply, qqImagePlan, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
+import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_SOURCE_REPLY, qqImageCommandPlan, qqImageConfirmationReply, qqImagePlan, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
 import { qqImageCharacters } from './QQImageCatalog';
 import { qqDigest, qqRequest } from './QQPolicy';
 import { QQRecords } from './QQRecords';
@@ -81,6 +82,36 @@ test('combines matched character references with user scene, without matching En
   expect(plan.references).toEqual(options.characters!.map(item => item.referenceImage));
   expect(plan.prompt).toContain('一起吃冰淇淋'); expect(plan.prompt).toContain('白发红瞳'); expect(plan.prompt).toContain('黄色头发');
   expect(qqImagePlan(confirmedRequest('生成 a red suit 的图片'), options).references).toEqual([]);
+});
+test.each(['变岁己', '变小岁', '请帮我变栞栞', '换成栞栞', '把图里的角色换成岁己'])
+('replacement shorthand requires the source and binds the named target: %s', text => {
+  expect(qqImageConfirmationReply(request(text), options)).toBe(QQ_IMAGE_SOURCE_REPLY);
+  const edit = { ...request(text), imageInput: { urls: [], reply: 'source' } };
+  expect(qqImageRequested(text, edit.imageInput)).toBe(true);
+  expect(qqImageConfirmationReply(edit, options)).toBeUndefined();
+  const plan = qqImageCommandPlan(edit, { mode: 'edit', instruction: '按用户要求替换角色', characters: [] }, options, 1);
+  const target = text.includes('栞栞') ? options.characters![1] : options.characters![0];
+  expect(plan.references).toEqual([target.referenceImage]);
+  expect(plan.prompt).toContain(`参考图2只用于锁定${target.name}`);
+  expect(plan.prompt).toContain(text);
+  expect(plan.prompt).toContain('默认保留原图的画风');
+  expect(plan.prompt).toContain('以用户明确要求为准');
+  expect(plan.prompt).not.toContain('不得用新角色替换原图人物');
+  expect(plan.prompt).not.toContain('补充参考图仅用于用户要求新增的角色');
+});
+
+test.each(['变岁己是什么意思', '变岁己吗？', '不要变岁己', '“变岁己”是什么意思'])
+('questions and chatter about replacement do not authorize a legacy image request: %s', text => {
+  expect(qqImageConfirmationReply({ ...request(text), imageInput: { urls: [], reply: 'source' } }, options)).toBeDefined();
+});
+
+test('replacement retains extra requirements and deduplicates selected target references', () => {
+  const edit = { ...request('把左边的角色换成小岁，右边保持不变，改成水彩风格'), imageInput: { urls: [], reply: 'source' } };
+  const plan = qqImageCommandPlan(edit, { mode: 'edit', instruction: edit.text, characters: ['岁己'] }, options, 1);
+  expect(plan.references).toEqual([options.characters![0].referenceImage]);
+  expect(plan.prompt).toContain(`<用户创作要求>${edit.text}</用户创作要求>`);
+  expect(plan.prompt).toContain('其余人物保持原样');
+  expect(plan.prompt).toContain('不照搬参考图的画风');
 });
 test('catalogue includes registry aliases and named references outside the registry', () => {
   fs.writeFileSync(path.join(root, 'registry.json'), JSON.stringify({ ai: { streamerRegistry: {
@@ -171,4 +202,61 @@ test('image HTTP failures retain status and upstream ID while omitting the provi
   try { await generate(confirmedRequest('生成星空图片'), new AbortController().signal); } catch (caught) { error = caught; }
   expect(error.diagnostic).toMatchObject({ stage: 'image_http', code: 'http_error', httpStatus: 503, requestId: 'image-req-123' });
   expect(JSON.stringify(error.diagnostic)).not.toMatch(/private|fake-qq-key/u); expect(transport).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['moderation_blocked', 'image_moderation'],
+  ['invalid_image', 'http_error'],
+  ['private-fake-qq-key', 'http_error'],
+])('image HTTP error code %s is classified without leaking the provider body', async (code, expected) => {
+  const transport = jest.fn(async () => new Response(JSON.stringify({ error: {
+    code, message: 'private provider detail fake-qq-key moderation_blocked', param: 'private image URL'
+  } }), { status: 400, headers: { 'x-request-id': 'image-rejected-123' } }));
+  const generate = createQQImageGenerator(root, '900000001', options,
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
+  let error: any;
+  try { await generate(confirmedRequest('生成星空图片'), new AbortController().signal); } catch (caught) { error = caught; }
+  expect(error.diagnostic).toMatchObject({ stage: 'image_http', code: expected, httpStatus: 400, requestId: 'image-rejected-123' });
+  expect(JSON.stringify(error.diagnostic)).not.toMatch(/private|fake-qq-key|moderation_blocked/u);
+  expect(transport).toHaveBeenCalledTimes(1);
+});
+
+test.each([false, true])('streamed HTTP errors are bounded before classification (oversized=%s)', async oversized => {
+  const body = JSON.stringify({ error: { code: 'moderation_blocked', message: 'rejected safety_violations=[sexual].' } });
+  let chunksRead = 0;
+  const stream = Readable.from((async function* () {
+    for (const chunk of oversized ? [' '.repeat(16385), body] : [body.slice(0, 40), body.slice(40)]) {
+      chunksRead++; yield Buffer.from(chunk);
+    }
+  })());
+  const transport = jest.fn(async () => new Response(stream, { status: 400 }));
+  const generate = createQQImageGenerator(root, '900000001', options,
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
+  await expect(generate(confirmedRequest('生成星空图片'), new AbortController().signal))
+    .rejects.toMatchObject({ diagnostic: { code: oversized ? 'http_error' : 'image_sexual', httpStatus: 400 } });
+  expect(chunksRead).toBeLessThanOrEqual(2); expect(transport).toHaveBeenCalledTimes(1);
+});
+
+test.each(['not JSON moderation_blocked', JSON.stringify({ error: { code: 'moderation_blocked', message: 'x'.repeat(20000) } })])
+('malformed or oversized provider errors remain generic', async body => {
+  const transport = jest.fn(async () => new Response(body, { status: 400 }));
+  const generate = createQQImageGenerator(root, '900000001', options,
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
+  await expect(generate(confirmedRequest('生成星空图片'), new AbortController().signal))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_http', code: 'http_error', httpStatus: 400 } });
+  expect(transport).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['moderation_blocked', 'rejected safety_violations=[sexual].', 'image_sexual'],
+  ['moderation_blocked', 'rejected safety_violations=[violence].', 'image_moderation'],
+  ['moderation_blocked', 'sexual appears in arbitrary text', 'image_moderation'],
+  ['invalid_image', 'rejected safety_violations=[sexual].', 'http_error'],
+])('sexual-content replies require both the rejection code and the structured category', async (code, message, expected) => {
+  const transport = jest.fn(async () => new Response(JSON.stringify({ error: { code, message } }), { status: 400 }));
+  const generate = createQQImageGenerator(root, '900000001', options,
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
+  await expect(generate(confirmedRequest('生成星空图片'), new AbortController().signal))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_http', code: expected, httpStatus: 400 } });
+  expect(transport).toHaveBeenCalledTimes(1);
 });

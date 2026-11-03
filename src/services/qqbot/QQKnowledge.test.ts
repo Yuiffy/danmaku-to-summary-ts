@@ -60,6 +60,21 @@ test('missing generated overviews still permit reading this broadcaster subtitle
   } finally { await session.close(); }
 });
 
+test('shares the scoped cadence knowledge and recording calendar with QQ', async () => {
+  runtime.questions.recordingRoots['25788785'] = runtime.questions.recordingRoots['100'];
+  const knowledge = createQQKnowledge(runtime, { ...config, roomId: '25788785', allConfiguredRooms: true });
+  const session = knowledge({ ...request, text: '这周轮到哪天休息' }, signal());
+  try {
+    expect(session.scope).toContain('上五休一');
+    const calendar = await execute(session, 'read_recording_calendar', { fromDate: '2026-10-26', toDate: '2026-10-28', dayBoundaryHour: 6 });
+    expect(calendar.calendars[0].roomId).toBe('25788785');
+    expect(calendar.calendars[0].days[1].subtitleRecordings).toBe(1);
+    const other = knowledge(request, signal());
+    expect(other.scope).not.toContain('上五休一');
+    await other.close();
+  } finally { await session.close(); }
+});
+
 test('historical topics remain searchable after a recent overview and listing, with dated source context', async () => {
   const root = runtime.questions.recordingRoots['100'][0];
   await fs.writeFile(path.join(root, '2024-08-30.srt'), '1\n00:00:01,000 --> 00:00:02,000\n今天继续玩泰坦陨落2\n');

@@ -165,7 +165,7 @@ test('downloads QQ quote or current-message attachments once without forwarding 
   const download = jest.fn(async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }));
   const inputs = new QQImageInputs(root, '900000001', download as any);
   for (const quoted of [true, false]) {
-    const attachment = { content_type: 'image/png', url: 'https://gchat.qpic.cn/image' };
+    const attachment = { content_type: 'image/png', url: 'https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=fixture&rkey=private-token' };
     const request = qqRequest({ ...inbound, ...(quoted ? { msgElements: [{ msg_idx: 'reply-index', attachments: [attachment] }] }
       : { msgType: undefined, refMsgIdx: undefined, msgElements: undefined, attachments: [attachment] }) }, at)!;
     expect(await inputs.load(request, signal())).toEqual([png]);
@@ -197,4 +197,71 @@ test.each(['missing', 'tampered', 'oversized', 'invalid-image', 'redirect', 'abo
   const generate = createQQImageGenerator(root, '900000001', options, settings, paid, new QQImageInputs(root, '900000001', download as any));
   await expect(generate(request, controller.signal)).rejects.toMatchObject({ diagnostic: { stage: 'image_prepare' } });
   expect(paid).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['http', 'headers', 403, 'text'],
+  ['content-type', 'headers', 200, 'octet_stream'],
+  ['size', 'headers', 200, 'image'],
+  ['decode', 'decode', 200, 'image'],
+  ['network', 'download', undefined, undefined],
+  ['timeout', 'download', undefined, undefined],
+  ['body', 'body', 200, 'image']
+])('source diagnostics distinguish %s failure without changing the cached result', async (failure, step, httpStatus, contentType) => {
+  const privateValue = 'signed-url-private-token';
+  const original = Object.assign(new Error(privateValue), { name: 'FetchError',
+    ...(failure === 'timeout' ? { type: 'request-timeout' } : { code: 'ECONNRESET' }) });
+  const download = jest.fn(async () => {
+    if (failure === 'network' || failure === 'timeout') throw original;
+    const response = new Response(failure === 'decode' ? 'invalid pixels' : png, {
+      status: failure === 'http' ? 403 : 200,
+      headers: { 'content-type': failure === 'http' ? `text/plain; ${privateValue}` :
+        failure === 'content-type' ? `application/octet-stream; ${privateValue}` : 'image/png',
+      ...(failure === 'size' ? { 'content-length': String(11 * 1024 * 1024) } : {}) }
+    });
+    if (failure === 'body') response.buffer = async () => { throw original; };
+    return response;
+  });
+  const observe = jest.fn();
+  const request = qqRequest({ ...inbound, msgElements: undefined, refMsgIdx: undefined,
+    attachments: [{ content_type: 'image/png', url: `https://multimedia.nt.qq.com.cn/download?rkey=${privateValue}` }] }, at)!;
+  const inputs = new QQImageInputs(root, '900000001', download as any, observe);
+  let caught: unknown;
+  try { await inputs.load(request, signal()); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(Error);
+  await expect(inputs.load(request, signal())).rejects.toBe(caught);
+  expect(download).toHaveBeenCalledTimes(1); expect(observe).toHaveBeenCalledTimes(1);
+  const [reportedRequest, read] = observe.mock.calls[0];
+  expect(reportedRequest).toBe(request);
+  expect(read).toMatchObject({ version: 1, outcome: 'failed', step, source: 'attachment', hostname: 'multimedia.nt.qq.com.cn' });
+  expect(read.httpStatus).toBe(httpStatus); expect(read.contentType).toBe(contentType);
+  if (failure === 'size') expect(read.declaredTooLarge).toBe(true);
+  if (failure === 'timeout') expect(read.failure.code).toBe('timeout');
+  if (failure === 'decode') expect(read.bytes).toBe(14);
+  expect(JSON.stringify(read)).not.toMatch(/signed-url-private-token|rkey|member-a|reply-index|group-a|invalid pixels/u);
+});
+
+test('source diagnostics identify receipt errors before network and never replace the original failure', async () => {
+  const file = await remember(); await fs.writeFile(file, 'tampered');
+  const observe = jest.fn(() => { throw new Error('observer unavailable'); }), download = jest.fn();
+  const inputs = new QQImageInputs(root, '900000001', download, observe);
+  await expect(inputs.load(qqRequest(inbound, at)!, signal())).rejects.toThrow('QQ source image changed');
+  expect(observe.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({
+    version: 1, outcome: 'failed', step: 'receipt', source: 'receipt' })]));
+  expect(download).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('successful source reads are observed once and leave observer exceptions harmless (receipt=%s)', async receipt => {
+  if (receipt) await remember();
+  const request = qqRequest({ ...inbound, ...(receipt ? {} : { msgElements: undefined, refMsgIdx: undefined,
+    attachments: [{ content_type: 'image/png', url: 'https://gchat.qpic.cn/image' }] }) }, at)!;
+  const observe = jest.fn((_request, _read) => { throw new Error('observer unavailable'); });
+  const download = jest.fn(async () => new Response(png, { headers: { 'content-type': 'image/png' } }));
+  const inputs = new QQImageInputs(root, '900000001', download as any, observe);
+  expect(await inputs.load(request, signal())).toEqual([png]);
+  expect(await inputs.load(request, signal())).toEqual([png]);
+  expect(observe).toHaveBeenCalledTimes(1);
+  expect(observe.mock.calls[0][1]).toMatchObject({ version: 1, outcome: 'loaded', step: 'complete',
+    source: receipt ? 'receipt' : 'attachment', bytes: png.length });
+  expect(download).toHaveBeenCalledTimes(receipt ? 0 : 1);
 });

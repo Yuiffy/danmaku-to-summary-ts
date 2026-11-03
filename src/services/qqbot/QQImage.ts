@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import fetch from 'node-fetch';
+import fetch, { Response } from 'node-fetch';
 import FormData = require('form-data');
 import sharp from 'sharp';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -12,6 +12,32 @@ import { QQImageInputs } from './QQImageInputs';
 import { qqImageCharacters } from './QQImageCatalog';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure, qqRequestId } from './QQDiagnostics';
+
+/** Inspect only a bounded error envelope; arbitrary provider text never leaves this adapter. */
+async function imageHttpFailure(response: Response): Promise<QQDiagnostic['code']> {
+  try {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    const body = response.body;
+    if (Buffer.isBuffer(body)) {
+      if (body.length > 16384) return 'http_error';
+      chunks.push(body);
+    } else {
+      for await (const chunk of body) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        length += bytes.length;
+        if (length > 16384) return 'http_error';
+        chunks.push(bytes);
+      }
+    }
+    const error = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.error;
+    if (response.status === 400 && error?.code === 'moderation_blocked') {
+      return typeof error.message === 'string' && /safety_violations=\[[^\]\r\n]*\bsexual\b[^\]\r\n]*\]/u.test(error.message)
+        ? 'image_sexual' : 'image_moderation';
+    }
+  } catch { /* Unreadable or non-JSON error bodies retain their original HTTP failure. */ }
+  return 'http_error';
+}
 
 /** Fixed API, trusted local character references, one paid attempt, PNG-only local output. */
 export function createQQImageGenerator(root: string, appId: string, config: QQImageConfig,
@@ -54,7 +80,7 @@ export function createQQImageGenerator(root: string, appId: string, config: QQIm
         agent: settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined });
       if (Number.isInteger(response.status)) detail.httpStatus = response.status;
       detail.requestId = qqRequestId(response, settings.apiKey);
-      if (!response.ok) throw qqFailure(stage, 'http_error');
+      if (!response.ok) throw qqFailure(stage, await imageHttpFailure(response));
       stage = 'image_decode';
       let result: any;
       try { result = await response.json(); }

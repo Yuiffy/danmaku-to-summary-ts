@@ -3,11 +3,12 @@ import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_R
 import { QQState } from './QQState';
 import { QQRecordUpdate } from './QQRecords';
 import { QQ_MODEL } from './QQPolicy';
-import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, QQ_IMAGE_SOURCE_REPLY, qqImageCommandReply } from './QQImagePolicy';
+import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, QQ_IMAGE_MODERATION_REPLY, QQ_IMAGE_SEXUAL_REPLY, QQ_IMAGE_SOURCE_REPLY, qqImageCommandReply, qqImageQuota } from './QQImagePolicy';
 import { QQAgentTrace } from '../../core/admin/qqRecords';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure } from './QQDiagnostics';
 import { QQImageInputDiagnostic, qqImageInputDiagnostic } from './QQImageInputPolicy';
+import type { QQImageSourceRead } from './QQImageInputs';
 
 export type QQTextAnswer = string | { text: string; tokens: number };
 export interface QQLogEvent {
@@ -15,6 +16,9 @@ export interface QQLogEvent {
   queuedMs?: number; elapsedMs?: number; route?: 'image' | 'text';
   imageInput?: QQImageInputDiagnostic;
   imageSourceCount?: number;
+  imageSourceDiagnosticsVersion?: 1;
+  sourceRead?: QQImageSourceRead;
+  imageLimit?: { reason: 'user_daily' | 'user_window' | 'global_daily' | 'interval'; retryAt: number };
 }
 export interface QQWorkerIO {
   now(): number;
@@ -96,6 +100,7 @@ export class QQWorker {
     let answer = qqFixedReply(request, this.config);
     let image: QQImageResult | undefined;
     let pendingMessage: string | undefined;
+    let imageLimitMessage: string | undefined;
     if (request.scope === 'group' && this.config.images?.enabled && !unsafeComment(request.text)) {
       const delivery = await this.io.pendingImage?.(request);
       if (delivery) {
@@ -145,10 +150,14 @@ export class QQWorker {
               if (admission) return blocked(admission);
               const at = this.io.now();
               user.imageStarts = (user.imageStarts || []).filter(value => at - value < QQ_IMAGE_LIMITS.userWindowMs);
-              if ((user.images || 0) >= options.userDailyLimit) return blocked(`生图需要歇一会儿～每人每天最多${options.userDailyLimit}张，请明天再试。`);
-              if (user.imageStarts.length >= QQ_IMAGE_LIMITS.userWindowImages) return blocked(`生图需要歇一会儿～每人每5小时最多${QQ_IMAGE_LIMITS.userWindowImages}张，请稍后再试。`);
-              if ((state.images || 0) >= options.dailyLimit) return blocked(`生图需要歇一会儿～全局每天最多${options.dailyLimit}张，请明天再试。`);
-              if (state.lastImageAt !== undefined && at - state.lastImageAt < QQ_IMAGE_LIMITS.intervalMs) return blocked('生图需要歇一会儿～全局生图间隔至少1分钟，请稍后再试。');
+              const limit = qqImageQuota(at, options, user, state);
+              if (limit) {
+                imageLimitMessage = limit.message;
+                this.io.report({ event: 'qq_image_limited', scope: request.scope, requestId: request.key,
+                  imageLimit: { reason: limit.reason, retryAt: limit.retryAt } });
+                return blocked(limit.message);
+              }
+              imageLimitMessage = undefined;
               imageAttempted = true;
               state.images = (state.images || 0) + 1; user.images = (user.images || 0) + 1;
               user.imageStarts.push(at); state.lastImageAt = at;
@@ -179,14 +188,16 @@ export class QQWorker {
                 const failure = qqDiagnostic(error, 'image_http', 'unexpected', imageController.signal, { elapsedMs: Math.max(0, this.io.now() - at) });
                 this.io.report({ event: 'qq_image_failed', scope: request.scope, requestId: request.key, failure });
                 await persistImage({ status: 'generating', error: 'image_failed', failure });
-                return { status: 'failed', message: request.imageInput && failure.stage === 'image_prepare' ? QQ_IMAGE_SOURCE_REPLY : '这次生图没能完成，请稍后重新艾特我试试。' };
+                return { status: 'failed', message: failure.code === 'image_sexual' ? QQ_IMAGE_SEXUAL_REPLY :
+                  failure.code === 'image_moderation' ? QQ_IMAGE_MODERATION_REPLY :
+                  request.imageInput && failure.stage === 'image_prepare' ? QQ_IMAGE_SOURCE_REPLY : '这次生图没能完成，请稍后重新艾特我试试。' };
               } finally { clearTimeout(imageTimer); controller.signal.removeEventListener('abort', abortImage); }
               await persistImage({ status: 'generating', image: { sha256: image.sha256, prompt: image.prompt } });
               return { status: 'generated', message: command.mode === 'edit' ? '原图编辑完成。' : '图片生成完成。' };
             };
             const result = await this.io.answer(request, controller.signal, this.config.images?.enabled ? executeImage : undefined);
             controller.signal.throwIfAborted();
-            answer = pendingMessage || publishableAnswer(typeof result === 'string' ? result : result.text);
+            answer = pendingMessage || imageLimitMessage || publishableAnswer(typeof result === 'string' ? result : result.text);
             if (!answer) throw qqFailure('answer_validation', 'unsafe_answer');
             if (typeof result !== 'string') {
               if (!Number.isSafeInteger(result.tokens) || result.tokens < 1 || result.tokens > QQ_LIMITS.reservation) throw qqFailure('answer_validation', 'invalid_tokens');
@@ -198,7 +209,7 @@ export class QQWorker {
             const failure = qqDiagnostic(error, 'agent_run', 'unexpected', controller.signal, { elapsedMs: Math.max(0, this.io.now() - started) });
             this.io.report({ event: 'qq_model_failed', scope: request.scope, requestId: request.key, failure });
             if (failure.code === 'record_failed') throw error;
-            answer = pendingMessage || (image ? '图片已生成。' : QQ_FAILURE_REPLY);
+            answer = pendingMessage || imageLimitMessage || (image ? '图片已生成。' : QQ_FAILURE_REPLY);
             await this.io.record(request, { status: 'generating', error: 'model_failed', failure });
           }
           finally {

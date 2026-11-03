@@ -66,6 +66,44 @@ test.each([1, 2, 3])('agent independently chooses %i tools and original image by
   expect(context).not.toMatch(/private-user|private-group|private-message|private-reference|private-image/u);
 });
 
+test.each(['quote', 'attachment'])('replacement via %s sends source then target bytes even when the agent omits characters', async source => {
+  const character = { name: '岁己', aliases: ['岁己', '小岁'], description: '白发红瞳', referenceImage: 'public/reference_images/sui.png' };
+  await fs.mkdir(path.join(root, 'public/reference_images'), { recursive: true });
+  const reference = await sharp({ create: { width: 4, height: 8, channels: 4, background: '#dd5577' } }).png().toBuffer();
+  await fs.writeFile(path.join(root, character.referenceImage), reference);
+  const options = { ...config, characters: [character] };
+  const sourceAttachment = { content_type: 'image/png', url: 'https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=fixture&rkey=private-token' };
+  const request = qqRequest({ ...inbound, content: '变岁己，保留黑白漫画和构图',
+    msgElements: [{ msg_idx: 'private-reference', attachments: [sourceAttachment] }],
+    ...(source === 'attachment' ? { msgElements: undefined, msgType: undefined,
+      attachments: [sourceAttachment] } : {}) }, at)!;
+  const download = jest.fn(async () => new Response(png, { headers: { 'content-type': 'image/png' } }));
+  const inputs = new QQImageInputs(root, '900000001', download as any);
+  const paid = jest.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] })));
+  const generate = createQQImageGenerator(root, '900000001', options, settings, paid as any, inputs);
+  const render = jest.fn(async (edit) => {
+    await generate(request, new AbortController().signal, edit);
+    return { status: 'generated' as const, message: '图片生成完成。' };
+  });
+  const model = jest.fn().mockResolvedValueOnce(call('read_image_sources', {}, 'source'))
+    .mockResolvedValueOnce(call('find_image_characters', { query: '岁己' }, 'target'))
+    .mockResolvedValueOnce(call('generate_image', { mode: 'edit', instruction: request.text, characters: [] }, 'replace'))
+    .mockResolvedValueOnce(response({ content: JSON.stringify({ answer: '图片生成完成。', basis: 'general', evidenceIds: [] }) }));
+  const tools = createQQImageTools(request, options, () => inputs.load(request, new AbortController().signal), render);
+  await createQQAnswerer(settings, undefined, model as any, undefined, tools)(request, new AbortController().signal);
+  expect(JSON.stringify(model.mock.calls[0])).toContain('“变岁己”就是换成岁己');
+  expect(paid).toHaveBeenCalledTimes(1); expect(download).toHaveBeenCalledTimes(1); expect(render).toHaveBeenCalledTimes(1);
+  const [url, init] = paid.mock.calls[0] as unknown as [string, any];
+  expect(url).toContain('/images/edits');
+  const parts = init.body.getBuffer().toString('latin1').split(`--${init.body.getBoundary()}`)
+    .filter((part: string) => part.includes('name="image[]"'));
+  expect(parts).toHaveLength(2);
+  expect(parts[0]).toContain('source-1.png'); expect(parts[0]).toContain(png.toString('latin1'));
+  expect(parts[1]).toContain('character-1.png'); expect(parts[1]).toContain(reference.toString('latin1'));
+  expect(init.body.getBuffer().toString()).toContain('参考图2只用于锁定岁己');
+  expect(init.body.getBuffer().toString()).toContain(request.text);
+});
+
 test('the same available image tools can be skipped entirely for ordinary chat', async () => {
   const request = qqRequest({ ...inbound, content: '这张图真好看' }, at)!;
   const load = jest.fn(), render = jest.fn();

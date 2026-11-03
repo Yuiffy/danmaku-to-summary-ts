@@ -36,6 +36,8 @@ export function qqImageCharacters(root: string, config: QQImageConfig): QQImageC
     add(name, [name, identity], reference, String(item.characterDescription || '以参考图中的人物外观为准'));
   }
   const directory = path.join(root, 'public/reference_images');
+  // Explicit outfits retain their own names and metadata instead of becoming duplicate filename-derived characters.
+  for (const character of config.characters || []) used.add(character.referenceImage);
   const files = fs.readdirSync(directory); if (files.length > 1000) throw new Error('QQ reference catalogue too large');
   for (const file of files) {
     const reference = `public/reference_images/${file}`;
@@ -44,5 +46,9 @@ export function qqImageCharacters(root: string, config: QQImageConfig): QQImageC
     const short = name.replace(/(?:参考图|全身立绘|立绘|手办|新衣|制服|全身|无头罩|双马尾|多形态).*$/u, '').trim();
     add(short || name, [name, short], reference, '按对应角色参考图还原外观和人物身份');
   }
-  return [...characters, ...(config.characters || [])];
+  const catalogue = [...characters, ...(config.characters || [])];
+  for (const character of catalogue) if (character.baseCharacter && !catalogue.some(base => base.name === character.baseCharacter && !base.baseCharacter)) {
+    throw new Error('Unknown QQ skin character');
+  }
+  return catalogue;
 }
