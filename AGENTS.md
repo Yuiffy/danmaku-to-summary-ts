@@ -36,6 +36,11 @@
   reports, handover notes, downloaded pages, screenshots, API responses, and scratch
   data in the ignored `temp/<date>-<task>/` directory. Existing `tmp/<task>/` areas
   are also local-only. This applies to Markdown and JSON, not just scripts or media.
+- Large video/audio working files are the exception: create a managed workspace
+  under the configured recording root's `_workspaces/<task>/`, never project
+  `temp/` or `tmp/`. Put only disposable media in `scratch/`; keep unique sources,
+  subtitles, plans and final outputs outside it. Close completed workspaces to
+  start the minimum seven-day retention period. Follow `docs/clip-media-retention.md`.
 - Put one-off scripts tied to fixed recordings, dates, BV IDs, batches, or machine
   paths in `local-scripts/one-off-scripts/<date-or-task>/` or the task's `temp/`
   directory. Do not create them at repository root or in `src/`, `scripts/`, or `tools/`.
