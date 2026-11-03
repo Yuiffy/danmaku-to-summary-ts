@@ -678,6 +678,20 @@ describe('asr_backends', () => {
     }, { room_id: '26966466' }).enabled).toBe(false);
   });
 
+  test('preserves Paraformer timing diagnostics through normalization', () => {
+    const diagnostics = {
+      sources: { char_timestamp: 3, sentence_info: 1 },
+      fallback_reasons: { token_mismatch: 1 }
+    };
+    const result = asr.normalizeAsrResult({
+      backend: 'paraformer',
+      segments: [{ start: 0, end: 1, text: '你好' }],
+      timing_diagnostics: diagnostics
+    });
+
+    expect(result.timing_diagnostics).toEqual(diagnostics);
+  });
+
   test('preserves speaker metadata through normalize and plain srt output stays unlabelled', () => {
     const result = asr.normalizeAsrResult({
       backend: 'sensevoice',

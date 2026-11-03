@@ -76,6 +76,8 @@ class ResourceMonitor:
             external_used = max(0, used - owned)
             value['memory_pressure'] = (external_used / total * 100 >= self.config['gpu_memory_pct']
                 or total - external_used < self.config['gpu_free_mb'])
+            value['external_memory_pct'] = external_used / total * 100
+            value['external_free_mb'] = total - external_used
             if attributed is not None:
                 util = attributed['external_util_pct']
                 value['external_util_pct'] = util

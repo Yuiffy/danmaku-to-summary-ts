@@ -16,7 +16,13 @@ from sensevoice_paraformer import (
     paraformer_timestamp_to_sentences,
     select_paraformer_speaker_intervals,
 )
+from paraformer_segments import SUBTITLE_PAD_TAIL, SUBTITLE_TAIL_HOLD
 from sensevoice_text import extract_sensevoice_metadata, normalize_segments
+
+# A cue stays on screen after its last syllable, so every expected end carries
+# the tail hold on top of the speech padding.
+HOLD = SUBTITLE_TAIL_HOLD
+PAD = SUBTITLE_PAD_TAIL
 
 
 class SenseVoiceMetadataTests(unittest.TestCase):
@@ -101,7 +107,8 @@ class ParaformerTimestampTests(unittest.TestCase):
                     "text": raw,
                     "timestamp": [[i * 500, i * 500 + 400] for i in range(count)],
                 }, max_subtitle_chars=80)
-                self.assertEqual(rows, [{"start": 0.0, "end": (count - 1) * .5 + .4,
+                expected_end = round((count - 1) * .5 + .4 + PAD + HOLD, 3)
+                self.assertEqual(rows, [{"start": 0.0, "end": expected_end,
                                          "text": expected, "time_unit": "seconds"}])
 
     def test_wrapping_keeps_whole_english_words_and_their_time_ranges(self):
@@ -109,8 +116,13 @@ class ParaformerTimestampTests(unittest.TestCase):
             "text": "I want to make a call",
             "timestamp": [[i * 500, i * 500 + 400] for i in range(6)],
         }, max_subtitle_chars=8)
-        self.assertEqual([row["text"] for row in rows], ["I want to make", "a call"])
-        self.assertEqual([(row["start"], row["end"]) for row in rows], [(0, 1.9), (2, 2.9)])
+        self.assertEqual([row["text"] for row in rows], ["I want to", "make a call"])
+        # The first cue still ends where the next one starts; only the closing
+        # cue gets to use its hold.
+        self.assertEqual(
+            [(row["start"], row["end"]) for row in rows],
+            [(0, 1.39), (1.47, round(2.9 + PAD + HOLD, 3))],
+        )
 
     def test_chunk_alignment_preserves_spaces_offsets_and_speaker(self):
         punc = Mock()
@@ -120,7 +132,8 @@ class ParaformerTimestampTests(unittest.TestCase):
             "timestamp": [[i * 500, i * 500 + 400] for i in range(8)],
         }], {"start": 10, "end": 15, "speaker": "Host", "speaker_score": .9}, punc, 80)
         punc.generate.assert_called_once_with(input="你好 I want to make a call")
-        self.assertEqual(rows, [{"start": 10, "end": 13.9, "text": "你好，I want to make a call。",
+        self.assertEqual(rows, [{"start": 10, "end": round(13.9 + PAD + HOLD, 3),
+                                 "text": "你好，I want to make a call。",
                                  "time_unit": "seconds", "speaker": "Host", "speaker_score": .9}])
 
     def test_chunk_fallback_keeps_words_when_timestamps_are_missing_or_misaligned(self):
@@ -146,18 +159,53 @@ class ParaformerTimestampTests(unittest.TestCase):
 
         self.assertEqual(segments, [
             {
-                "start": 1.0,
-                "end": 2.1,
+                "start": 0.97,
+                "end": 2.19,
                 "text": "你好，staff！",
                 "time_unit": "seconds",
             },
             {
-                "start": 2.3,
-                "end": 2.8,
+                "start": 2.27,
+                "end": round(3.05 + PAD + HOLD, 3),
                 "text": "再见。",
                 "time_unit": "seconds",
             },
         ])
+
+    def test_punctuation_formatting_changes_keep_character_timestamps(self):
+        diagnostics = {}
+        punc = Mock()
+        punc.generate.return_value = [{"text": "你好，don't stop。"}]
+        rows = paraformer_timestamp_to_sentences([{
+            "text": "你 好 dont stop",
+            "timestamp": [[1000, 1200], [1200, 1500], [1500, 1800], [1800, 2100]],
+        }], {"start": 5, "end": 8, "timing_diagnostics": diagnostics}, punc, 80)
+
+        self.assertEqual(rows, [{
+            "start": 5.97,
+            "end": round(7.1 + PAD + HOLD, 3),
+            "text": "你好，don't stop。",
+            "time_unit": "seconds",
+            "speaker": None,
+            "speaker_score": None,
+        }])
+        self.assertEqual(diagnostics, {"sources": {"char_timestamp": 1}})
+
+    def test_true_word_replacement_uses_chunk_fallback_and_records_reason(self):
+        diagnostics = {}
+        punc = Mock()
+        punc.generate.return_value = [{"text": "你号。"}]
+        rows = paraformer_timestamp_to_sentences([{
+            "text": "你好",
+            "timestamp": [[1000, 1200], [1200, 1500]],
+        }], {"start": 5, "end": 8, "timing_diagnostics": diagnostics}, punc)
+
+        self.assertEqual(rows[0]["text"], "你号。")
+        self.assertEqual((rows[0]["start"], rows[0]["end"]), (5, 8))
+        self.assertEqual(diagnostics, {
+            "sources": {"chunk_fallback": 1},
+            "fallback_reasons": {"token_mismatch": 1},
+        })
 
     def test_rejects_full_text_when_token_count_does_not_match_timestamps(self):
         self.assertEqual(paraformer_full_text_to_segments({
@@ -200,8 +248,9 @@ class ParaformerTimestampTests(unittest.TestCase):
             {"start": 2.0, "end": 4.8},
         ])
         self.assertEqual(boundaries, [
-            {"start": 0.0, "end": 0.4},
-            {"start": 0.5, "end": 1.3},
+            {"start": 0.0, "end": 0.39},
+            {"start": 0.47, "end": 0.79},
+            {"start": 0.87, "end": 1.77},
         ])
 
     def test_extracts_fun_asr_vad_output_in_seconds(self):

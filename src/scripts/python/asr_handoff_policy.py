@@ -2,9 +2,15 @@
 import math
 
 
-def batch_settings(payload, device, low_impact=False):
+def batch_settings(payload, device, low_impact=False, ultra_low_impact=False):
     if device == 'cpu':
         return 30, 30
+    if ultra_low_impact:
+        raw = ((payload.get('gpu_throttle') or {}).get('ultra_low_impact') or {}).get('batch_size_s', 30)
+        batch = min(int(float(payload.get('batch_size_s', 300) or 300)), int(float(raw)))
+        if batch < 1:
+            raise ValueError('Invalid ultra-low-impact GPU batch')
+        return batch, min(batch, 60)
     if low_impact:
         raw = ((payload.get('gpu_throttle') or {}).get('low_impact') or {}).get('batch_size_s', 30)
         batch = min(int(float(payload.get('batch_size_s', 300) or 300)), int(float(raw)))
@@ -42,6 +48,22 @@ def settings(payload):
     value['min_available_memory_gb'] = max(4, value['min_available_memory_gb'])
     value['allow_shared_gpu'] = raw.get('allow_shared_gpu') is True
     value['cpu_fallback_enabled'] = raw.get('cpu_fallback_enabled') is not False
+    ultra = (payload.get('gpu_throttle') or {}).get('ultra_low_impact') or {}
+    value['ultra_batch_size_s'] = float(ultra.get('batch_size_s', 30))
+    value['ultra_yield_s'] = float(ultra.get('yield_s', 1.0))
+    value['ultra_max_external_util_pct'] = float(ultra.get('max_external_util_pct', 98))
+    value['ultra_max_memory_pct'] = float(ultra.get('max_memory_pct', 85))
+    value['ultra_min_free_mb'] = float(ultra.get('min_free_mb', 2048))
+    if (not math.isfinite(value['ultra_batch_size_s']) or value['ultra_batch_size_s'] <= 0
+            or not math.isfinite(value['ultra_yield_s']) or value['ultra_yield_s'] < 0
+            or not math.isfinite(value['ultra_max_external_util_pct'])
+            or not 0 < value['ultra_max_external_util_pct'] <= 100
+            or not math.isfinite(value['ultra_max_memory_pct'])
+            or not 0 < value['ultra_max_memory_pct'] <= 100
+            or not math.isfinite(value['ultra_min_free_mb']) or value['ultra_min_free_mb'] <= 0):
+        raise ValueError('Invalid ASR ultra-low-impact setting')
+    if value['ultra_batch_size_s'] > 300:
+        raise ValueError('Invalid ASR ultra-low-impact batch size')
     if value['allow_shared_gpu'] and not value['gpu_util_pct'] < value['shared_gpu_util_pct'] <= 100:
         raise ValueError('Shared GPU threshold must exceed throughput threshold and be at most 100')
     return value
@@ -57,6 +79,7 @@ class BoundaryPolicy:
         self.usable_since = None
         self.overload_since = None
         self.low_impact = False
+        self.ultra_low_impact = False
         self.gpu_retry_after = 0
 
     def suspend_gpu(self, now):
@@ -72,6 +95,19 @@ class BoundaryPolicy:
         return (sample.get('gpu_idle') is True or
                 isinstance(util, (int, float)) and math.isfinite(util)
                 and 0 <= util < self.config['shared_gpu_util_pct'])
+
+    def ultra_available(self, sample):
+        """Whether a busy shared GPU still has enough measured headroom for the ultra tier."""
+        util = sample.get('external_util_pct')
+        memory = sample.get('external_memory_pct')
+        free = sample.get('external_free_mb')
+        return (isinstance(util, (int, float)) and math.isfinite(util)
+                and (util >= self.config['shared_gpu_util_pct'] or sample.get('memory_pressure') is True)
+                and 0 <= util <= self.config['ultra_max_external_util_pct']
+                and isinstance(memory, (int, float)) and math.isfinite(memory)
+                and 0 <= memory <= self.config['ultra_max_memory_pct']
+                and isinstance(free, (int, float)) and math.isfinite(free)
+                and free >= self.config['ultra_min_free_mb'])
 
     def observe(self, sample, now):
         # Missing/error samples and monitoring gaps cannot prove sustained idle.
@@ -94,8 +130,10 @@ class BoundaryPolicy:
             self.overload_since = (now if self.overload_since is None or stale else self.overload_since) if overload else None
             if not idle:
                 self.low_impact = True
+                self.ultra_low_impact = self.ultra_available(sample)
             elif self.idle_since is not None and now - self.idle_since >= self.config['idle_s']:
                 self.low_impact = False
+                self.ultra_low_impact = False
 
     def choose(self, current, sample, now, remaining, cpu_running=False):
         # The admission headroom includes the model we are about to load.
@@ -109,14 +147,21 @@ class BoundaryPolicy:
         if self.config['allow_shared_gpu']:
             fresh = self.last_sample is not None and now - self.last_sample <= self.config['poll_s'] * 3
             usable = fresh and self.shared_available(sample)
+            ultra = fresh and self.ultra_available(sample)
             recovered = (usable and now >= self.gpu_retry_after and self.usable_since is not None
                          and now - self.usable_since >= self.config['idle_s'])
+            # A suspended worker may come back on the ultra-low-impact tier once the cooldown
+            # expired: that tier runs small batches and yields, so a busy owner stays usable.
+            ultra_recovered = ultra and now >= self.gpu_retry_after
             if current == 'cuda':
-                grace = (fresh and sample.get('memory_pressure') is not True
+                grace = (fresh and not ultra and sample.get('memory_pressure') is not True
                          and self.overload_since is not None
                          and now - self.overload_since < self.config['gpu_busy_s'])
-                admitted = recovered if self.gpu_suspended else usable or grace
+                admitted = (recovered or ultra_recovered) if self.gpu_suspended else usable or ultra or grace
                 return 'cuda' if admitted else ('cpu' if cpu_ok else 'wait')
+            if (ultra and not self.shared_available(sample) and not self.gpu_suspended
+                    and (remaining >= self.config['min_remaining_s'] or not cpu_ok)):
+                return 'cuda'
             return 'cuda' if recovered and (remaining >= self.config['min_remaining_s'] or not cpu_ok) else ('cpu' if cpu_ok else 'wait')
         if current == 'cuda':
             if (sample.get('gpu_idle') is False and sample.get('memory_pressure') is not True
@@ -137,7 +182,8 @@ class BoundaryPolicy:
             return None
         if current == 'cuda':
             shared = self.config['allow_shared_gpu']
-            urgent = sample.get('memory_pressure') is True or sample.get('game_running') is True and not shared
+            ultra = shared and self.ultra_available(sample)
+            urgent = (sample.get('memory_pressure') is True and not ultra) or sample.get('game_running') is True and not shared
             since = self.overload_since if shared else self.busy_since
             sustained = since is not None and now - since >= self.config['gpu_busy_s' if shared else 'poll_s']
             if not urgent and not sustained:

@@ -579,6 +579,7 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         timings: result?.timings,
         resource_peaks: result?.resource_peaks || result?.resourcePeaks,
         speaker_processing: result?.speaker_processing || result?.speakerProcessing,
+        timing_diagnostics: result?.timing_diagnostics || result?.timingDiagnostics,
         emotion_analysis: result?.emotion_analysis || result?.emotionAnalysis
     };
 }

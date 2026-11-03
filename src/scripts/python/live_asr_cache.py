@@ -131,7 +131,7 @@ def aggregate_chunks(chunks):
         if not sentences and value.get('text', '').strip():
             from paraformer_segments import paraformer_full_text_to_segments
             sentences = [{'text': s['text'], 'start': s['start'] * 1000, 'end': s['end'] * 1000}
-                         for s in paraformer_full_text_to_segments(value)]
+                         for s in paraformer_full_text_to_segments(value, tail_hold=0.0)]
             if not sentences:
                 raise ValueError('Live ASR text lacks usable timestamps')
         for sentence in sentences:

@@ -88,6 +88,7 @@ def transcribe(payload, runtime_cache):
             "timings": payload.get("_timings", {}),
             "resource_peaks": payload.get("_resource_peaks", {}),
             "speaker_processing": payload.get("_speaker_processing"),
+            "timing_diagnostics": payload.get("_timing_diagnostics", {}),
             "emotion_analysis": payload.get("_emotion_analysis"),
         }
         hotword_config = payload.get("phoneme_correction")

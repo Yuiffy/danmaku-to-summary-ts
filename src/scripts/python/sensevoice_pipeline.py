@@ -581,9 +581,9 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                         results = pick_batched_result(batch_results, index)
                         normalized_items = paraformer_timestamp_to_sentences(
                             results,
-                            meta,
+                            {**meta, "timing_diagnostics": payload.setdefault("_timing_diagnostics", {})},
                             punc_model_obj,
-                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 16) or 16),
                         )
                         for item in normalized_items:
                             if is_meaningless_asr_text(item.get("text", "")):
@@ -624,9 +624,9 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                     if backend_name == "paraformer":
                         normalized_items = paraformer_timestamp_to_sentences(
                             results,
-                            meta,
+                            {**meta, "timing_diagnostics": payload.setdefault("_timing_diagnostics", {})},
                             punc_model_obj,
-                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 16) or 16),
                         )
                     else:
                         normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)

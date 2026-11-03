@@ -27,6 +27,8 @@ IDLE = {'gpu_idle': True, 'game_running': False, 'available_gb': 24}
 BUSY = {**IDLE, 'gpu_idle': False, 'memory_pressure': True}
 SHARED = {**IDLE, 'gpu_idle': False, 'memory_pressure': False, 'game_running': True, 'external_util_pct': 75}
 OVERLOAD = {**SHARED, 'external_util_pct': 95}
+ULTRA_BUSY = {**SHARED, 'memory_pressure': True, 'external_util_pct': 95,
+              'external_memory_pct': 75, 'external_free_mb': 4000}
 
 
 class HandoffTests(unittest.TestCase):
@@ -96,6 +98,39 @@ class HandoffTests(unittest.TestCase):
             policy.observe(OVERLOAD, now)
         self.assertEqual(policy.choose('cuda', OVERLOAD, 20, 1000), 'wait')
         self.assertEqual(policy.interrupt_target('cuda', OVERLOAD, 20, 1000), 'wait')
+
+    def test_ultra_low_impact_admits_high_utilization_with_measured_memory_headroom(self):
+        policy = BoundaryPolicy(settings({'device_handoff': {
+            'allow_shared_gpu': True, 'cpu_fallback_enabled': False}}))
+        policy.observe(ULTRA_BUSY, 0)
+        self.assertEqual(policy.choose('cuda', ULTRA_BUSY, 0, 1000), 'cuda')
+        self.assertTrue(policy.low_impact)
+        self.assertTrue(policy.ultra_low_impact)
+        self.assertIsNone(policy.interrupt_target('cuda', ULTRA_BUSY, 0, 1000))
+        self.assertEqual(batch_settings({'batch_size_s': 600}, 'cuda', low_impact=True,
+                                        ultra_low_impact=True), (30, 30))
+
+    def test_ultra_low_impact_still_waits_when_utilization_or_memory_is_unsafe(self):
+        policy = BoundaryPolicy(settings({'device_handoff': {
+            'allow_shared_gpu': True, 'cpu_fallback_enabled': False}}))
+        for sample in ({**ULTRA_BUSY, 'external_util_pct': 99},
+                       {**ULTRA_BUSY, 'external_memory_pct': 90, 'external_free_mb': 1500}):
+            policy = BoundaryPolicy(settings({'device_handoff': {
+                'allow_shared_gpu': True, 'cpu_fallback_enabled': False}}))
+            policy.observe(sample, 0)
+            self.assertFalse(policy.ultra_low_impact)
+            self.assertEqual(policy.choose('cuda', sample, 0, 1000), 'wait')
+
+    def test_suspended_worker_returns_on_the_ultra_tier_after_the_cooldown(self):
+        policy = BoundaryPolicy(settings({'device_handoff': {
+            'allow_shared_gpu': True, 'cpu_fallback_enabled': False}}))
+        policy.observe(OVERLOAD, 0)
+        policy.suspend_gpu(0)
+        policy.observe(ULTRA_BUSY, 60)
+        self.assertEqual(policy.choose('cuda', ULTRA_BUSY, 60, 1000), 'wait')
+        policy.observe(ULTRA_BUSY, 121)
+        self.assertTrue(policy.ultra_low_impact)
+        self.assertEqual(policy.choose('cuda', ULTRA_BUSY, 121, 1000), 'cuda')
 
     def test_shared_gpu_uses_small_batch_for_medium_load_and_game_without_switching_devices(self):
         policy = BoundaryPolicy(settings({'device_handoff': {'allow_shared_gpu': True}}))
@@ -310,6 +345,15 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual([e[2] for e in events if e[0] == 'batch'], [30, 30, 300])
             self.assertEqual(result['timings']['handoff_gpu_low_impact_audio_s'], 240)
             self.assertEqual(result['timings']['handoff_gpu_throughput_audio_s'], 120)
+
+    def test_shared_ultra_tier_uses_configured_batch_and_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'recording.flv'
+            source.write_bytes(b'x' * 150000)
+            result, events = self.run_fake(source, [ULTRA_BUSY],
+                shared_gpu=True, initial_device='cuda', duration=240)
+            self.assertEqual([e[2] for e in events if e[0] == 'batch'], [30, 30])
+            self.assertEqual(result['timings']['handoff_gpu_ultra_low_impact_audio_s'], 240)
 
     def test_finish_passes_current_resource_admission_to_worker(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -7,8 +7,28 @@ from sensevoice_emotion import analyze_paraformer_emotions
 from speaker_identity import attach_speaker_evidence
 from sensevoice_speaker import (build_speaker_reference_centroids, dominant_speaker_for_interval,
     load_audio_16k_mono, run_adaptive_speaker_engine, smooth_speaker_timeline)
-from paraformer_segments import (paraformer_timestamp_to_sentences, paraformer_full_text_to_segments,
-    select_paraformer_speaker_intervals)
+from paraformer_segments import (paraformer_timestamp_to_sentences, paraformer_full_text_alignment,
+    paraformer_full_text_to_segments, select_paraformer_speaker_intervals,
+    update_timing_diagnostics, make_speech_probe, SUBTITLE_TAIL_HOLD)
+
+
+def _subtitle_tail_hold(payload):
+    """Seconds a cue stays on screen after its last syllable."""
+    try:
+        return max(0.0, float(payload.get("subtitle_tail_hold_s", SUBTITLE_TAIL_HOLD)))
+    except (TypeError, ValueError):
+        return SUBTITLE_TAIL_HOLD
+
+
+def _subtitle_speech_probe(payload, audio_data, sample_rate):
+    """Voiced-fraction probe for confirming silent gaps before splitting a cue."""
+    if audio_data is None or not sample_rate:
+        return None
+    try:
+        return make_speech_probe(audio_data, sample_rate)
+    except Exception as exc:
+        log_progress(f"字幕静音探测不可用，退回纯时间戳边界: {exc}")
+        return None
 
 
 def _fail(fail_fn, message, detail=None):
@@ -25,6 +45,17 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
 
     result = results[0]
     sentence_info = result.get("sentence_info", [])
+    timing_diagnostics = payload.setdefault("_timing_diagnostics", {})
+    # Reuses audio already decoded for speaker analysis; an opt-in true forces a
+    # decode when subtitles alone need the acoustic check.
+    speech_probe = _subtitle_speech_probe(payload, audio_data, sample_rate)
+    if speech_probe is None and payload.get("subtitle_speech_probe") is True:
+        try:
+            audio_data, sample_rate = load_audio_16k_mono(audio_path)
+        except Exception as exc:
+            log_progress(f"字幕静音探测无法读取音频，退回纯时间戳边界: {exc}")
+        else:
+            speech_probe = _subtitle_speech_probe(payload, audio_data, sample_rate)
     if not sentence_info:
         log_progress("无 sentence_info，使用 Paraformer 字符时间戳切分字幕")
         postprocess_started = time.perf_counter()
@@ -32,9 +63,11 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
         fallback_end_s = float(timestamps[-1][1]) / 1000.0 if timestamps else 0.1
         segments = paraformer_timestamp_to_sentences(
             results,
-            {"start": 0.0, "end": max(0.1, fallback_end_s)},
+            {"start": 0.0, "end": max(0.1, fallback_end_s),
+             "timing_diagnostics": timing_diagnostics},
             None,
-            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+            max_subtitle_chars=int(payload.get("max_subtitle_chars", 16) or 16),
+            speech_probe=speech_probe,
         )
         emotion_analysis = analyze_paraformer_emotions(
             payload,
@@ -77,6 +110,8 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
         try:
             if audio_data is None:
                 audio_data, sample_rate = load_audio_16k_mono(audio_path)
+            if speech_probe is None:
+                speech_probe = _subtitle_speech_probe(payload, audio_data, sample_rate)
             (
                 speaker_intervals,
                 speaker_boundary_intervals,
@@ -91,8 +126,9 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
                         [],
                     ),
                     max_subtitle_chars=int(
-                        payload.get("max_subtitle_chars", 18) or 18
+                        payload.get("max_subtitle_chars", 16) or 16
                     ),
+                    speech_probe=speech_probe,
                 )
             )
             speaker_payload = dict(payload)
@@ -188,23 +224,48 @@ def postprocess_paraformer(payload, audio_path, device, results, model, spk_mode
         }
 
     postprocess_started = time.perf_counter()
-    max_subtitle_chars = int(payload.get("max_subtitle_chars", 18) or 18)
-    segments = paraformer_full_text_to_segments(result, max_subtitle_chars)
+    max_subtitle_chars = int(payload.get("max_subtitle_chars", 16) or 16)
+    tail_hold = _subtitle_tail_hold(payload)
+    segments, alignment_reason = paraformer_full_text_alignment(
+        result, max_subtitle_chars, speech_probe, tail_hold
+    )
     if segments:
+        update_timing_diagnostics(timing_diagnostics, "char_timestamp")
         log_progress(
             "使用完整 Paraformer 文本与字符时间戳重建字幕，"
             f"避开 sentence_info 对齐漂移: segments={len(segments)}"
         )
-        for segment in segments:
+        # A held cue outlives the speech it belongs to, so speaker lookup uses
+        # the unheld spans; otherwise the trailing second of silence votes.
+        speech_spans = []
+        if speaker_timeline:
+            speech_spans = [
+                (row["start"], row["end"])
+                for row in paraformer_full_text_alignment(
+                    result, max_subtitle_chars, speech_probe, tail_hold=0.0
+                )[0]
+            ]
+        for index, segment in enumerate(segments):
+            probe_start, probe_end = (
+                speech_spans[index]
+                if index < len(speech_spans)
+                else (segment["start"], segment["end"])
+            )
             speaker_label, speaker_score = dominant_speaker_for_interval(
-                segment["start"],
-                segment["end"],
+                probe_start,
+                probe_end,
                 speaker_timeline,
             )
             if speaker_label:
                 segment["speaker"] = speaker_label
             if speaker_score:
                 segment["speaker_score"] = speaker_score
+    else:
+        update_timing_diagnostics(
+            timing_diagnostics,
+            "sentence_info",
+            alignment_reason or "char_timestamp_unavailable",
+        )
 
     for sent in sentence_info if not segments else []:
         text = sent.get("text", "").strip()

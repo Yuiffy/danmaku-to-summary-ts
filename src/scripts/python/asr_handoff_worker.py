@@ -171,6 +171,7 @@ def serve():
                         'segments': segments, 'timings': payload['_timings'],
                         'resource_peaks': payload['_resource_peaks'],
                         'speaker_processing': payload.get('_speaker_processing'),
+                        'timing_diagnostics': payload.get('_timing_diagnostics', {}),
                         'emotion_analysis': payload.get('_emotion_analysis')}
                     if payload.get('include_raw'):
                         response['raw'] = segments

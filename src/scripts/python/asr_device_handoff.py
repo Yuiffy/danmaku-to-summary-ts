@@ -123,18 +123,21 @@ def transcribe_handoff(payload, *, worker_factory=None, monitor_factory=Resource
             timings['cpu_fallback'] = 1
         try:
             with monitor_factory(payload, config) as monitor:
-                def report(state, remaining, low_impact=None):
+                def report(state, remaining, low_impact=None, ultra_low_impact=None):
                     low_impact = policy.low_impact if low_impact is None else low_impact
+                    ultra_low_impact = policy.ultra_low_impact if ultra_low_impact is None else ultra_low_impact
+                    tier = ('cpu_background' if current == 'cpu' else
+                            'gpu_ultra_low_impact' if ultra_low_impact else
+                            'gpu_low_impact' if low_impact else 'gpu_throughput')
                     log_progress('[[ASR_HANDOFF_STATUS]] ' + json.dumps({
-                        'policy_version': 8,
+                        'policy_version': 9,
                         'cpu_fallback_enabled': config['cpu_fallback_enabled'],
                         'shared_gpu_enabled': config['allow_shared_gpu'],
                         'device_cooldown_s': config['device_cooldown_s'],
                         'device': current, 'state': state, 'audio_done_s': round(duration - remaining, 5),
                         'audio_total_s': duration, 'window_s': config['window_s'],
-                        'batch_size_s': batch_settings(payload, current, low_impact)[0],
-                        'performance_tier': ('cpu_background' if current == 'cpu' else
-                            'gpu_low_impact' if low_impact else 'gpu_throughput'),
+                        'batch_size_s': batch_settings(payload, current, low_impact, ultra_low_impact)[0],
+                        'performance_tier': tier,
                     }, ensure_ascii=False))
 
                 def ensure_device(remaining):
@@ -189,9 +192,13 @@ def transcribe_handoff(payload, *, worker_factory=None, monitor_factory=Resource
                             size = min(config['window_s'], end - start)
                             while True:
                                 try:
-                                    window_low_impact = policy.low_impact
-                                    batch, threshold = batch_settings(payload, current, window_low_impact)
-                                    tier = 'cpu' if current == 'cpu' else 'gpu_low_impact' if window_low_impact else 'gpu_throughput'
+                                    window_ultra_low_impact = policy.ultra_low_impact
+                                    window_low_impact = policy.low_impact or window_ultra_low_impact
+                                    batch, threshold = batch_settings(payload, current, window_low_impact,
+                                                                       window_ultra_low_impact)
+                                    tier = ('cpu' if current == 'cpu' else
+                                            'gpu_ultra_low_impact' if window_ultra_low_impact else
+                                            'gpu_low_impact' if window_low_impact else 'gpu_throughput')
                                     timings[f'handoff_{tier}_batch_s'] = batch
                                     response = active.request({'op': 'window', 'pcm': pcm, 'start': start,
                                                                'batch_size_s': batch, 'batch_size_threshold_s': threshold,
@@ -244,9 +251,12 @@ def transcribe_handoff(payload, *, worker_factory=None, monitor_factory=Resource
                             remaining -= progress
                             start = chunk['end']
                             log_progress(f'ASR 接力已保存: {start:.1f}/{duration:.1f}s，device={current}')
-                            report('running', remaining, window_low_impact)
+                            report('running', remaining, window_low_impact, window_ultra_low_impact)
                             if current == 'cuda' and window_low_impact:
-                                sleep(max(0, float(((payload.get('gpu_throttle') or {}).get('low_impact') or {}).get('yield_s', 0.2))))
+                                throttle = ((payload.get('gpu_throttle') or {}).get(
+                                    'ultra_low_impact' if window_ultra_low_impact else 'low_impact') or {})
+                                sleep(max(0, float(throttle.get('yield_s',
+                                    config['ultra_yield_s'] if window_ultra_low_impact else 0.2))))
                 if missing_ranges(checkpoint.chunks, duration):
                     raise RuntimeError('ASR handoff has uncovered audio; refusing final output')
                 checkpoint.assert_source_unchanged(payload)

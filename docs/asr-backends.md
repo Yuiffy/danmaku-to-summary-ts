@@ -71,7 +71,7 @@ Web 按该契约计算速度与剩余转写时间，不把复用进度当作本�
 
 ## GPU 低占用与 CPU 接力
 
-`asr.device_handoff.allow_shared_gpu=true` 时，支持 GPU 高吞吐和 GPU 低占用。
+`asr.device_handoff.allow_shared_gpu=true` 时，支持 GPU 高吞吐、GPU 低占用和 GPU 超低占用。
 `asr.cpu_fallback.enabled=false` 同时禁止中央队列的 CPU 准入和任务内部的 CPU 接力；
 生产已关闭该开关。GPU 余量不足时释放模型、保留已保存窗口并等待，恢复后从断点继续。
 配置载入任务后不热读；中央队列所属 webhook 需要重启后使用新的准入配置。
@@ -80,15 +80,20 @@ Web 按该契约计算速度与剩余转写时间，不把复用进度当作本�
 `gpu_throttle.low_impact.yield_s`（生产 0.2 秒）让出时间。音频覆盖窗口仍为 120 秒；
 batch 变化不重载模型。小 batch 与让出时间降低占用，但不是显卡算力或帧率的硬限额。
 
+超低占用档使用 `gpu_throttle.ultra_low_impact`，只在外部利用率、显存占比和剩余显存都处于安全边界时
+继续处理；状态上报为 `gpu_ultra_low_impact`，批次和窗口耗时写入 `handoff_gpu_ultra_low_impact_*`。
+
 外部占用连续达到 `shared_gpu_util_pct`（默认 90%）满 `gpu_busy_s`（默认 15 秒）后才
 退回 CPU（若已禁用则等待）；显存安全余量不足仍立即中断当前未提交窗口。退回后按 `device_cooldown_s`
 （默认 120 秒）冷却，冷却不会阻止 GPU 安全降档。重新进入 GPU 还必须连续观察
 `idle_s`（生产 45 秒）的可用余量；低占用档回高吞吐也需要完整空闲观察期，防止
 阈值附近反复重载。未知/失效采样不证明 GPU 可用。关闭此选项保持原两档策略。
 共享 GPU 下仍独立应用说话人负载准入，游戏运行或积压时不启动可选 speaker。
-日志策略版本为 6，增加 `cpu_fallback_enabled` 表明 CPU 回退是否获准；
+日志策略版本为 9，增加 `cpu_fallback_enabled` 表明 CPU 回退是否获准，并记录超低占用档；
 `performance_tier` 和实际 batch 记录本窗实际派发的档位。
 `handoff_gpu_low_impact_*` / `handoff_gpu_throughput_*` 分别记录新增音频、窗口耗时和 batch，
+超低占用档使用 `handoff_gpu_ultra_low_impact_*`，状态上报中的 `performance_tier` 为
+`gpu_ultra_low_impact`。生产默认 batch 为 30 秒、窗口间让出 1.0 秒；超过利用率、显存占比或剩余显存边界时仍等待。
 写入 `.asr_meta.json`，供 Web 历史查看；旧 GPU 汇总不推断为具体档位。
 
 ## 按负载跳过说话人处理
@@ -255,8 +260,8 @@ Whisper 仍调用 `src/scripts/python/batch_whisper.py`，保留原有 GPU 等�
 pip install -r src/scripts/python/requirements-sensevoice.txt
 ```
 
-共享 FunASR 环境固定使用 `funasr==1.4.16`。该版本修复重复推理时 VAD、标点与
-speaker 子模型的显式设备配置保持；这不是新的 VAD 权重或识别准确率保证。单独升级
+共享 FunASR 环境固定使用 `funasr==1.4.19`。该版本继续保持重复推理时 VAD、标点与
+speaker 子模型的显式设备配置；这不是新的 VAD 权重或识别准确率保证。单独升级
 toolkit 不应同时重装 PyTorch/CUDA 或放开本项目的 NumPy 上限。更新后应验证本地
 Paraformer/VAD/标点推理、重复调用与设备配置回归，再用于后续新任务。已有 Python
 进程不会自动换掉已导入的库；让任务结束并由下一次子进程加载，避免中断运行中的 ASR。
@@ -879,6 +884,8 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 
+Paraformer 的 `timestamp` 属于原始识别文本，标点模型生成的显示文本会先按中文字符、英文单词和可忽略格式差异做顺序对齐；插入标点、空格归一化和英文连字符变化不会丢弃字符级时间戳。真实词汇不一致或时间戳数量/结构无效时才回退到 `sentence_info`，没有可用句级时间时才使用整块 chunk 起止时间。ASR JSON 的 `timing_diagnostics` 会按 `char_timestamp`、`sentence_info`、`chunk_fallback` 统计来源，并在 `fallback_reasons` 中记录回退原因，便于检查字幕是否真的使用了精确时间。
+
 ## Compare 模式
 
 ### 空语音窗口与显式失败恢复
@@ -958,6 +965,41 @@ ASR 的 SRT 读取与证据 sidecar 共用换行合并规则，保留跨行英�
 这些规则只保留识别结果已有的词界，不猜测拆分模型已经输出的连写单词；旧字幕和已烧录视频不会自动改写。
 
 SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` 中的 `start` / `end`；如果当前模型只返回整段文本，则退回到 VAD chunk 级近似时间。默认 `merge_length_s=8`、`max_vad_segment_s=8`，避免把 VAD chunk 合并到过长。SenseVoice 首版时间轴不一定比 Whisper 的 `word_timestamps` 更细，建议用 Compare 模式实测。
+
+### 字幕切分与边界
+
+`paraformer_full_text_alignment()` 用识别器返回的**逐字时间戳**决定每条字幕的起止，不再把整句首尾直接当作一条字幕。
+
+- **单条宽度**：`max_subtitle_chars` 默认 16，按显示宽度计（ASCII 占半格），英文长句不会被字符数切碎。
+- **起止吸附**：开头 = 首字 `start - 0.03s`，结尾（语音部分） = 末字 `end + 0.12s`。字幕因此紧随人声出现。
+- **停留**：语音结束后字幕不立刻消失，而是继续显示 `SUBTITLE_TAIL_HOLD`（默认 1.2s）。上界是「下一条字幕的起点 - 0.08s」和「本条起点 + 6.5s」二者中更早的一个，所以既不会压住下一句，也不会在长静音里挂着不走。下一条紧跟时表现为无缝接力，而不是闪一下就没。`subtitle_tail_hold_s` 可按任务覆盖；说话人切分用 `tail_hold=0` 的真实语音跨度，避免把静音算进说话人区间。
+- **断点优先级**：真静音 > 句末标点 > 逗号 > 词边界 > 字间。词边界来自 jieba（缺失时退回按标点断），绝不把词拆开；逗号的权重随本段字数衰减，避免"你好，"这类短碎片独立成条。
+- **静音断开**：字间空隙 ≥0.9s 且声学确认没人说话才断。识别器漏字会留下假空洞，只按时间戳切会把有声台词切走。声学确认由 `make_speech_probe(audio, sample_rate)` 提供的 `voiced_fraction` 完成；拿不到音频时（`subtitle_speech_probe` 非 `true` 且未做说话人分析）退化为只断开 ≥1.5s 的空隙。
+- **阅读节奏**：单条不超过 6.5s；不足 0.9s 时优先向前借静音，不侵占下一句人声；相邻字幕至少留 0.08s 间隔。
+
+同一段 300 秒《影之刃零》实机（101 条 vs 旧 67 条）：
+
+| 指标 | 旧：按标点断句 | 新：逐字对齐 |
+|---|---:|---:|
+| 最长单条 | 14.59 s | 3.81 s |
+| 超过 6.5s 的条数 | 7 | 0 |
+| 单条最大字数 | 24 | 16 |
+| 字幕压着静音的时长 | 155.8 s | 95.0 s |
+| 单条最长压静音 | 10.7 s | 2.84 s |
+
+识别文字逐字一致，只改时间轴与断条。
+
+同一份逐字结果再加 1.2s 停留（102 条不变，0 条重叠）：
+
+| 指标 | 无停留 | +1.2s 停留 |
+|---|---:|---:|
+| 平均单条时长 | 1.75 s | 2.28 s |
+| 最长单条 | 3.80 s | 4.45 s |
+| 字幕消失到下一句出现（中位） | 0.39 s | 0.08 s |
+| 同上，空档总计 | 125.6 s | 72.3 s |
+| 空档 >1.5s 的条数 | 26 | 15 |
+
+29 条吃满 1.2s，39 条被下一句提前截断，34 条本来就是紧接下一句（视觉上是切换而不是闪退）。
 
 ## 说话人处理配置与输出
 

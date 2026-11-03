@@ -971,7 +971,7 @@ async function collectMediaFiles(rootDir, options = {}) {
         for (const entry of entries) {
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                if (!includeBak && isBakEntryName(entry.name)) continue;
+                if (entry.name.toLowerCase() === '_workspaces' || !includeBak && isBakEntryName(entry.name)) continue;
                 await walk(fullPath, depth + 1);
             } else if (entry.isFile() && (isVideoFile(fullPath) || isAudioFilePath(fullPath))) {
                 results.push(fullPath);

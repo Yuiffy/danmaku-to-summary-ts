@@ -181,6 +181,19 @@ describe('audio conversion lifecycle', () => {
     expect(fs.existsSync(backup)).toBe(true);
   });
 
+  test('recording lifecycle does not convert or expire managed workspace media', async () => {
+    const workspace = path.join(root, '_workspaces', 'task', '123_test', '2020_01_01');
+    const source = write(path.relative(dayDir, path.join(workspace, 'recording_merged.flv')));
+    const temporary = write(path.relative(dayDir, path.join(workspace, 'recording.tmp-old.opus')));
+    config.audio.storage.deleteAfterDays = 1;
+    const result = await applyOnlyAudioRetention();
+    expect(result.scanned).toBe(0);
+    expect(result.deleted).toBe(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.existsSync(source)).toBe(true);
+    expect(fs.existsSync(temporary)).toBe(true);
+  });
+
   test.each([0, 1])('only deletes source and backup after successful conversion (ffmpeg exit %s)', async (exitCode) => {
     const source = write('recording_merged.flv');
     const backup = write('bak/recording.flv');

@@ -48,6 +48,13 @@ Paraformer 的主要推理路径在 GPU 上。把它强制搬到 E 核 CPU 会�
       "yield_s": 0.2,
       "model_load_max_wait_s": 3,
       "model_load_poll_s": 1
+    },
+    "ultra_low_impact": {
+      "batch_size_s": 30,
+      "yield_s": 1.0,
+      "max_external_util_pct": 98,
+      "max_memory_pct": 85,
+      "min_free_mb": 2048
     }
   },
   "cpu_throttle": {
@@ -59,6 +66,10 @@ Paraformer 的主要推理路径在 GPU 上。把它强制搬到 E 核 CPU 会�
 ```
 
 `low_impact.batch_size_s` 只在检测到外部 GPU 压力时生效；普通情况下沿用 Paraformer 的 `interactive_batch_size_s`。它降低单次 CUDA 工作块的峰值，但会牺牲一些吞吐量。`yield_s` 是阶段之间的让出时间，不是强制暂停整个队列。
+
+外部 GPU 利用率超过共享阈值后，如果仍有超低档允许的利用率、显存占比和剩余显存，任务进入
+`ultra_low_impact`，继续复用同一个 GPU 模型。生产默认使用 30 秒 batch 和 1.0 秒让出时间；每个 ASR
+任务仍保持单 worker 串行执行，降低并发占用和瞬时压力。超过任一超低档边界或采样失效时仍等待。
 
 首次加载模型且 GPU 正在高压时，`model_load_max_wait_s` 会给显存/驱动队列一个最多几秒的窗口；窗口内没有空闲就继续低影响加载，不会无限等待。
 
