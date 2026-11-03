@@ -119,7 +119,13 @@ async function generateStreamGames(options = {}) {
         }
         const visual = require('./stream_game_visual');
         const timeline = await visual.auditGameTimeline(plan, options, config, files);
-        if (timeline.ranges.some(r => r.kind === 'uncertain')) throw new Error('Full game visual timeline needs clarification; source preserved');
+        const unresolved = timeline.ranges.filter(r => r.kind === 'uncertain');
+        if (unresolved.length) {
+            const times = unresolved.map(range => timeline.samples[range.first - 1]?.time).filter(Number.isFinite)
+                .map(time => `${Math.floor(time / 60)}:${String(Math.floor(time % 60)).padStart(2, '0')}`);
+            throw new Error(`Full game visual timeline needs clarification at ${times.slice(0, 12).join(', ')}`
+                + `${times.length > 12 ? ` and ${times.length - 12} more` : ''}; source preserved`);
+        }
         if (plan.visualTimeline?.key !== timeline.key || plan.visualTimeline?.reconciliationVersion !== 4) {
             const previous = plan.events;
             plan.events = tools.mergeEvents(plan.rawEvents);
