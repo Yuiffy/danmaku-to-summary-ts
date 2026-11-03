@@ -12,7 +12,8 @@ const { verifyGame, PROTOCOL_VERSION, mediaSettings } = require('./stream_game_v
 const { restoreFrameNamedChapters } = require('./stream_game_names');
 const { repairUnsupportedChapters } = require('./stream_game_editorial');
 const { buildParts, sha, includedRanges, mergeEvents } = require('./stream_game_plan');
-const { selectFocus } = require('./stream_game_focus');
+const { selectFocus, cleanLabel } = require('./stream_game_focus');
+const { loadAudience } = require('./stream_game_audience');
 const execFileAsync = promisify(execFile);
 const scripts = path.resolve(__dirname, '..');
 
@@ -42,7 +43,7 @@ function singleParts(events, config, capabilities) {
             const chapters = event.chapters.filter(c => c.start >= start && c.start < end);
             const leading = [...event.chapters].reverse().find(c => c.start <= start) || { title: '游戏开始', description: '进入本场游戏。' };
             result.push({ activityId: event.id, gameId: event.gameId, start, end, duration: end - start,
-                title: `${(chapters.find(c => ['boss', 'location'].includes(c.kind) && c.nameEvidence) || leading).title}${count > 1 ? `（${i + 1}/${count}）` : ''}`,
+                title: cleanLabel((chapters.find(c => ['boss', 'location'].includes(c.kind) && c.nameEvidence) || leading).title) + `${count > 1 ? `（${i + 1}/${count}）` : ''}`,
                 description: chapters.map(c => c.description).join(' '), chapters: [{ ...leading, start }, ...chapters.filter(c => c.start > start + .01)] });
             start = end;
         }
@@ -72,18 +73,27 @@ function renderedResult(plan, files, bundles) {
         parts: bundles.reduce((n, row) => n + row.output.parts.length, 0), uploadIds: plan.uploadIds || [] };
 }
 function clock(seconds) { const n = Math.max(0, Math.floor(seconds)); return `${String(Math.floor(n / 3600)).padStart(2, '0')}:${String(Math.floor(n / 60) % 60).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`; }
+/** Danmaku/SRT/gift are read once per recording, then reused by every submission. */
+function audienceFor(plan) {
+    try { return loadAudience(plan.source || {}); }
+    catch (error) {
+        // A title must still render when the danmaku file is unreadable.
+        console.warn(`[GAME_TITLE_AUDIENCE] ${error.message}`);
+        return null;
+    }
+}
 function publicCopy(plan, game, parts, episode, submission, submissions) {
     const chapters = parts.flatMap(p => p.chapters || [{ title: p.title, ...p.chapter }]);
-    const focus = selectFocus(chapters, { end: Math.max(...parts.map(p => Number(p.end) || 0)) }).focus;
+    const focus = selectFocus(chapters, { end: Math.max(...parts.map(p => Number(p.end) || 0)), audience: audienceFor(plan) });
     const title = game.members
         ? `游戏联动｜${game.name}${submissions > 1 ? `（${submission}/${submissions}）` : ''} ${plan.recordedAt.slice(0, 10)}`
-        : `${game.name} 第${String(episode).padStart(2, '0')}集${submissions > 1 ? `（${submission}/${submissions}）` : ''}｜${focus} ${plan.recordedAt.slice(0, 10)}`;
+        : `${game.name} 第${String(episode).padStart(2, '0')}集${submissions > 1 ? `（${submission}/${submissions}）` : ''}｜${focus.focus} ${plan.recordedAt.slice(0, 10)}`;
     const lines = [`${plan.streamerName}《${game.name}》直播游玩记录。`, `直播日期：${plan.recordedAt}；直播标题：${plan.streamTitle.replace(/_merged(?:_best_effort)?$/u, '')}。`,
         '保留原始游戏音画、探索和挑战过程。中文字幕可在播放器中开关。'];
     if (parts.length > 1) lines.push(...parts.map((p, i) => `P${i + 1} ${p.title}`));
     else lines.push('本集时间轴：', ...parts[0].chapters.map(c => `${clock(c.start - parts[0].start)} ${c.title}`));
     if (lines.join('\n').length > 1900) throw new Error('Game description needs a shorter chapter list');
-    return { title, description: lines.join('\n'), coverText: `${game.name}\n第${String(episode).padStart(2, '0')}集` };
+    return { title, description: lines.join('\n'), coverText: `${game.name}\n第${String(episode).padStart(2, '0')}集`, focus: focus.details };
 }
 function clippedCues(segments, part) {
     return segments.filter(c => c.end > part.start && c.start < part.end).map(c => ({ ...c,
