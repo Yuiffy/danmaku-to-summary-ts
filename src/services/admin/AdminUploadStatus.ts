@@ -6,7 +6,7 @@ type RecordValue = Record<string, any>;
 const object = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const array = (value: unknown): RecordValue[] => Array.isArray(value) ? value.map(object) : [];
 // Mirrors clip_upload_registry.py's account guard; this projection never schedules work.
-const LIMIT = 90, WINDOW_SECONDS = 86400, BUFFER_SECONDS = 5;
+const LIMIT = 25, WINDOW_SECONDS = 86400, BUFFER_SECONDS = 5;
 function time(value: unknown): number | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   const normalized = value.trim().replace(/(\.\d{3})\d+/u, '$1');

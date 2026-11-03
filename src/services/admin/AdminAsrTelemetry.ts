@@ -39,7 +39,8 @@ export class AdminAsrTelemetry {
     const { audio_done_s: done, audio_total_s: total } = data;
     if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0 || done < 0 || done > total + 0.01) return undefined;
     if (marker) this.structured = true;
-    const tier = data.device === 'cpu' ? 'cpu_background' : data.performance_tier === 'gpu_low_impact' ? 'gpu_low_impact' : 'gpu_throughput';
+    const tier = data.device === 'cpu' ? 'cpu_background' : data.performance_tier === 'gpu_ultra_low_impact' ? 'gpu_ultra_low_impact'
+      : data.performance_tier === 'gpu_low_impact' ? 'gpu_low_impact' : 'gpu_throughput';
     if (this.device !== data.device || this.tier !== `${tier}:${data.batch_size_s}` || this.progress?.audioTotalSeconds !== total
       || done < (this.progress?.audioDoneSeconds ?? 0) || data.state !== 'running'
       || (this.lastProgressAt !== undefined && at - this.lastProgressAt > 120000)) this.reset();

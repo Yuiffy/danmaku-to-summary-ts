@@ -19,6 +19,7 @@ import { AdminQQRecords } from '../../services/admin/AdminQQRecords';
 import { AdminCampaignCandidates } from '../../services/admin/AdminCampaignCandidates';
 import { AdminCampaignFeedback } from '../../services/admin/AdminCampaignFeedback';
 import { AdminAsrStatus } from '../../services/admin/AdminAsrStatus';
+import { AdminClipProgress } from '../../services/admin/AdminClipProgress';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AITextGenerator } from '../../services/ai/AITextGenerator';
 import { createFeedbackAgent } from '../../services/admin/AdminFeedbackAgent';
@@ -61,7 +62,8 @@ export function startAdminService(): void {
   const campaignFeedback = new AdminCampaignFeedback(campaignCandidates, clips, jobs, runner, feedback);
   const asr = new AdminAsrStatus(root, { queueFile: process.env.WHISPER_QUEUE_FILE, logFile: process.env.ADMIN_ASR_LOG_FILE });
   asr.startHistoryIndex();
-  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, campaignCandidates, campaignFeedback, asr }, fs.readFileSync(tokenFile, 'utf8').trim());
+  const clipProgress = new AdminClipProgress(root);
+  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, campaignCandidates, campaignFeedback, asr, clipProgress }, fs.readFileSync(tokenFile, 'utf8').trim());
   const port = Number(process.env.ADMIN_PORT || 15127);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ADMIN_PORT 无效');
   const server = app.listen(port, '127.0.0.1', () => console.log(`管理 API: http://127.0.0.1:${port}`));

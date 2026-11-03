@@ -10,12 +10,13 @@ afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: tru
 it('counts only newly processed audio and separates tiers, transcription wall time and postprocessing', () => {
   const result = asrHistoryMetrics({ elapsedSeconds: 300, mediaDurationSeconds: 10000,
     stageTimings: { handoff_cpu_audio_s: 1000, handoff_gpu_audio_s: 5000, handoff_reused_audio_s: 4000,
+      handoff_gpu_ultra_low_impact_audio_s: 1000, handoff_gpu_ultra_low_impact_window_s: 80, handoff_gpu_ultra_low_impact_batch_s: 30,
       handoff_gpu_low_impact_audio_s: 2000, handoff_gpu_low_impact_window_s: 80, handoff_gpu_low_impact_batch_s: 30,
       handoff_gpu_throughput_audio_s: 3000, handoff_gpu_throughput_window_s: 30,
       handoff_transcription_s: 200, speaker_total_s: 80 }, speakerProcessing: { status: 'success' } });
   expect(result).toMatchObject({ speedX: 30, elapsedSeconds: 300, transcriptionSeconds: 200, reusedSeconds: 4000, speakerState: 'processed', speakerSeconds: 80 });
   expect(result.tiers.map(tier => [tier.tier, tier.speedX])).toEqual([
-    ['cpu_background', undefined], ['gpu_low_impact', 25], ['gpu_throughput', 100] ]);
+    ['cpu_background', undefined], ['gpu_ultra_low_impact', 12.5], ['gpu_low_impact', 25], ['gpu_throughput', 100] ]);
 });
 
 it('does not invent legacy device/tier or use full duration to inflate resumed speed', () => {

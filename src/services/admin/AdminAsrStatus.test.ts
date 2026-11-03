@@ -137,6 +137,7 @@ it('resets speed for switching, interruption, replay, waiting, changed totals an
   for (const last of [statusLine(0, 7000, { device: 'cpu', batch_size_s: 30 }), statusLine(0, 6000),
     statusLine(0, 7000, { state: 'waiting' }), statusLine(0, 7000, { state: 'loading' }),
     statusLine(0, 7000, { performance_tier: 'gpu_low_impact', batch_size_s: 30 }),
+    statusLine(0, 7000, { performance_tier: 'gpu_ultra_low_impact', batch_size_s: 30 }),
     statusLine(0, 7000, { audio_total_s: 20000 }), statusLine(0, 10000, { state: 'postprocessing' }),
     line(0, 'ASR 接力中断: device=cuda, target=cpu, replay_from=7000.0s')]) {
     const progress = asrQueueStatus({ tasks: [running] }, `${stable}\n${last}`, {}, now).queue[0].activity?.progress;

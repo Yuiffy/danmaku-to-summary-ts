@@ -27,7 +27,7 @@ export interface AsrProgress {
   audioDoneSeconds: number;
   audioTotalSeconds: number;
   percent: number;
-  performanceTier: 'gpu_throughput' | 'gpu_low_impact' | 'cpu_background' | 'waiting' | 'postprocessing';
+  performanceTier: 'gpu_throughput' | 'gpu_low_impact' | 'gpu_ultra_low_impact' | 'cpu_background' | 'waiting' | 'postprocessing';
   windowSeconds?: number;
   batchSeconds?: number;
   speedX?: number;

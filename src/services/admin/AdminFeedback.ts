@@ -36,12 +36,13 @@ export class AdminFeedback {
       return structuredClone(previous);
     }
     return this.jobs.submitOperation('feedback-publish', id, { note, revision, edits, titleChoice: body.titleChoice },
-      (output, update) => this.execute(id, note, revision, edits, output, update), validate);
+      (output, update) => this.execute(id, note, revision, edits, output, update, previous), validate);
   }
 
   /** Reuse the same execution within an already serialized candidate-promotion job. */
   async execute(id: string, note: string, revision: string, edits: Record<string, unknown>,
-    output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void): Promise<number> {
+    output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
+    resumeFrom?: AdminJob): Promise<number> {
       const validate = () => {
         if (this.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再提交', 409);
         this.assertEditable(id);
@@ -53,6 +54,12 @@ export class AdminFeedback {
       const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note)
         && !missingFeedbackFields(edits, initial, true).length;
       const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update, () => this.assertEditable(id), this.directFeedback);
+      if (resumeFrom && ['failed', 'interrupted'].includes(resumeFrom.status) && resumeFrom.note === note
+        && resumeFrom.plan && initial.category === 'clip') {
+        session.resumeReviewed(resumeFrom.plan as FeedbackPlan);
+        await session.enqueue();
+        return 0;
+      }
       if (this.agent && !unchangedReview && !publishCurrent) {
         await this.agent(session, initial, edits, (phase, detail) => { update({ phase }); output(`\n${phase}${detail ? `：${detail}` : ''}\n`); });
         return 0;

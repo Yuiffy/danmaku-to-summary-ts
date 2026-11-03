@@ -15,10 +15,13 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
     return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   }
   const endpoint = url.pathname.slice('/api/admin'.length);
+  const clipPreview = /^\/queues\/clips\/[a-zA-Z0-9_-]{1,120}\/videos\/[1-9]\d{0,2}\/[a-f0-9]{64}\/media$/u.test(endpoint);
+  if (clipPreview && !['GET', 'HEAD'].includes(request.method)) return NextResponse.json({ error: '切片预览仅可读取' }, { status: 405 });
+  if (endpoint === '/queues/clips' && request.method !== 'GET') return NextResponse.json({ error: '自动切片进度仅可读取' }, { status: 405 });
   const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/(actions|status|asr(?:\/history)?))?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
   const campaignCandidate = /^\/campaign-candidates(?:\/[a-f0-9]{64}(?:\/source-playback|\/assets\/source-preview|\/feedback|\/actions)?)?$/u.test(endpoint);
   const qqImage = /^\/qq-records\/[1-9]\d{0,24}\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{64}\/image$/u.test(endpoint);
-  if (!allowed.test(endpoint) && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && endpoint !== '/qq-records' && !qqImage && !campaignCandidate) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  if (!allowed.test(endpoint) && endpoint !== '/queues/clips' && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && endpoint !== '/qq-records' && !qqImage && !campaignCandidate && !clipPreview) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
   if ((endpoint === '/qq-records' || qqImage) && request.method !== 'GET') return NextResponse.json({ error: 'QQ 记录仅可读取' }, { status: 405 });
   if (campaignCandidate && (endpoint.endsWith('/actions') ? request.method !== 'POST' : !['GET', 'HEAD'].includes(request.method))) return NextResponse.json({ error: '活动候选接口方法无效' }, { status: 405 });
   if (endpoint === '/comment-replies' && request.method !== 'GET') return NextResponse.json({ error: '评论记录仅可读取' }, { status: 405 });
@@ -62,6 +65,7 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
   }
 }
 export const GET = forwardAdmin;
+export const HEAD = forwardAdmin;
 export const POST = forwardAdmin;
 export const PUT = forwardAdmin;
 export const DELETE = forwardAdmin;

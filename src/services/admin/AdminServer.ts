@@ -23,6 +23,7 @@ import { AdminQQRecords } from './AdminQQRecords';
 import { AdminCampaignCandidates } from './AdminCampaignCandidates';
 import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 import { AdminAsrStatus } from './AdminAsrStatus';
+import { AdminClipProgress } from './AdminClipProgress';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -40,6 +41,7 @@ export interface AdminAdapters {
   campaignCandidates?: AdminCampaignCandidates;
   campaignFeedback?: AdminCampaignFeedback;
   asr?: AdminAsrStatus;
+  clipProgress?: AdminClipProgress;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -62,17 +64,17 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   const campaignFeedback = () => { if (!adapters.campaignFeedback) throw new AdminError('活动候选投稿未配置', 503); return adapters.campaignFeedback; };
   app.get('/campaign-candidates/:id/feedback', (req, res) => res.json(campaignFeedback().view(req.params.id)));
   app.post('/campaign-candidates/:id/actions', (req, res) => res.status(202).json(campaignFeedback().submit(req.params.id, req.body)));
-  const candidatePlayback = async (id: string) => {
+  const candidatePlayback = async (id: string, forceRemux = false) => {
     const source = candidates().source(id);
     if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
-    return adapters.sourceMedia.prepare(source.file, source.window);
+    return adapters.sourceMedia.prepare(source.file, source.window, { forceRemux });
   };
   app.get('/campaign-candidates/:id/source-playback', async (req, res) => {
-    const playback = await candidatePlayback(req.params.id);
-    res.json({ origin: playback.origin, start: playback.start, end: playback.end });
+    const playback = await candidatePlayback(req.params.id, req.query.remux === '1');
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format });
   });
   app.get('/campaign-candidates/:id/assets/source-preview', async (req, res) => {
-    res.sendFile((await candidatePlayback(req.params.id)).file);
+    res.sendFile((await candidatePlayback(req.params.id, req.query.remux === '1')).file);
   });
   app.get('/comment-replies', (req, res) => {
     if (!adapters.commentReplies) throw new AdminError('评论记录未配置', 503);
@@ -146,16 +148,16 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
     if (adapters.clips.detail(req.params.id).revision !== req.body.revision) throw new AdminError('视频已变化，请刷新后再编辑封面', 409);
     res.type('image/jpeg').send(image);
   });
-  const sourcePlayback = async (id: string) => {
+  const sourcePlayback = async (id: string, forceRemux = false) => {
     const clip = adapters.clips.record(id), metadata = adapters.clips.metadata(clip);
     const file = adapters.clips.asset(id, 'source'), window = adapters.clips.sourceWindow(clip, metadata);
     if (!file || !window) throw new AdminError('原片或候选时间不存在', 404);
     if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
-    return adapters.sourceMedia.prepare(file, window);
+    return adapters.sourceMedia.prepare(file, window, { forceRemux });
   };
   app.get('/clips/:id/source-playback', async (req, res) => {
-    const playback = await sourcePlayback(req.params.id);
-    res.json({ origin: playback.origin, start: playback.start, end: playback.end });
+    const playback = await sourcePlayback(req.params.id, req.query.remux === '1');
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format });
   });
   app.post('/clips/:id/actions', (req, res) => {
     const id = req.params.id, revision = req.body.revision;
@@ -193,7 +195,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.get('/clips/:id/assets/:kind', async (req, res) => {
     const kind = req.params.kind as AssetKind;
-    if (req.params.kind === 'source-preview') { res.sendFile((await sourcePlayback(req.params.id)).file); return; }
+    if (req.params.kind === 'source-preview') { res.sendFile((await sourcePlayback(req.params.id, req.query.remux === '1')).file); return; }
     if (!['media', 'preview', 'cover', 'subtitles', 'preview-subtitles', 'media-subtitles'].includes(kind)) throw new AdminError('素材类型不存在', 404);
     const file = adapters.clips.asset(req.params.id, kind, Number(req.query.part || 1));
     if (!file) throw new AdminError('素材不存在', 404);
@@ -231,6 +233,15 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.get('/queues', (_req, res) => res.json(adapters.clips.queues()));
   app.get('/queues/status', (_req, res) => res.json(adapters.clips.uploadStatus()));
+  app.get('/queues/clips', (_req, res) => {
+    if (!adapters.clipProgress) throw new AdminError('自动切片进度尚未配置', 503);
+    res.json(adapters.clipProgress.status());
+  });
+  app.get('/queues/clips/:id/videos/:index/:key/media', (req, res) => {
+    if (!adapters.clipProgress) throw new AdminError('自动切片进度尚未配置', 503);
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(adapters.clipProgress.media(req.params.id, req.params.index, req.params.key));
+  });
   app.get('/queues/asr', (_req, res) => {
     if (!adapters.asr) throw new AdminError('字幕队列尚未配置', 503);
     res.json(adapters.asr.status());

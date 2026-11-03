@@ -19,7 +19,13 @@ export class AdminFeedbackSession {
     private readonly edits: Record<string, unknown>, private readonly clips: AdminClipStore,
     private readonly run: CommandRunner, private readonly output: (text: string) => void,
     private readonly update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
-    private readonly assertEditable: () => void, readonly directFeedback = false) { this.expected = revision; }
+    private readonly assertEditable: () => void, readonly directFeedback = false) { this.expected = revision;
+        try {
+            const fs = require('fs'), path = require('path');
+            const logDir = path.join(String((this.clips as unknown as { root: string }).root), 'data/runtime/admin');
+            fs.mkdirSync(logDir, { recursive: true });
+            fs.appendFileSync(path.join(logDir, 'feedback-notes.jsonl'), JSON.stringify({ at: new Date().toISOString(), id: this.id, note: this.note, edits: this.edits, directFeedback }) + '\n');
+        } catch { /* feedback logging must never break the session */ } }
 
   validate(): void {
     if (this.clips.detail(this.id).revision !== this.expected) throw new AdminError('切片在处理期间被外部修改，已停止，未继续投稿', 409);
@@ -83,6 +89,21 @@ export class AdminFeedbackSession {
     return !!(this.reviewed && detail.media && detail.cover && !detail.pendingRebuild && !record.pendingCut
       && !record.reviewPending && !record.editorialExclusion
       && (!this.requestedTitle || detail.title === this.requestedTitle));
+  }
+  /** Resume a failed feedback attempt when the saved revision is already review-ready. */
+  resumeReviewed(plan: FeedbackPlan): void {
+    this.validate();
+    const detail = this.clips.feedbackDetail(this.id), record = this.clips.record(this.id);
+    if (detail.category !== 'clip' || !detail.media || !detail.cover || detail.pendingRebuild || record.pendingCut
+      || record.reviewPending || record.editorialExclusion) throw new AdminError('当前版本尚未达到可恢复投稿状态，请重新按意见处理');
+    const expected = { title: plan.title || detail.title, description: plan.description || detail.description,
+      coverText: plan.coverText || detail.coverText };
+    if (detail.title !== expected.title || detail.description !== expected.description || detail.coverText !== expected.coverText) {
+      throw new AdminError('上次修改后的文案与当前成片不一致，请刷新后按最新意见重试');
+    }
+    this.requestedTitle = expected.title;
+    this.reviewed = true;
+    this.update({ phase: '正在恢复已复核版本', plan: { ...plan, resume: true } });
   }
   private async step(phase: string, command: OperatorCommand): Promise<void> {
     this.validate(); this.update({ phase }); this.output(`\n${phase}\n`);

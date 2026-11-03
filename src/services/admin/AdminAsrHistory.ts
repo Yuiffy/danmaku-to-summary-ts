@@ -17,7 +17,8 @@ export function asrHistoryMetrics(meta: Data): Pick<AsrHistoryItem, 'tiers' | 's
     tiers.push({ tier, audioSeconds, windowSeconds, speedX: ratio(audioSeconds, windowSeconds),
       batchSeconds: number(timing[`handoff_${key}_batch_s`]) });
   };
-  add('cpu_background', 'cpu'); add('gpu_low_impact', 'gpu_low_impact'); add('gpu_throughput', 'gpu_throughput');
+  add('cpu_background', 'cpu'); add('gpu_ultra_low_impact', 'gpu_ultra_low_impact');
+  add('gpu_low_impact', 'gpu_low_impact'); add('gpu_throughput', 'gpu_throughput');
   const gpu = number(timing.handoff_gpu_audio_s), split = tiers.filter(row => row.tier.startsWith('gpu_')).reduce((sum, row) => sum + row.audioSeconds, 0);
   if (gpu !== undefined && gpu > split + .01) {
     // Older metadata has only aggregate GPU totals. Never infer its batch/tier.

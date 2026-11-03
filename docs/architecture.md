@@ -98,13 +98,14 @@ must be updated before using the new task-list/cancellation adapter.
 | `services/qqbot`, `tools/qqbot` | authenticated QQ mention admission, fixed private guidance, bounded Agents SDK loop selecting recording and image tools, room-scoped evidence and local tool traces, server-bound source/reference images with one paid image attempt and account receipts; see [QQ bot guide](qqbot.md) | ordinary group chatter/history, arbitrary agent tools or paths, Bilibili publication/credentials, shared media queues or automatic activation |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
-| `questions/RecordingBrowser`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, previews of maintained highlights/clip subtitles and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or broadcast starts |
+| `questions/RecordingBrowser`, `RecordingOpenings`, `RecordingCalendar`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, multi-day opening windows and recorded-text presence calendars, recorder-clock copy deduplication, previews and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or authoritative broadcast starts/absence |
+| `questions/StreamerKnowledge` | operator-confirmed broadcaster facts, room-scoped hints shared by the recording agent and QQ | automatic learning from chat, treating audience statements as confirmed facts, claiming current schedules from a habitual cadence |
 | `services/live-vote/questions/SubtitleIndex`, `SubtitleLexicalIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded full-text/semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
 | `tools/live-vote/subtitleIndex` | single-writer incremental index maintenance, daily Shanghai schedule and catch-up | vote admission, active workflow activation, public replies |
 | `questions/RecordingFtsIndex`, `RecordingFtsMaintenance`, `tools/live-vote/recordingIndex` | shared read-only SQLite FTS5 recall, atomic source replacement, independent incremental polling of trusted SRT/XML roots; source hashes verified by `RecordingEvidence` before citation | answer generation, recorder mutation, publication, embedding dependencies, agent-controlled paths |
 | `live-vote/question-lab`, `questions/EvidenceQuery`, `tools/live-vote/recordingQuery` | loopback question/evidence UI, read-only CLI retrieval, independent local test admission | Bilibili sending, comment publication, bot authorization changes, index mutation |
 | `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
-| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, bounded text/preview agent with optional model-selected current-video/public-project tools, fixed APIs/CDN and timeline checks, room FTS/clip evidence, durable fair queue, quotas, token/send gates, safe feed diagnostics and persisted pause-alert attempts through the configured WeChat destination | desktop tools, arbitrary URLs/paths, full-video download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
+| `services/bilibili/comment-replies`, `tools/bilibili/commentReplies` | authenticated notifications, trusted private-message admission, bounded text/preview agent with optional model-selected current-video/public-project tools, fixed APIs/CDN and timeline checks, room FTS/clip evidence, server-bound image upload/publication, durable fair queue, text/image quotas, token/send gates, safe feed diagnostics and persisted pause-alert attempts through the configured WeChat destination | desktop tools, arbitrary URLs/paths, full-video download/ASR, shared media queues, automatic activation or retry of ambiguous publications |
 | `comment-replies/CommentVisibility`, `tools/bilibili/inspectComment` | bounded read-only anonymous/account comparison of exact reply IDs through fixed comment-list GETs; upstream selection is documented in `docs/bilibili-api-upstreams.md` | publication, model calls, state/queue writes, automatic retries or interpreting absence as permission to repost |
 | `comment-replies/CommentAudience`, `CommentProjects` | fixed signed UID-bound profile/medal catalogue reads; bounded operator-approved public project file excerpts with revisions | inferring badges from names/ownership, arbitrary model-selected paths, private configuration, model tools or publication |
 | `comment-replies/CommentFeedback`, `CommentFeedbackStore`, `admin/AdminCommentFeedback` | verified own-video mention feedback extracted in the existing answer call, immutable independent archive and read-only admin listing | scanning ordinary comments, additional classification calls, media queue writes or automatic editing |
@@ -252,6 +253,12 @@ compatible `audio_processor.js` facade. `clip_media_retention.py` owns uploaded
 clip expiry and durable replay recipes, while `clip_media_restore.py` invokes the
 existing media renderers without mutating publication state. The standalone
 Windows maintenance task is described in [clip media retention](clip-media-retention.md).
+`media_workspace_policy.py` owns pure expiry/path rules for explicitly declared
+media caches. `media_workspace_retention.py` owns the operator CLI and filesystem
+adapter under the recording root's `_workspaces`; it reuses the upload short lock
+and read-only reference protection, never writes publication state. Active or
+undeclared workspaces do not expire. See the same retention guide for lifecycle,
+legacy path aliases and the separate hourly Windows task.
 
 ### Main comment publication recovery
 
@@ -296,6 +303,10 @@ supplementary publication workflows. It adds no content-review stage.
   registry retains compatibility functions and supplies its current limit/window
   settings. `clip_upload_state.UploadStateIO` narrows snapshot/status-commit
   dependencies to locks and persistence; it has no publication capability.
+- `scripts/clip_upload_cancel.py` also owns editorial exclusion. Unqueued IDs use
+  the short queue transaction without stopping an unrelated upload worker; active
+  IDs retain the existing worker-lock/cancellation boundary. The registry retains
+  its CLI and compatibility export.
 - `services/admin/AdminAsrHistoryObserver` owns incremental history observation;
   status/page adapters do not own its loop. See the history contract in web-admin.md.
 
@@ -337,6 +348,14 @@ this one release. `DANMAKU_WORKFLOW_RELEASE` explicitly selects a release direct
 for isolated runs. The bridge verifies the manifest and every file digest before
 loading modules. It does not import TypeScript or ts-node. Keep prior release
 directories for rollback; restore the previous pointer to roll back activation.
+
+To deploy isolated leaf stages from a shared workspace, repeat
+`--overlay-entry <entry>` with `npm run build:workflows --`. The candidate retains
+every other active entry and file byte, checks the active manifest digests, and
+replaces only the selected JavaScript/declaration pairs. Entries requiring local
+or dynamic dependencies are rejected; use a complete release for those changes.
+Inspect and validate the overlay candidate, then repeat the same command with
+`--activate`. Activation refuses a changed active pointer during the build.
 
 When a source-executed CLI adds a `loadWorkflow` entry, register that entry in
 `src/tools/workflows/workflowEntries.ts` and its isolated test fixture. Validate and activate the complete
@@ -468,6 +487,8 @@ for rollout, time/citation contracts, token budgets and read-only accounting com
 | supplementary publications, durable intent and independent retries | `SupplementaryReplyWorkflow` |
 | summary/comment length or generation diagnostics | `LiveContentSummaryComposer`, `DelayedReplyDiagnostics` |
 | keyword window, candidate recall, subtitle boundaries | `clipping/topic_selection.js`, `clipping/own_selection.js` |
+| explicit same-recording numeric keyword precision bundles | `workflows/clipping/precisionBundle`; registry facade in `precision_publish.py` |
+| source-bound keyword bundle publication and absorbed member IDs | `scripts/precision_bundle_review.py`; rechecked by `clip_qa.py` and ordinary source-window duplicate policy |
 | cross-room collab evidence, reviewed clock mapping, peer insets and solo audio | `workflows/clipping/collabPolicy`, `collabSync`, `collabRuntime`; local adapter in `tools/clipping/collab`; [collab contract](cross-room-collab-clips.md) |
 | storyboard JSON or comic prompt presentation | `comic/storyboard.py`, `comic/prompts.py` |
 | requested screenshots, source-video resolution, local FFmpeg capture | `comic/screenshots.py` |

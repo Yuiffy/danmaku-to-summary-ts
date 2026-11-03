@@ -1,6 +1,7 @@
 import request from 'supertest';
 import * as fs from 'fs';
 import { AdminAsrStatus } from './AdminAsrStatus';
+import { AdminClipProgress } from './AdminClipProgress';
 import * as os from 'os';
 import * as path from 'path';
 import { AdminConfigStore } from './AdminConfigStore';
@@ -19,6 +20,53 @@ import { AdminCoverPreview } from './AdminCoverPreview';
 
 const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
 const roots: string[] = [];
+it('serves authenticated read-only automatic clipping progress without launching queue work', async () => {
+  const f = fixture(), directory = path.join(f.root, 'background-queue');
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs,
+    clipProgress: new AdminClipProgress(f.root, { queueDirectory: directory }) }, token);
+  await request(app).get('/queues/clips').expect(403);
+  const result = await request(app).get('/queues/clips').set(headers).expect(200);
+  expect(result.body).toMatchObject({ worker: 'offline', activeJobs: 0, queuedJobs: 0, queue: [] });
+  for (const method of ['post', 'put', 'delete'] as const) await request(app)[method]('/queues/clips').set(headers).send({}).expect(404);
+  expect(fs.existsSync(directory)).toBe(false);
+  expect(f.run).not.toHaveBeenCalled();
+});
+it('streams a completed intermediate clip by job, index and version without waiting for the whole batch or launching work', async () => {
+  const f = fixture(), directory = path.join(f.root, 'background-queue'), output = path.join(f.assets, 'own_stream_fun_clips');
+  const source = path.join(f.assets, 'source.flv'), media = path.join(output, 'first.mp4'), metadata = path.join(output, 'first.json');
+  const payloadPath = path.join(f.root, 'payload.json'), progressPath = path.join(output, 'PLAN_PROGRESS.json');
+  atomicJson(path.join(directory, 'job-1.working.json'), { payloadPath, enqueuedAt: '2026-10-29T00:00:00Z' });
+  atomicJson(payloadPath, { originalMediaPath: source });
+  atomicJson(`${payloadPath}.progress.json`, { stage: 'own' });
+  atomicJson(progressPath, { source: { media: source }, startedAt: '2026-10-29T00:00:01Z', updatedAt: '2026-10-29T00:00:02Z', total: 2,
+    entries: [{ index: 0, status: 'rendered_for_review', metadataPath: metadata }, { index: 1, status: 'rendering' }] });
+  atomicJson(metadata, { source: { mediaPath: source }, window: { index: 1 }, output: { mediaPath: media, burnedSubtitles: true } });
+  fs.writeFileSync(media, '0123456789');
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs,
+    clipProgress: new AdminClipProgress(f.root, { queueDirectory: directory }) }, token);
+  const result = await request(app).get('/queues/clips').set(headers).expect(200), key = result.body.queue[0].videos.items[0].previewKey;
+  const endpoint = `/queues/clips/job-1/videos/1/${key}/media`;
+  await request(app).get(endpoint).expect(403);
+  const partial = await request(app).get(endpoint).set(headers).set('Range', 'bytes=2-5').expect(206);
+  expect(partial.headers['content-range']).toBe('bytes 2-5/10'); expect(partial.body.toString()).toBe('2345');
+  await request(app).head(endpoint).set(headers).expect(200);
+  await request(app).get(endpoint.replace('/videos/1/', '/videos/2/')).set(headers).expect(404);
+  await request(app).get(endpoint.replace('job-1', 'unknown')).set(headers).expect(404);
+  await request(app).get(endpoint.replace(key, '0'.repeat(64))).set(headers).expect(404);
+  await request(app).post(endpoint).set(headers).send({}).expect(404);
+  fs.appendFileSync(media, 'revision'); await request(app).get(endpoint).set(headers).expect(404);
+  fs.renameSync(path.join(directory, 'job-1.working.json'), path.join(directory, 'job-1.done.json'));
+  for (let i = 0; i < 4; i++) {
+    const file = path.join(directory, `newer-${i}.done.json`);
+    atomicJson(file, { payloadPath: path.join(f.root, 'missing-payload.json') });
+    fs.utimesSync(file, Date.now() / 1000 + i + 1, Date.now() / 1000 + i + 1);
+  }
+  const latest = await request(app).get('/queues/clips').set(headers).expect(200);
+  expect(latest.body.recent).toHaveLength(3);
+  expect(latest.body.recent.every((item: any) => item.id !== 'job-1')).toBe(true);
+  expect(latest.body.latestOutput).toMatchObject({ id: 'job-1', videos: { items: [{ previewKey: expect.any(String) }, {}] } });
+  expect(f.run).not.toHaveBeenCalled();
+});
 it('previews registered frames and dispatches cover edits without publication, including whole-package covers', async () => {
   const f = fixture(), selection = { time: 1.25, part: 1, text: '新的封面文字', crop: { x: .1, y: .2, width: .8, height: .6 } };
   const render = jest.fn(async (_exe: string, args: string[]) => { fs.writeFileSync(args[args.indexOf('--output') + 1], 'jpeg'); });
@@ -306,7 +354,7 @@ it('shows untitled candidate evidence and seeks registered originals without pre
   expect(detail.source.subtitles).toContain('00:45:41,000'); expect(detail.source.subtitles).not.toContain('范围外');
   expect(detail.media).toBe(false); expect(detail.preview).toBe(false);
   const playback = (await request(app).get('/clips/1/source-playback').set(headers).expect(200)).body;
-  expect(playback).toEqual({ start: 2742.139, end: 2746, origin: 0 });
+  expect(playback).toEqual({ start: 2742.139, end: 2746, origin: 0, direct: true, format: '.mp4' });
   await request(app).get('/clips/1/assets/source-preview').set(headers).set('Range', 'bytes=2-5').expect(206);
   expect(fs.readFileSync(registryFile, 'utf8')).toBe(before); expect(fs.readFileSync(metadataFile, 'utf8')).toBe(metaBefore);
   expect(f.run).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
@@ -346,7 +394,7 @@ it('returns review details while source playback is still loading in its indepen
   jest.spyOn(sourceMedia, 'prepare').mockImplementation(async () => {
     started();
     await new Promise<void>(resolve => { finish = resolve; });
-    return { file: source, start: 0, end: 2, origin: 0, direct: false };
+    return { file: source, start: 0, end: 2, origin: 0, direct: false, format: '.mp4' };
   });
   const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, sourceMedia }, token);
   const playback = request(app).get('/clips/1/source-playback').set(headers).timeout(2000).expect(200).then(response => response.body);

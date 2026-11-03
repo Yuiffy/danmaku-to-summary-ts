@@ -18,14 +18,14 @@ it('shows cancellation acknowledgement and final submission separately, excludin
 
 it('combines both account constraints and job retries, skipping later retries like the worker scan', () => {
   const queue = { jobs: [job('1', { status: 'retry_wait', retryAt: at(4 * hour) }), job('2')],
-    accountRollingUploadGuard: { events: Array.from({ length: 90 }, (_, i) => event(i, -22 * hour)), lastRemoteSyncAt: at(-hour) },
+    accountRollingUploadGuard: { events: Array.from({ length: 25 }, (_, i) => event(i, -22 * hour)), lastRemoteSyncAt: at(-hour) },
     submissionRateLimit: { code: 137022, cooldownUntil: at(3 * hour), updatedAt: at(0), streak: 2 } };
   const result = uploadQueueStatus(queue, {}, now);
   expect(result).toMatchObject({ state: 'waiting', queuedJobs: 2, nextJobId: '2', nextAttemptAt: at(3 * hour),
-    rolling: { count: 90, remaining: 0, blockedUntil: at(2 * hour + 5000), nextDecreaseAt: at(2 * hour) }, rateLimit: { active: true } });
+    rolling: { limit: 25, count: 25, remaining: 0, blockedUntil: at(2 * hour + 5000), nextDecreaseAt: at(2 * hour) }, rateLimit: { active: true } });
   expect(result.reasons).toHaveLength(2);
   expect(result.queue.map(next => next.id)).toEqual(['2', '1']);
-  expect(result.rolling.releases).toEqual([{ at: at(2 * hour), count: 90, remainingCount: 0 }]);
+  expect(result.rolling.releases).toEqual([{ at: at(2 * hour), count: 25, remainingCount: 0 }]);
 });
 
 it('deduplicates account and registry receipts, keeping the later timestamp, excluding expired entries', () => {
@@ -34,18 +34,18 @@ it('deduplicates account and registry receipts, keeping the later timestamp, exc
     2: { id: 2, status: 'uploading', updatedAt: at(0) },
     3: { id: 3, status: 'uploaded', uploadedAt: at(-25 * hour), title: '旧投稿' }
   }, now);
-  expect(result.rolling).toMatchObject({ count: 1, remaining: 89, nextDecreaseAt: at(23.5 * hour) });
+  expect(result.rolling).toMatchObject({ count: 1, remaining: 24, nextDecreaseAt: at(23.5 * hour) });
   expect(result.lastSubmission).toMatchObject({ at: at(-hour / 2), title: '最终标题', bvid: 'BV1' });
   expect(result.rolling.events).toHaveLength(1);
 });
 
-it('requires enough events to expire when history exceeds 90 and retains the worker boundary buffer', () => {
-  const events = Array.from({ length: 92 }, (_, i) => event(i, -23 * hour + i * 1000));
+it('requires enough events to expire when history exceeds 25 and retains the worker boundary buffer', () => {
+  const events = Array.from({ length: 27 }, (_, i) => event(i, -23 * hour + i * 1000));
   const queue = { jobs: [job('1')], accountRollingUploadGuard: { events } };
   expect(uploadQueueStatus(queue, {}, now).nextAttemptAt).toBe(at(hour + 7000));
   const after = now + hour + 2000;
   expect(uploadQueueStatus({ ...queue, accountRollingUploadGuard: { events, blockedUntil: at(hour + 7000) } }, {}, after))
-    .toMatchObject({ state: 'waiting', rolling: { count: 89, blockedUntil: at(hour + 7000) } });
+    .toMatchObject({ state: 'waiting', rolling: { count: 24, blockedUntil: at(hour + 7000) } });
   expect(uploadQueueStatus({ ...queue, accountRollingUploadGuard: { events, blockedUntil: at(hour + 7000) } }, {}, now + hour + 7000).state).toBe('ready');
 });
 

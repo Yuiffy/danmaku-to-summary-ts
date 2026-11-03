@@ -69,6 +69,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const [start, setStart] = useState(''), [end, setEnd] = useState(''), [allowLong, setAllowLong] = useState(false), [durationNote, setDurationNote] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
   const submitting = useRef(false);
+  const focusCandidate = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
   const [sourceOrigin, setSourceOrigin] = useState<number>();
   const feedback = useResource<{ job: AdminJob | null }>(`/clips/${id}/feedback`, 0, true);
@@ -102,8 +103,16 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   useEffect(() => { if (savedTitle !== undefined) setTitle(savedTitle); }, [savedTitle]);
   useEffect(() => { if (savedDescription !== undefined) setDescription(savedDescription); }, [savedDescription]);
   useEffect(() => { if (savedCoverText !== undefined) setCoverText(savedCoverText); }, [savedCoverText]);
-  const loaded = !!detail, hasMedia = !!detail?.media, sourceAvailable = !!detail?.source.available;
-  useEffect(() => { if (loaded) setMode(hasMedia ? 'media' : sourceAvailable ? 'source' : 'preview'); }, [loaded, hasMedia, sourceAvailable]);
+  const loaded = !!detail, hasMedia = !!detail?.media, sourceAvailable = !!detail?.source.available, hasCandidateSubtitles = !!detail?.subtitles;
+  useEffect(() => {
+    if (!loaded) return;
+    if (focusCandidate.current && hasCandidateSubtitles) {
+      focusCandidate.current = false;
+      setMode('media');
+      return;
+    }
+    setMode(hasMedia ? 'media' : sourceAvailable ? 'source' : 'preview');
+  }, [loaded, hasMedia, sourceAvailable, hasCandidateSubtitles]);
   async function act(action: string, extra: Record<string, unknown> = {}, actionNote = note) {
     if (!detail || submitting.current) return;
     if (!['preview', 'subtitles'].includes(action) && !actionNote.trim()) { setError('请填写审核或修改说明'); return; }
@@ -127,8 +136,14 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       if (action === 'feedback-publish') {
         onFeedback(result); setNote('');
         try { localStorage.removeItem(`clip-feedback-${id}`); } catch { /* The saved job retains the submitted opinion. */ }
-      }
-      else setMessage('操作已提交，请在任务中确认实际执行结果。');
+      } else if (action === 'subtitles') {
+        if (hasCandidateSubtitles) {
+          focusCandidate.current = false;
+          setMode('media');
+        } else focusCandidate.current = true;
+        setMessage('正在准备可修改字幕，完成后会自动切换到候选字幕。');
+        refreshDetail();
+      } else setMessage('操作已提交，请在任务中确认实际执行结果。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '操作失败'); }
     finally { submitting.current = false; setBusy(false); }
   }

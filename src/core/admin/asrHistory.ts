@@ -1,5 +1,5 @@
 export interface AsrHistoryTier {
-  tier: 'cpu_background' | 'gpu_low_impact' | 'gpu_throughput' | 'gpu_unknown';
+  tier: 'cpu_background' | 'gpu_low_impact' | 'gpu_ultra_low_impact' | 'gpu_throughput' | 'gpu_unknown';
   audioSeconds: number;
   windowSeconds?: number;
   batchSeconds?: number;

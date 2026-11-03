@@ -70,6 +70,12 @@ export class AdminClipStore {
   }
   private presentation(clip: any, metadata: any): ClipSummary {
     const summary = this.summary(clip);
+    if (!['uploaded', 'queued', 'uploading', 'cancelled'].includes(clip.status)) {
+      if (metadata.editorialStyle?.status === 'kept_original') summary.issues.push('精切未完成，普通版可预览并人工选择投稿');
+      if (metadata.publication?.selected === false || metadata.curation && metadata.curation.status !== 'original') {
+        summary.issues.push(`候补，可人工选择投稿：${metadata.curation?.reason || metadata.publication?.reason || '未自动入选'}`);
+      }
+    }
     if (metadata.ownStreamHumanReview?.status !== 'approved' && !['uploaded', 'queued', 'uploading', 'cancelled'].includes(clip.status)) {
       summary.issues = [...clipIntentReasons(this.intent(clip, metadata)), ...summary.issues];
     }
@@ -148,7 +154,9 @@ export class AdminClipStore {
           start: cue.start, end: cue.end, text: cue.text, speakerEvidence: cue.speakerEvidence ? {
             status: cue.speakerEvidence.status, label: cue.speakerEvidence.label, identityVerified: cue.speakerEvidence.identityVerified
           } : undefined })), aiReview: metadata.aiReview, attributionReview: metadata.attributionReview, grounding: metadata.grounding,
-        publicationReview: metadata.publicationReview, clipIntent: this.intent(clip, metadata), candidate: metadata.candidate, subtitleProofreading: metadata.subtitleProofreading,
+        publicationReview: metadata.publicationReview, publication: metadata.publication, curation: metadata.curation,
+        editorialStyle: metadata.editorialStyle, creativeResult: metadata.creativeResult,
+        clipIntent: this.intent(clip, metadata), candidate: metadata.candidate, subtitleProofreading: metadata.subtitleProofreading,
         humanReview: metadata.humanReview, corrections: metadata.candidateSubtitles?.corrections || metadata.renderedSubtitles?.corrections,
         reviewPreview: metadata.reviewPreview, editorial: metadata.editorial, diagnostics: clip.failureReason,
         activityReview: metadata.activityReview, gameReview: metadata.gameReview, source: metadata.source, kind: metadata.kind, parts })

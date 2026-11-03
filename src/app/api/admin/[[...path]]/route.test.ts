@@ -45,6 +45,31 @@ it('proxies global upload status as read-only without enabling arbitrary queue e
   expect((await forwardAdmin(request('/queues/resume'))).status).toBe(404);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+it('forwards automatic clipping progress as a local read-only observation', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ activeJobs: 1, queuedJobs: 1 }));
+  const response = await forwardAdmin(request('/queues/clips'));
+  expect(response.status).toBe(200);
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(fetchMock.mock.calls[0][0].pathname).toBe('/queues/clips');
+  expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-token');
+  for (const method of ['POST', 'PUT', 'DELETE']) expect((await forwardAdmin(request('/queues/clips', { method, body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/queues/clips', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect((await forwardAdmin(request('/queues/clips/resume'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it('streams only versioned intermediate video reads with byte ranges and local authentication', async () => {
+  const endpoint = `/queues/clips/job-1/videos/1/${'a'.repeat(64)}/media`;
+  fetchMock.mockResolvedValueOnce(new Response('2345', { status: 206, headers: { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 2-5/10' } }));
+  const response = await forwardAdmin(request(endpoint, { headers: { Range: 'bytes=2-5' } }));
+  expect(response.status).toBe(206); expect(response.headers.get('content-range')).toBe('bytes 2-5/10');
+  expect(await response.text()).toBe('2345');
+  expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Range: 'bytes=2-5', Authorization: 'Bearer test-token' });
+  for (const method of ['POST', 'PUT', 'DELETE']) expect((await forwardAdmin(request(endpoint, { method, body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request(endpoint, { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect((await forwardAdmin(request(endpoint.replace('/media', '/cover')))).status).toBe(404);
+  expect((await forwardAdmin(request(endpoint.replace('a'.repeat(64), 'invalid')))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
 it('forwards subtitle queue reads and rejects writes, cross-site access and arbitrary subpaths', async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ queuedJobs: 7 }));
   expect((await forwardAdmin(request('/queues/asr'))).status).toBe(200);

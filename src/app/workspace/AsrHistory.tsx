@@ -6,7 +6,7 @@ import { dateText, statusText, useResource } from './client';
 const time = (seconds?: number) => seconds === undefined ? '未记录' : seconds < 60 ? `${seconds.toFixed(1)} 秒`
   : `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
 const speed = (value?: number) => value === undefined ? '未记录' : `${value.toFixed(1)}×`;
-const names = { cpu_background: 'CPU 后台', gpu_low_impact: 'GPU 低占用', gpu_throughput: 'GPU 高吞吐', gpu_unknown: 'GPU（未细分）' };
+const names = { cpu_background: 'CPU 后台', gpu_ultra_low_impact: 'GPU 超低占用', gpu_low_impact: 'GPU 低占用', gpu_throughput: 'GPU 高吞吐', gpu_unknown: 'GPU（未细分）' };
 
 export function AsrHistory() {
   const [page, setPage] = useState(1);

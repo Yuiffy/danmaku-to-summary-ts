@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { AsrQueueItem, AsrQueueStatus } from '../../core/admin/asrStatus';
 import { dateText, useResource } from './client';
 import { AsrHistory } from './AsrHistory';
+import { ProgressPanel } from './ProgressPanel';
 
 function duration(seconds?: number): string {
   if (seconds === undefined) return '时间未记录';
@@ -15,6 +16,7 @@ function device(task?: AsrQueueItem): string {
   if (task.activity.asrCompleted) return '字幕已生成';
   const tier = task.activity.progress?.performanceTier;
   const name = tier === 'waiting' ? '等待资源' : tier === 'postprocessing' ? '字幕后处理'
+    : tier === 'gpu_ultra_low_impact' ? 'GPU 超低占用'
     : { cpu: 'CPU 后台 · 2 线程', gpu: task.activity.progress?.batchSeconds !== undefined
         && task.activity.progress.batchSeconds <= 30 ? 'GPU 低占用' : 'GPU 高吞吐', unknown: '设备待确认' }[task.activity.device];
   return task.activity.stale ? `最近记录：${name}` : name;
@@ -42,9 +44,9 @@ export function AsrQueue() {
   const resource = useResource<AsrQueueStatus>('/queues/asr', 5000, true), status = resource.data;
   if (!status) return <section className="upload-global asr-global" aria-label="字幕处理队列"><p>{resource.error ? `字幕队列读取失败：${resource.error}` : '正在读取字幕处理队列…'}</p>{resource.error && <button onClick={resource.refresh}>重新读取</button>}</section>;
   const current = status.queue.find(task => task.status === 'processing'), next = status.queue.find(task => task.status === 'pending');
-  return <section className="upload-global asr-global" aria-label="字幕处理队列">
-    <div className="upload-heading"><h2>字幕处理队列</h2><span className="upload-state">{status.activeJobs ? `正在处理 ${status.activeJobs} 场` : status.queuedJobs ? '等待处理' : '队列已清空'}</span><button onClick={resource.refresh} aria-label="刷新字幕处理队列">刷新</button></div>
-    {resource.error && <p className="upload-stale" role="alert">刷新失败，以下为 {dateText(status.observedAt)} 的旧状态：{resource.error}</p>}
+  return <ProgressPanel title="字幕处理队列" className="asr-global" state={status.activeJobs ? `正在处理 ${status.activeJobs} 场` : status.queuedJobs ? '等待处理' : '队列已清空'}
+    summary={<>{current && <>{current.streamerName} · {current.activity?.progress ? `${current.activity.progress.percent.toFixed(1)}% · ${duration(current.activity.progress.audioDoneSeconds)}/${duration(current.activity.progress.audioTotalSeconds)}` : device(current)}</>}<span>等待 {status.queuedJobs} 场</span></>}
+    onRefresh={resource.refresh} notice={resource.error && <p className="upload-stale" role="alert">刷新失败，以下为 {dateText(status.observedAt)} 的旧状态：{resource.error}</p>}>
     <dl className="upload-metrics asr-metrics">
       <div><dt>正在处理</dt><dd>{current?.streamerName || '暂无'}</dd><small title={current?.title}>{current?.title || '等待队列调度'}</small></div>
       <div><dt>性能档位 / 阶段</dt><dd>{current ? device(current) : '—'}</dd><small>{current ? phase(current) : '暂无运行任务'}{current?.activity?.progress?.windowSeconds ? ` · ${current.activity.progress.windowSeconds} 秒音频窗口` : ''}</small></div>
@@ -68,5 +70,5 @@ export function AsrQueue() {
       <p className="muted asr-footnote">历史失败 {status.failedJobs} 场。字幕生成后，同场总结等后续流程仍可能继续运行。设备与阶段为本场运行记录；较旧记录会标明时间，排队状态不代表进程持续在线。</p>
     </details>
     <details className="upload-expanded asr-expanded" onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary>查看历史字幕处理：档位、速度与耗时</summary>{historyOpen && <AsrHistory />}</details>
-  </section>;
+  </ProgressPanel>;
 }

@@ -86,6 +86,18 @@ function candidateFixture(plan: any = {}, complete?: FeedbackCompletion) {
 }
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 
+it('an explicit Web choice publishes the retained ordinary fallback without forcing a precision retry or new score', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  Object.assign(metadata, { uploadReady: false, precisionRequired: true, editorialStyle: { status: 'kept_original' },
+    creativeResult: { status: 'kept_original' }, curation: { status: 'budget', reason: '人工候补' } });
+  atomicJson(f.metadataPath, metadata);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toContain('--feedback-authorized');
+  expect(f.planner).not.toHaveBeenCalled();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
 it('returns the persisted boundary recovery failure to the editor after a failed candidate cut', async () => {
   const f = candidateFixture();
   f.run.mockImplementation(async (command, output) => {
@@ -153,6 +165,28 @@ it('accepts a new feedback submission after an earlier successful upload job was
   expect(retry.id).not.toBe(first.id);
   expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'approve-review', 'enqueue']);
+});
+
+it('resumes a ready revision by retrying only enqueue after the first enqueue attempt fails', async () => {
+  const f = fixture({}, undefined, true);
+  let enqueueAttempts = 0;
+  f.run.mockImplementation(async (command, output) => {
+    output(`${command.action} 完成\n`);
+    const registry = readJson(f.registryPath), clip = registry.clips['3354'];
+    if (command.action === 'approve-review') { clip.reviewPending = false; clip.status = 'review'; }
+    if (command.action === 'enqueue') {
+      enqueueAttempts++;
+      if (enqueueAttempts > 1) clip.status = 'queued';
+    }
+    atomicJson(f.registryPath, registry);
+    return command.action === 'enqueue' && enqueueAttempts === 1 ? 2 : 0;
+  });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed' });
+  const retry = f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(retry.id).not.toBeUndefined();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded', phase: '已加入投稿队列' });
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'enqueue']);
 });
 
 it('keeps queued feedback valid when another clip refreshes the batch registration timestamp', async () => {

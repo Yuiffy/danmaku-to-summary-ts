@@ -3,6 +3,7 @@ import { UploadQueueStatus } from '../../core/admin/uploadStatus';
 import { dateText, statusText, useResource } from './client';
 import { UploadObservation } from './UploadObservation';
 import { CancelUpload } from './CancelUpload';
+import { ProgressPanel } from './ProgressPanel';
 
 function waitText(at: string | undefined, observedAt: string) {
   if (!at) return '时间待定';
@@ -50,9 +51,9 @@ export function UploadQueue() {
   if (!status) return <section className="upload-global" aria-label="全局投稿进度"><p>{resource.error ? `投稿进度读取失败：${resource.error}` : '正在读取全局投稿进度…'}</p>{resource.error && <button onClick={resource.refresh}>重新读取</button>}</section>;
   const attempt = status.lastAttempt;
   const next = status.activeJobs ? '当前任务结束后，时间待定' : status.nextAttemptAt ? dateText(status.nextAttemptAt) : '暂无自动尝试计划';
-  return <section className="upload-global" aria-label="全局投稿进度">
-    <div className="upload-heading"><h2>全局投稿进度</h2><span className={`upload-state upload-state-${status.state}`}>{status.summary}</span><button onClick={resource.refresh} aria-label="刷新全局投稿进度">刷新</button></div>
-    {resource.error && <p className="upload-stale" role="alert">刷新失败，以下为 {dateText(status.observedAt)} 的旧状态：{resource.error}</p>}
+  return <ProgressPanel title="全局投稿进度" state={<span className={`upload-state-${status.state}`}>{status.summary}</span>}
+    summary={<>执行 {status.activeJobs} · 等待 {status.queuedJobs}<span>24h {status.rolling.count}/{status.rolling.limit} 条</span></>}
+    onRefresh={resource.refresh} notice={resource.error && <p className="upload-stale" role="alert">刷新失败，以下为 {dateText(status.observedAt)} 的旧状态：{resource.error}</p>}>
     <dl className="upload-metrics">
       <div><dt>排队 / 执行中</dt><dd><strong>{status.queuedJobs}</strong> / {status.activeJobs} 个任务</dd><small>共 {status.queuedClips} 个未完成视频 · 阻塞 {status.blockedJobs}</small></div>
       <div><dt>上次成功投稿</dt><dd>{dateText(status.lastSubmission?.at)}</dd><small title={status.lastSubmission?.title}>{status.lastSubmission?.title || '暂无成功记录'}</small></div>
@@ -80,5 +81,5 @@ export function UploadQueue() {
         <td>{entry.status === 'running' ? '正在执行' : entry.eligibleAt ? dateText(entry.eligibleAt) : '需要人工核对'}{entry.retryAt && <small>任务重试：{dateText(entry.retryAt)}</small>}</td>
       </tr>)}</tbody></table>{!status.queue.length && <div className="empty">暂无待处理投稿任务</div>}</div>
     </details>
-  </section>;
+  </ProgressPanel>;
 }

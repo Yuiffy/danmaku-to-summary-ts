@@ -10,7 +10,7 @@ export async function api<T = any>(endpoint: string, body?: unknown, method = 'P
   return data as T;
 }
 export function useResource<T>(endpoint: string, interval = 0, preserveOnRefresh = false) {
-  const [data, setData] = useState<T>(), [error, setError] = useState(''), [loading, setLoading] = useState(true), [version, setVersion] = useState(0);
+  const [data, setData] = useState<T>(), [error, setError] = useState(''), [status, setStatus] = useState<number>(), [loading, setLoading] = useState(true), [version, setVersion] = useState(0);
   const previousEndpoint = useRef<string>();
   const refresh = useCallback(() => setVersion(value => value + 1), []);
   useEffect(() => {
@@ -20,19 +20,28 @@ export function useResource<T>(endpoint: string, interval = 0, preserveOnRefresh
       try {
         const response = await fetch(`/api/admin${endpoint}`, { cache: 'no-store', signal: controller.signal });
         const value = await response.json();
-        if (!response.ok) throw new Error(value.error || '读取失败');
-        if (current) { setData(value); setError(''); }
-      } catch (reason) { if (current) setError(reason instanceof Error ? reason.message : '读取失败'); }
+        if (!response.ok) {
+          const error = new Error(value.error || '读取失败') as Error & { status?: number };
+          error.status = response.status;
+          throw error;
+        }
+        if (current) { setData(value); setError(''); setStatus(response.status); }
+      } catch (reason) {
+        if (current) {
+          setError(reason instanceof Error ? reason.message : '读取失败');
+          setStatus(typeof reason === 'object' && reason && 'status' in reason ? Number((reason as { status?: unknown }).status) : undefined);
+        }
+      }
       finally { if (current) setLoading(false); }
     };
     setLoading(true);
     if (!preserveOnRefresh || previousEndpoint.current !== endpoint) setData(undefined);
     previousEndpoint.current = endpoint;
-    setError(''); void read();
+    setError(''); setStatus(undefined); void read();
     const timer = interval ? setInterval(() => void read(), interval) : undefined;
     return () => { current = false; controller.abort(); if (timer) clearInterval(timer); };
   }, [endpoint, interval, version, preserveOnRefresh]);
-  return { data, error, loading, refresh };
+  return { data, error, status, loading, refresh };
 }
 export function statusText(status: string): string {
   return ({ review: '待审核', needs_review: '待核对', pending_preflight: '待预审', pending_cut: '待制作', pending_review: '待审核',
