@@ -8,11 +8,12 @@
 
 | 能力 | 本项目入口 / 所有者 | 当前实现 |
 | --- | --- | --- |
-| 鹿饼通知、评论回复、点赞、视频／动态上下文、热评及佩戴粉丝牌 | `services/bilibili/comment-replies/CommentApi.ts` | 固定 B 站 HTTP 适配器，`node-fetch`；没有依赖 Python SDK |
+| 鹿饼通知、评论回复、点赞、私信、生图图片上传、视频／动态上下文、热评及佩戴粉丝牌 | `services/bilibili/comment-replies/CommentApi.ts` | 固定 B 站 HTTP 适配器，`node-fetch`；私信会话与图片发布使用固定 WBI/网页接口；没有依赖 Python SDK |
 | 评论公开可见性诊断 | `tools/bilibili/inspectComment.ts`、`comment-replies/CommentVisibility.ts` | 固定评论列表 GET，匿名默认、登录对照可选；不调用模型、不发布、不改队列 |
 | 总结评论、动态详情 | `BilibiliAPIService.ts`、`scripts/bilibili_comment.py`、`bilibili_dynamic_api.py` | Node 服务及 Python SDK 桥；保留 CLI / stdout / 线程契约 |
 | 投稿、封面、稿件编辑 | `scripts/batch_upload.py`、`bilibili_upload.py`、`clip_media_replace.py`、`update_cover.py` | Python `bilibili-api-python`；部分依赖上传器私有接口 |
 | 合集编辑、账号投稿权限 | `scripts/bilibili_collection_edit.py`、`bilibili_upload_capabilities.py` | 独立网页接口适配器，沿用现有回执和权限预检 |
+| 同题检索、平台字幕与点赞/收藏/转发动态 | `workflows/clipping/peerCoverageApi.ts` | 固定网页接口适配器；WBI 搜索/播放器、aid/cid/UP 身份绑定、字幕 CDN 不带账号 Cookie；转发绑定原作者/BV/aid，保存字符串动态回执；风险码停后续请求，不重放未知写入 |
 | 直播房间 / 弹幕信息 | `scripts/bilibili_room_info.py`、`bilibili_danmu_info.py` | Python SDK；另有本项目直播服务的 HTTP/WebSocket 适配器 |
 
 ## 上游索引

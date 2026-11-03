@@ -1,6 +1,6 @@
 import { CommentEvent, CommentPlatformBlocked, CommentReplyConfig, LIMITS, COMMENT_TOOL_LIMITS, QUOTA_NOTICE, SAFETY_NOTICE, shanghaiDay } from './CommentPolicy';
 import { newCommentState } from './CommentState';
-import { CommentWorker } from './CommentWorker';
+import { CommentWorker, dynamicCommentUrl, formatImageCommentAnswer, imageRequestText } from './CommentWorker';
 
 const config: CommentReplyConfig = { botUid: '99', unlimitedUids: ['14279'], credentialConfigPath: 'config/production.json',
   providerConfigPath: 'config/production.json', dailyTokenBudget: 204800, maxQueue: 200, maxUserQueue: 10, pollIntervalMs: 30000 };
@@ -14,6 +14,14 @@ function setup(overrides: Partial<CommentReplyConfig> = {}) {
     root: id, parent: id, text, createdAt: now, trigger: 'mention' });
   return { worker, state, save, answer, send, event, advance: (ms = 5000) => { now += ms; }, now: () => now };
 }
+
+test('formats dynamic image receipts with the original request and compact reply URL', () => {
+  const event: CommentEvent = { key: '17:10:200', uid: '14279', oid: '1073543151725051921', type: 17,
+    root: '318812501937', parent: '318812501937', text: '@鹿饼Shikamochi 帮我生成一张图：夜空中的猫', authorName: '带鱼', createdAt: Date.now() };
+  expect(imageRequestText(event.text)).toBe('夜空中的猫');
+  expect(dynamicCommentUrl(event)).toBe('https://t.bilibili.com/1073543151725051921?comment_on=1&comment_root_id=318812501937&type=2#reply318812501937');
+  expect(formatImageCommentAnswer(event)).toBe('这是@带鱼 在 https://t.bilibili.com/1073543151725051921?comment_on=1&comment_root_id=318812501937&type=2#reply318812501937 点播的“夜空中的猫”图片');
+});
 
 test('tool mode reserves all turns before IO and preserves the global five-start ceiling after failure', async () => {
   const f = setup({ agentTools: true });
@@ -211,4 +219,18 @@ test('a request waiting for model budget does not block another user\'s free quo
   await f.worker.admit(f.event('1', '1')); await f.worker.admit(f.event('2', '2')); await f.worker.tick();
   expect(f.answer).not.toHaveBeenCalled(); expect(f.state.jobs[0].status).toBe('queued');
   expect((f.send.mock.calls[0] as unknown as [CommentEvent, string])[1]).toBe(QUOTA_NOTICE);
+});
+
+test('image requests use trusted and other-user ledgers without spending text quota', async () => {
+  const f = setup({ images: { enabled: true, model: 'gpt-image-2', quality: 'high', timeoutMs: 1000,
+    trustedUids: ['1954091502', '14279'], trustedHourlyLimit: 2, trustedDailyLimit: 2, otherUserDailyLimit: 1, otherGlobalDailyLimit: 2 } });
+  const image = jest.fn(async (event: CommentEvent) => ({ file: `C:/runtime/${event.key}.png`, model: 'gpt-image-2', sha256: 'a'.repeat(64), prompt: event.text }));
+  const worker = new CommentWorker({ ...config, images: f.worker.config.images }, f.state, { save: f.save, answer: f.answer, send: f.send, image, now: f.now });
+  await worker.admit(f.event('1', '1', '生成一张图')); await worker.tick();
+  expect(image).toHaveBeenCalledTimes(1); expect(f.answer).not.toHaveBeenCalled(); expect(f.state.days[shanghaiDay(f.now())].tokens).toBe(0);
+  f.advance(); await worker.tick(); expect(f.send).toHaveBeenCalledTimes(1); expect(f.send.mock.calls[0][3]).toContain('C:/runtime');
+  await worker.admit(f.event('1', '2', '再生成一张图')); f.advance(); await worker.tick();
+  expect(image).toHaveBeenCalledTimes(1); expect(f.state.jobs[1].answer).toContain('已经生过一张图');
+  await worker.admit(f.event('1954091502', '3', '生成一张图')); f.advance(); await worker.tick(); f.advance(); await worker.tick();
+  expect(image).toHaveBeenCalledTimes(2); expect(f.state.days[shanghaiDay(f.now())].images?.total).toBe(1);
 });

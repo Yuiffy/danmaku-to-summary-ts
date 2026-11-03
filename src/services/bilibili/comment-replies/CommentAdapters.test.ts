@@ -1,7 +1,11 @@
 import fetch from 'node-fetch';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import sharp from 'sharp';
 import { CommentApi, parseBilibiliJson } from './CommentApi';
 import { createCommentAnswerer } from './CommentAgent';
-import { notificationEvent, LIMITS, validateCommentConfig, commentTokenReservation } from './CommentPolicy';
+import { notificationEvent, privateMessageEvent, LIMITS, validateCommentConfig, commentTokenReservation } from './CommentPolicy';
 import { pollCommentInbox } from './CommentInbox';
 import { newCommentState } from './CommentState';
 import { parseCommentArgs } from '../../../tools/bilibili/commentReplies';
@@ -77,6 +81,73 @@ test('video publication uses its verified aid as web context and preserves the w
   await api.send({ ...event, type: 17, trigger: 'reply' }, '今天也支持小岁！', new AbortController().signal);
   expect(transport.mock.calls[1][1].headers.Referer).toBe('https://www.bilibili.com/');
   expect(transport.mock.calls[1][1].body.has('gaia_source')).toBe(false);
+});
+
+test('nested dynamic image replies become a top-level same-dynamic comment with a real @ mention', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'comment-api-image-'));
+  const file = path.join(directory, 'generated.png');
+  await fs.writeFile(file, await sharp({ create: { width: 8, height: 4, channels: 4, background: '#aabbcc' } }).png().toBuffer());
+  try {
+    const transport = jest.fn()
+      .mockResolvedValueOnce(response({ code: 0, data: { image_url: 'https://i0.hdslb.com/bfs/new_dyn/fixture.png', image_width: 8, image_height: 4, img_size: 1 } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { wbi_img: {
+        img_url: `https://i0.hdslb.com/bfs/wbi/${'a'.repeat(32)}.png`, sub_url: `https://i0.hdslb.com/bfs/wbi/${'b'.repeat(32)}.png` } } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { rpid_str: '98765' } }));
+    const api = new CommentApi('99', () => cookie, transport as unknown as typeof fetch);
+    const event = { ...notificationEvent('reply', row('200', '14279'), '99')!, authorName: '带鱼' };
+    await expect(api.send(event, '图片来啦～', new AbortController().signal, file)).resolves.toBe('98765');
+    expect(transport).toHaveBeenCalledTimes(3);
+    const [url, options] = transport.mock.calls[2];
+    expect(url).toMatch(/^https:\/\/api\.bilibili\.com\/x\/v2\/reply\/add\?/u);
+    const body = Object.fromEntries(options.body as URLSearchParams);
+    expect(body).toMatchObject({ oid: event.oid, type: '17', message: '@带鱼 图片来啦～',
+      gaia_source: 'main_web', statistics: JSON.stringify({ appId: 100, platform: 5 }) });
+    expect(body.root).toBeUndefined();
+    expect(body.parent).toBeUndefined();
+    expect(new URL(url).searchParams.get('w_rid')).toMatch(/^[a-f0-9]{32}$/u);
+    expect(JSON.parse(body.at_name_to_mid)).toEqual({ '带鱼': '14279' });
+    expect(JSON.parse(body.pictures)).toEqual([{ img_src: 'https://i0.hdslb.com/bfs/new_dyn/fixture.png', img_width: 8, img_height: 4, img_size: 1 }]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('formatted dynamic image receipts keep the request and use the compact comment URL without duplicate @', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'comment-api-image-format-'));
+  const file = path.join(directory, 'generated.png');
+  await fs.writeFile(file, await sharp({ create: { width: 8, height: 4, channels: 4, background: '#aabbcc' } }).png().toBuffer());
+  try {
+    const transport = jest.fn()
+      .mockResolvedValueOnce(response({ code: 0, data: { image_url: 'https://i0.hdslb.com/bfs/new_dyn/fixture.png', image_width: 8, image_height: 4, img_size: 1 } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { wbi_img: {
+        img_url: `https://i0.hdslb.com/bfs/wbi/${'a'.repeat(32)}.png`, sub_url: `https://i0.hdslb.com/bfs/wbi/${'b'.repeat(32)}.png` } } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { rpid_str: '98766' } }));
+    const api = new CommentApi('99', () => cookie, transport as unknown as typeof fetch);
+    const event = { ...notificationEvent('reply', row('200', '14279', '帮我生成一张图：夜空中的猫'), '99')!, authorName: '带鱼' };
+    const answer = '这是@带鱼 在 https://t.bilibili.com/1073543151725051921?comment_on=1&comment_root_id=100&type=2#reply100 点播的“夜空中的猫”图片';
+    await expect(api.send(event, answer, new AbortController().signal, file)).resolves.toBe('98766');
+    const body = Object.fromEntries(transport.mock.calls[2][1].body as URLSearchParams);
+    expect(body.message).toBe(answer);
+    expect(body.message).not.toContain('share_tag');
+    expect(JSON.parse(body.at_name_to_mid)).toEqual({ '带鱼': '14279' });
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('private message publication uses the fixed web-im endpoint and WBI query', async () => {
+  const transport = jest.fn()
+    .mockResolvedValueOnce(response({ code: 0, data: { wbi_img: {
+      img_url: `https://i0.hdslb.com/bfs/wbi/${'a'.repeat(32)}.png`, sub_url: `https://i0.hdslb.com/bfs/wbi/${'b'.repeat(32)}.png` } } }))
+    .mockResolvedValueOnce(response({ code: 0, data: { msg_key: '12345' } }));
+  const api = new CommentApi('99', () => cookie, transport as unknown as typeof fetch);
+  const event = privateMessageEvent({ sender_uid: '1954091502', msg_key: '67890', timestamp: 1792627200,
+    content: JSON.stringify({ content: '生成一张图' }) }, '99', ['1954091502'])!;
+  await expect(api.send(event, '图片来啦～', new AbortController().signal)).resolves.toBe('12345');
+  const [url, options] = transport.mock.calls[1];
+  expect(url).toMatch(/^https:\/\/api\.vc\.bilibili\.com\/web_im\/v1\/web_im\/send_msg\?/u);
+  expect(new URL(url).searchParams.get('w_rid')).toMatch(/^[a-f0-9]{32}$/u);
+  expect(Object.fromEntries(options.body)).toMatchObject({ 'msg[sender_uid]': '99', 'msg[receiver_id]': '1954091502', 'msg[msg_type]': '1' });
 });
 
 test('single-turn agent sends only bounded untrusted text, no tools/history/credentials and rejects tool or unsafe output', async () => {

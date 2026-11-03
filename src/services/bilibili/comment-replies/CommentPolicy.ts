@@ -17,8 +17,22 @@ export interface CommentReplyConfig {
     suiUid: string; relatedUids: string[];
     hourly: Record<FanTier, number>; daily: Record<FanTier, number>;
   };
+  images?: CommentImageConfig;
 }
 export type FanTier = 'sui' | 'related' | 'other';
+export interface CommentImageConfig {
+  enabled: boolean;
+  model: string;
+  quality: 'low' | 'medium' | 'high';
+  timeoutMs: number;
+  registryConfigPath?: string;
+  characters?: Array<{ name: string; aliases: string[]; referenceImage: string; description: string; baseCharacter?: string; skin?: string }>;
+  trustedUids: string[];
+  trustedHourlyLimit: number;
+  trustedDailyLimit: number;
+  otherUserDailyLimit: number;
+  otherGlobalDailyLimit: number;
+}
 export interface CommentAudience {
   status: 'available' | 'unavailable';
   wearing?: { anchorUid: string; name: string };
@@ -82,6 +96,15 @@ export function validateCommentConfig(config: CommentReplyConfig): void {
     [fan.hourly, fan.daily].some(limits => !limits || ['sui', 'related', 'other'].some(tier =>
       !Number.isInteger(limits[tier as FanTier]) || limits[tier as FanTier] < 1 || limits[tier as FanTier] > 1000) ||
       limits.sui < limits.related || limits.related < limits.other))) throw new Error('Invalid comment fan quotas');
+  const images = config.images;
+  if (images && (typeof images.enabled !== 'boolean' || !/^gpt-image-[\w.-]{1,60}$/u.test(images.model) ||
+    !['low', 'medium', 'high'].includes(images.quality) || !Number.isInteger(images.timeoutMs) || images.timeoutMs < 1000 || images.timeoutMs > 900000 ||
+    !Array.isArray(images.trustedUids) || images.trustedUids.length > 20 || images.trustedUids.some(uid => typeof uid !== 'string' || !positiveId(uid)) ||
+    !Number.isInteger(images.trustedHourlyLimit) || images.trustedHourlyLimit < 1 || images.trustedHourlyLimit > 1000 ||
+    !Number.isInteger(images.trustedDailyLimit) || images.trustedDailyLimit < 1 || images.trustedDailyLimit > 1000 ||
+    !Number.isInteger(images.otherUserDailyLimit) || images.otherUserDailyLimit < 1 || images.otherUserDailyLimit > 10 ||
+    !Number.isInteger(images.otherGlobalDailyLimit) || images.otherGlobalDailyLimit < 1 || images.otherGlobalDailyLimit > 10000 ||
+    images.registryConfigPath !== undefined && (typeof images.registryConfigPath !== 'string' || !images.registryConfigPath.trim()))) throw new Error('Invalid comment image configuration');
 }
 
 export function unsafeComment(text: string): boolean {
@@ -98,7 +121,8 @@ export function publishableAnswer(value: unknown): string | undefined {
 }
 
 export interface CommentEvent {
-  trigger?: 'mention' | 'reply';
+  trigger?: 'mention' | 'reply' | 'private';
+  channel?: 'comment' | 'private';
   key: string;
   uid: string;
   oid: string;
@@ -130,8 +154,22 @@ export function notificationEvent(kind: 'reply' | 'at', row: any, botUid: string
   const text = item.source_content || (kind === 'at' && item.type === 'dynamic' ? item.title : '');
   if (typeof text !== 'string' || !text.trim() || text.length > 20000) return undefined;
   const parent = source || '0';
-  return { key: `${type}:${oid}:${parent === '0' ? `dynamic-${uid}` : parent}`, uid, oid, type, trigger: mentioned ? 'mention' : 'reply',
+  return { key: `${type}:${oid}:${parent === '0' ? `dynamic-${uid}` : parent}`, uid, oid, type, channel: 'comment', trigger: mentioned ? 'mention' : 'reply',
     root: root || (kind === 'at' ? target : undefined) || source || '0', parent,
     text: Array.from(text.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, ' ')).slice(0, LIMITS.inputChars).join('').trim(),
     ...(typeof row.user.nickname === 'string' ? { authorName: Array.from(row.user.nickname.replace(/[\p{Cc}\p{Cf}]/gu, ' ')).slice(0, 40).join('') } : {}), createdAt };
+}
+
+export function privateMessageEvent(row: any, botUid: string, allowedUids: readonly string[]): CommentEvent | undefined {
+  const uid = positiveId(row?.sender_uid), key = positiveId(row?.msg_key), createdAt = Number(row?.timestamp) * 1000;
+  if (!uid || uid === botUid || !allowedUids.includes(uid) || !key || !Number.isSafeInteger(createdAt) || createdAt <= 0) return undefined;
+  let text = '';
+  try {
+    const content = typeof row.content === 'string' ? JSON.parse(row.content) : row.content;
+    text = typeof content?.content === 'string' ? content.content : '';
+  } catch { return undefined; }
+  text = Array.from(text.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, ' ')).slice(0, LIMITS.inputChars).join('').trim();
+  if (!text) return undefined;
+  return { key: `private:${key}`, uid, oid: uid, type: 0, channel: 'private', trigger: 'private', root: '0', parent: '0', text,
+    ...(typeof row.sender_nickname === 'string' ? { authorName: row.sender_nickname.slice(0, 40) } : {}), createdAt };
 }

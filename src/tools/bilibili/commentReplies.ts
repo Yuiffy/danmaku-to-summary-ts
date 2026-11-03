@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { ConfigObject, loadConfigLayers, readJsonObject } from '../../core/config/ConfigLayers';
 import { getProjectRoot } from '../../core/config/ProjectPaths';
 import { questionProviderSettings } from '../../services/live-vote/questions/DaiyuQuestionClient';
@@ -17,6 +18,9 @@ import { createProjectReader } from '../../services/bilibili/comment-replies/Com
 import { createCommentVisualReader } from '../../services/bilibili/comment-replies/CommentVisual';
 import { alertCommentPause, commentPauseDiagnostic } from '../../services/bilibili/comment-replies/CommentAlerts';
 import { createCommentPauseNotify } from '../../services/bilibili/comment-replies/CommentAlertRuntime';
+import { createQQImageGenerator } from '../../services/qqbot/QQImage';
+import type { QQImageConfig } from '../../services/qqbot/QQImagePolicy';
+import type { QQRequest } from '../../services/qqbot/QQPolicy';
 
 export interface CommentCliOptions { config: string; mode: 'check' | 'dry-run' | 'live' | 'status' | 'resume' }
 export function parseCommentArgs(args: string[]): CommentCliOptions {
@@ -70,6 +74,12 @@ export async function runCommentReplies(args: string[]): Promise<void> {
   const api = new CommentApi(config.botUid, cookie);
   api.checkCredentials();
   const settings = questionProviderSettings(loadConfigLayers({ configPath: config.providerConfigPath }));
+  const imageGenerator = options.mode === 'live' && config.images?.enabled ? createQQImageGenerator(root, config.botUid, {
+    ...config.images,
+    dailyLimit: config.images.otherGlobalDailyLimit + config.images.trustedDailyLimit * config.images.trustedUids.length,
+    userDailyLimit: config.images.trustedDailyLimit,
+    background: true
+  } as QQImageConfig, settings) : undefined;
   const projects = config.projectSources?.length ? createProjectReader(root, config.projectSources) : undefined;
   const knowledge = config.knowledge && options.mode !== 'dry-run' ? createCommentKnowledge(
     await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)), config.knowledge,
@@ -80,6 +90,7 @@ export async function runCommentReplies(args: string[]): Promise<void> {
   }
   const state = await store.open();
   const feedback = new CommentFeedbackStore(path.join(root, 'data/runtime/comment-feedback', config.botUid));
+  state.privateSessions ||= {};
   const worker = new CommentWorker(config, state, {
     now: Date.now, save: value => store.save(value),
     answer: options.mode === 'live' ? createCommentAnswerer(settings, undefined, knowledge,
@@ -94,7 +105,10 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     collectFeedback: options.mode === 'live' ? (event, note) => feedback.collect(event, note) : undefined,
     audience: (uid, signal) => api.audience(uid, signal),
     like: options.mode === 'live' ? (event, signal) => api.like(event, signal) : undefined,
-    send: options.mode === 'live' ? (event, answer, signal) => api.send(event, answer, signal) : async event => {
+    image: imageGenerator ? (event, signal) => imageGenerator({ key: createHash('sha256').update(event.key).digest('hex'),
+      user: createHash('sha256').update(event.uid).digest('hex'), scope: 'group', targetId: event.oid, msgId: event.key,
+      text: `确认按描述生图：${event.text}`, createdAt: event.createdAt } as QQRequest, signal) : undefined,
+    send: options.mode === 'live' ? (event, answer, signal, image) => api.send(event, answer, signal, image) : async event => {
       console.info(JSON.stringify({ preview: true, key: event.key, uid: event.uid })); return '1';
     }
   });
@@ -105,7 +119,11 @@ export async function runCommentReplies(args: string[]): Promise<void> {
       admit: event => {
         if (stopping) throw new Error('Comment inbox stopped before admission');
         return worker.admit(event);
-      }, save: value => store.save(value) })
+      }, save: value => store.save(value) }).then(async () => {
+        if (!config.images?.enabled || stopping) return;
+        for (const event of await api.privateEvents(config.images.trustedUids, state.privateSessions!, new AbortController().signal)) await worker.admit(event);
+        await store.save(state);
+      })
   });
   let phase: 'poll' | 'work' | 'startup' = 'startup';
   const alert = (diagnostic: Parameters<typeof alertCommentPause>[1]) => options.mode === 'live' ? alertCommentPause(state, diagnostic, {

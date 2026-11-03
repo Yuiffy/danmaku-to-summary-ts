@@ -22,6 +22,8 @@ export interface CommentJob {
   processingAt?: number;
   completedAt?: number;
   likeStatus?: 'pending' | 'liked' | 'unknown' | 'skipped';
+  imageRequested?: boolean;
+  image?: { file: string; model: string; sha256: string; prompt: string };
 }
 export interface FeedCheckpoint {
   head?: string;
@@ -32,7 +34,9 @@ export interface CommentState {
   botUid: string;
   jobs: CommentJob[];
   feeds: Record<'reply' | 'at', FeedCheckpoint>;
-  days: Record<string, { tokens: number; users: Record<string, { count: number; notice: boolean }> }>;
+  privateSessions?: Record<string, { seqno: number; baseline?: boolean }>;
+  days: Record<string, { tokens: number; users: Record<string, { count: number; notice: boolean }>; images?: { total: number; users: Record<string, number> } }>;
+  imageWindows?: Record<string, { starts: number[] }>;
   starts: number[];
   rotation: string[];
   lastSentAt: number;
@@ -60,9 +64,15 @@ function validateState(state: CommentState, botUid: string): void {
   for (const [day, usage] of Object.entries(state.days)) {
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(day) || !usage || !timestamp(usage.tokens) || !usage.users ||
         typeof usage.users !== 'object' || Array.isArray(usage.users)) throw new Error('Invalid comment budget state');
+    if (usage.images !== undefined && (!usage.images || !timestamp(usage.images.total) || !usage.images.users ||
+      typeof usage.images.users !== 'object' || Array.isArray(usage.images.users))) throw new Error('Invalid comment image budget state');
     for (const [uid, user] of Object.entries(usage.users)) {
       if (!positiveId(uid) || !user || !timestamp(user.count) || typeof user.notice !== 'boolean') throw new Error('Invalid comment user quota state');
     }
+    for (const [uid, count] of Object.entries(usage.images?.users || {})) if (!positiveId(uid) || !timestamp(count)) throw new Error('Invalid comment image user quota state');
+  }
+  if (state.privateSessions !== undefined) for (const [uid, session] of Object.entries(state.privateSessions)) {
+    if (!positiveId(uid) || !session || !Number.isSafeInteger(session.seqno) || session.seqno < 0 || session.baseline !== undefined && typeof session.baseline !== 'boolean') throw new Error('Invalid private session state');
   }
   if (state.userWindows !== undefined) {
     if (!state.userWindows || typeof state.userWindows !== 'object' || Array.isArray(state.userWindows)) throw new Error('Invalid comment hourly state');
@@ -72,11 +82,18 @@ function validateState(state: CommentState, botUid: string): void {
         window.noticeUntil !== undefined && !timestamp(window.noticeUntil)) throw new Error('Invalid comment hourly state');
     }
   }
+  if (state.imageWindows !== undefined) {
+    if (!state.imageWindows || typeof state.imageWindows !== 'object' || Array.isArray(state.imageWindows)) throw new Error('Invalid comment image hourly state');
+    for (const [uid, window] of Object.entries(state.imageWindows)) {
+      if (!positiveId(uid) || !window || !Array.isArray(window.starts) || window.starts.length > 1000 ||
+        window.starts.some(at => !timestamp(at)) || window.starts.some((at, i) => i > 0 && at < window.starts[i - 1])) throw new Error('Invalid comment image hourly state');
+    }
+  }
   const keys = new Set<string>();
   for (const job of state.jobs) {
     const event = job?.event;
     if (!event || typeof event.key !== 'string' || !event.key || event.key.length > 120 || keys.has(event.key) ||
-        !positiveId(event.uid) || !positiveId(event.oid) || ![1, 11, 12, 17].includes(event.type) ||
+        !positiveId(event.uid) || !positiveId(event.oid) || !(event.channel === 'private' ? event.type === 0 : [1, 11, 12, 17].includes(event.type)) ||
         ![event.root, event.parent].every(id => id === '0' || positiveId(id)) || event.parent === '0' && event.root !== '0' ||
         event.parent !== '0' && event.root === '0' || typeof event.text !== 'string' || Array.from(event.text).length > LIMITS.inputChars ||
         !timestamp(event.createdAt) || !timestamp(job.admittedAt) ||
@@ -88,9 +105,13 @@ function validateState(state: CommentState, botUid: string): void {
         job.audience !== undefined && (!['available', 'unavailable'].includes(job.audience.status) ||
           job.audience.wearing !== undefined && (!positiveId(job.audience.wearing.anchorUid) ||
             typeof job.audience.wearing.name !== 'string' || job.audience.wearing.name.length > 40)) ||
-        event.trigger !== undefined && !['mention', 'reply'].includes(event.trigger) ||
+        event.trigger !== undefined && !['mention', 'reply', 'private'].includes(event.trigger) ||
+        event.channel !== undefined && !['comment', 'private'].includes(event.channel) ||
         job.likeStatus !== undefined && !['pending', 'liked', 'unknown', 'skipped'].includes(job.likeStatus) ||
         job.processingAt !== undefined && !timestamp(job.processingAt) || job.completedAt !== undefined && !timestamp(job.completedAt) ||
+        job.imageRequested !== undefined && typeof job.imageRequested !== 'boolean' ||
+        job.image !== undefined && (!job.image || typeof job.image.file !== 'string' || !job.image.file || typeof job.image.model !== 'string' ||
+          !/^[a-f0-9]{64}$/u.test(job.image.sha256) || typeof job.image.prompt !== 'string' || job.image.prompt.length > 24000) ||
         !['queued', 'generating', 'ready', 'sending', 'sent', 'unknown', 'failed', 'expired', 'skipped'].includes(job.status) ||
         job.quotaDay !== undefined && !/^\d{4}-\d{2}-\d{2}$/u.test(job.quotaDay) ||
         ['ready', 'sending'].includes(job.status) && job.answer !== QUOTA_NOTICE && job.answer !== SAFETY_NOTICE && !publishableAnswer(job.answer)) {

@@ -2,7 +2,7 @@ export interface AdminCommentReply {
   key: string;
   uid: string;
   type: number;
-  trigger: 'mention' | 'reply' | 'legacy';
+  trigger: 'mention' | 'reply' | 'private' | 'legacy';
   status: string;
   text: string;
   answer?: string;

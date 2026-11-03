@@ -4,17 +4,42 @@ import { CommentJob, CommentState } from './CommentState';
 import { HOUR_MS, quotaExceeded, reserveCommentQuota } from './CommentQuota';
 import { CommentAnswer, validCommentFeedback } from './CommentFeedback';
 import { CommentFeedbackNote } from '../../../core/admin/commentFeedback';
+import { qqImageRequested } from '../../qqbot/QQImagePolicy';
+import { commentImageLimitMessage, reserveCommentImage } from './CommentImageQuota';
 
 export interface CommentAdapters {
   save(state: CommentState): Promise<void>;
   answer(text: string, signal: AbortSignal, event?: CommentEvent, audience?: CommentAudience): Promise<string | CommentAnswer>;
   collectFeedback?(event: CommentEvent, feedback: CommentFeedbackNote): Promise<void>;
-  send(event: CommentEvent, answer: string, signal: AbortSignal): Promise<string>;
+  send(event: CommentEvent, answer: string, signal: AbortSignal, image?: string): Promise<string>;
+  image?(event: CommentEvent, signal: AbortSignal): Promise<{ file: string; model: string; sha256: string; prompt: string }>;
   now(): number;
   like?(event: CommentEvent, signal: AbortSignal): Promise<void>;
   audience?(uid: string, signal: AbortSignal): Promise<CommentAudience>;
 }
 const active = (job: CommentJob) => ['queued', 'generating', 'ready', 'sending'].includes(job.status);
+
+/** Keep the public image receipt short while retaining the user's actual request. */
+export function imageRequestText(text: string): string {
+  const clean = text.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  const withoutMentions = clean.replace(/@[\p{L}\p{N}_-]{1,40}/gu, ' ').replace(/\s+/gu, ' ').trim();
+  const request = withoutMentions.replace(/^(?:(?:请|麻烦|可以)?\s*(?:帮我|给我)?\s*(?:生图|生成(?:一张|一幅)?(?:图|图片)?|画(?:一张|一幅)?(?:图|图片)?|绘制(?:一张|一幅)?(?:图|图片)?)(?:\s*[:：,，、]?\s*)?)/iu, '').trim();
+  const value = (request || withoutMentions).replace(/["“”]/gu, '').replace(/\s+/gu, ' ').trim();
+  return Array.from(value || '这张图').slice(0, 110).join('');
+}
+
+export function dynamicCommentUrl(event: CommentEvent): string | undefined {
+  if (event.channel === 'private' || ![11, 17].includes(event.type)) return undefined;
+  const root = positiveId(event.root) || positiveId(event.parent);
+  if (!root || !positiveId(event.oid)) return undefined;
+  return `https://t.bilibili.com/${event.oid}?comment_on=1&comment_root_id=${root}&type=2#reply${root}`;
+}
+
+export function formatImageCommentAnswer(event: CommentEvent): string {
+  const name = event.authorName?.trim(), url = dynamicCommentUrl(event);
+  if (!name || !url) return '图片来啦～';
+  return `这是@${name} 在 ${url} 点播的“${imageRequestText(event.text)}”图片`;
+}
 
 /** No timers/HTTP/files here; the CLI is the sole serialized owner of all operations. */
 export class CommentWorker {
@@ -34,12 +59,14 @@ export class CommentWorker {
         event.type === 1 && event.trigger !== 'mention' ||
         event.createdAt < now - LIMITS.maxAgeMs || event.createdAt > now + 60000) return 'ignored';
     if (this.state.jobs.some(job => job.event.key === event.key)) return 'duplicate';
+    if (event.channel === 'private' && (!this.config.images?.enabled || !this.config.images.trustedUids.includes(event.uid) || !qqImageRequested(event.text))) return 'ignored';
     const usage = this.state.days[shanghaiDay(now)]?.users[event.uid];
     if (!this.config.fanQuota && !this.config.unlimitedUids.includes(event.uid) && usage?.notice && usage.count >= LIMITS.dailyUserReplies) return 'ignored';
     const queue = this.state.jobs.filter(active);
     if (queue.length >= this.config.maxQueue || queue.filter(job => job.event.uid === event.uid).length >= this.config.maxUserQueue ||
         this.state.jobs.length >= LIMITS.maxTracked) return 'full';
-    this.state.jobs.push({ event: { ...event }, status: 'queued', admittedAt: now });
+    this.state.jobs.push({ event: { ...event }, status: 'queued', admittedAt: now,
+      ...(this.config.images?.enabled && qqImageRequested(event.text) ? { imageRequested: true } : {}) });
     if (!this.state.rotation.includes(event.uid)) this.state.rotation.push(event.uid);
     await this.adapters.save(this.state);
     return 'accepted';
@@ -91,13 +118,17 @@ export class CommentWorker {
       window.starts = window.starts.filter(at => at > now - HOUR_MS);
       if (!window.starts.length && (window.noticeUntil || 0) <= now) delete state.userWindows![uid];
     }
+    for (const [uid, window] of Object.entries(state.imageWindows || {})) {
+      window.starts = window.starts.filter(at => at > now - HOUR_MS);
+      if (!window.starts.length) delete state.imageWindows![uid];
+    }
     if (state.paused || now - state.lastSentAt < LIMITS.sendIntervalMs) return;
     const job = this.choose(now);
     if (!job) return;
-    if (job.event.type === 1 && job.event.trigger !== 'mention') {
+    if (job.event.channel !== 'private' && job.event.type === 1 && job.event.trigger !== 'mention') {
       job.status = 'skipped'; this.served(job); await this.adapters.save(state); return;
     }
-    if (job.status === 'queued' && !job.audience && this.adapters.audience) {
+    if (job.status === 'queued' && !job.imageRequested && job.event.channel !== 'private' && !job.audience && this.adapters.audience) {
       this.controller = new AbortController();
       const timeout = setTimeout(() => this.controller?.abort(), 5000);
       try { job.audience = await this.adapters.audience(job.event.uid, this.controller.signal); }
@@ -110,12 +141,30 @@ export class CommentWorker {
     }
     now = this.adapters.now();
     const day = state.days[shanghaiDay(now)] ||= { tokens: 0, users: {} };
+    if (job.status === 'queued' && job.imageRequested) {
+      if (!this.config.images?.enabled || !this.adapters.image || unsafeComment(job.event.text)) {
+        job.status = 'failed'; job.completedAt = now; this.served(job); await this.adapters.save(state); return;
+      }
+      const quota = reserveCommentImage(this.config.images, state, job, now);
+      if (!quota.allowed) {
+        job.answer = commentImageLimitMessage('reason' in quota ? quota.reason : 'user_daily'); job.status = 'ready'; job.quotaDay = shanghaiDay(now);
+      } else {
+        job.status = 'generating'; job.processingAt = now; await this.adapters.save(state);
+        this.controller = new AbortController();
+        const timeout = setTimeout(() => this.controller?.abort(), this.config.images.timeoutMs);
+        try { job.image = await this.adapters.image(job.event, this.controller.signal); job.answer = formatImageCommentAnswer(job.event); job.status = 'ready'; }
+        catch { job.status = 'failed'; job.completedAt = this.adapters.now(); this.served(job); }
+        finally { clearTimeout(timeout); this.controller = undefined; }
+      }
+      await this.adapters.save(state);
+      if (job.status === 'failed') return;
+    }
     // A ready notice from yesterday must not tell someone their fresh quota is exhausted.
     if (job.status === 'ready' && job.notice && (this.config.unlimitedUids.includes(job.event.uid) ||
       job.quotaDay !== shanghaiDay(now) || job.noticeUntil !== undefined && job.noticeUntil <= now)) {
       job.status = 'queued'; delete job.answer; delete job.notice; delete job.quotaDay; delete job.noticeUntil;
     }
-    if (job.status === 'queued') {
+    if (job.status === 'queued' && !job.imageRequested) {
       const unsafe = unsafeComment(job.event.text);
       if (!quotaExceeded(this.config, state, job, now) && !unsafe && (state.starts.length + commentModelSlots(this.config) > LIMITS.startsPerMinute ||
         day.tokens + commentTokenReservation(this.config) > this.config.dailyTokenBudget)) return;
@@ -172,7 +221,7 @@ export class CommentWorker {
     // All outputs, including free notices, share this persisted send gate.
     const sentAt = this.adapters.now();
     if (sentAt - state.lastSentAt < LIMITS.sendIntervalMs) return;
-    if (!job.notice && reserveCommentQuota(this.config, state, job, sentAt) === 'skip') {
+    if (!job.imageRequested && !job.notice && reserveCommentQuota(this.config, state, job, sentAt) === 'skip') {
       job.status = 'skipped'; this.served(job); await this.adapters.save(state); return;
     }
     job.status = 'sending'; state.lastSentAt = sentAt;
@@ -180,7 +229,9 @@ export class CommentWorker {
     this.controller = new AbortController();
     const timeout = setTimeout(() => this.controller?.abort(), LIMITS.timeoutMs);
     try {
-      const id = await this.adapters.send(job.event, job.answer!, this.controller.signal);
+      const id = job.image?.file
+        ? await this.adapters.send(job.event, job.answer!, this.controller.signal, job.image.file)
+        : await this.adapters.send(job.event, job.answer!, this.controller.signal);
       if (!positiveId(id)) throw new Error('Unconfirmed comment receipt');
       job.status = 'sent'; job.replyId = id; job.completedAt = this.adapters.now();
     } catch {
