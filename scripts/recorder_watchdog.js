@@ -42,7 +42,20 @@ function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  fs.renameSync(temporary, file);
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(temporary, file); return; }
+    catch (error) {
+      if (attempt >= 4) {
+        try { fs.copyFileSync(temporary, file); }
+        catch (copyError) { console.error(`[watchdog] state write failed for ${file}:`, error.message, copyError.message); }
+        finally { try { fs.unlinkSync(temporary); } catch (_) {} }
+        return;
+      }
+      const delay = 50 * (attempt + 1);
+      const until = Date.now() + delay;
+      while (Date.now() < until) {}
+    }
+  }
 }
 
 function normalizeConfig(raw = {}) {

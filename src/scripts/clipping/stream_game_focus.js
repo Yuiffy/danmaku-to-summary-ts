@@ -13,12 +13,16 @@ const GENERIC_LABEL = /^(游戏|游戏开始|开始游戏|启动游戏|进入游
 const GENERIC_PREFIX = /^(启动|进入|离开|调整|设置|准备|整理|等待|继续|重新|再次|开始|测试|完成|结束|探索与|战斗与|反复|多次)/u;
 const GENERIC_CONTAINS = /(键位|手柄|菜单|加载|存档|键位调整)/u;
 const LOCATION_VERB = /^(前往|进入|来到|抵达|探索|搜查|返回|离开|深入|穿过|赶往)/u;
-const LOCATION_TAIL = /(外围|内部|附近|周边|一带|区域|方向|入口|深处|探索|搜查|附近区域)$/u;
+// A trailing area word belongs to the movement phrase; a trailing "探索" is often the
+// actual activity the chapter describes ("回魔法学院补探索"), so it only goes when the
+// phrase already started with a movement verb.
+const HARD_TAIL = /(外围|内部|附近|周边|一带|区域|方向|入口|深处)$/u;
+const SOFT_TAIL = /(探索|搜查)$/u;
 // "探索与战斗" or "村落探索与战斗" is an activity, not a place, even though it starts with a movement verb.
 const ACTIVITY_WORD = /(战斗|交战|交谈|对话|移动|搜寻|搜查|调整|升级|修行|清理|获取|选择|尝试|推进|准备|应对|失败|重来|获胜|收集|寻路)/u;
 const MAX_LABELS = 3;
 const MAX_BOSSES = 2;
-const MAX_UNITS = 22;
+const MAX_UNITS = 26;
 
 /** CJK characters count 1, latin/digits half, so the budget matches what the title bar shows. */
 function displayUnits(value) {
@@ -37,10 +41,17 @@ function cleanLabel(value) {
 
 /** Drop a movement verb and a generic area suffix only when a real name remains. */
 function locationLabel(value) {
-    let label = cleanLabel(value), previous;
+    let label = cleanLabel(value);
+    const moved = LOCATION_VERB.test(label);
+    let previous;
     do {
         previous = label;
-        const stripped = label.replace(LOCATION_VERB, '').replace(LOCATION_TAIL, '').replace(/[与和的及等]+$/u, '');
+        let stripped = label.replace(LOCATION_VERB, '').replace(HARD_TAIL, '');
+        const withoutActivity = stripped.replace(SOFT_TAIL, '');
+        // "回魔法学院补探索" keeps its 探索: the remainder would end on a filler character,
+        // not on a place name like "高塔".
+        if (moved && withoutActivity !== stripped && !/[补再又多些了着过]$/u.test(withoutActivity)) stripped = withoutActivity;
+        stripped = stripped.replace(/[与和的及等]+$/u, '');
         if (displayUnits(stripped) >= 2 && !/^[与和的及]/u.test(stripped)) label = stripped;
     } while (label !== previous);
     return label;
@@ -101,7 +112,7 @@ function selectFocus(chapters = [], options = {}) {
         const end = Number.isFinite(options.end) ? options.end : next?.start;
         const duration = Number.isFinite(end) ? Math.max(0, end - (chapter.start || 0)) : 0;
         const locationish = chapter.kind === 'location'
-            || (LOCATION_VERB.test(title) || LOCATION_TAIL.test(title)) && !ACTIVITY_WORD.test(title);
+            || (LOCATION_VERB.test(title) || HARD_TAIL.test(title) || SOFT_TAIL.test(title)) && !ACTIVITY_WORD.test(title);
         const label = locationish ? locationLabel(title) : cleanLabel(title);
         if (isGeneric(label)) continue;
         entries.push({ label, kind: locationish ? 'location' : (chapter.kind || 'phase'),
