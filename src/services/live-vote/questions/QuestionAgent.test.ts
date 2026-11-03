@@ -119,6 +119,8 @@ it('anchors relative dates to the request in Shanghai and can answer directly fr
   expect(turns).toHaveLength(2);
   expect(steps.map(step => step.phase)).toEqual(['model', 'search_recordings', 'model']);
   expect(steps.every(step => step.elapsedMs >= 0 && step.status === 'ok')).toBe(true);
+  expect(steps[1].search).toEqual({ returned: 1, limited: false });
+  expect(JSON.stringify(steps)).not.toContain('我玩过法环');
 });
 
 it('records failed model steps without putting provider errors into timing diagnostics', async () => {
@@ -184,7 +186,7 @@ it('still returns no evidence after a successful empty listing', async () => {
   expect(complete).toHaveBeenCalledTimes(2);
 });
 
-it('replans one limited search before accepting an empty ranking as no evidence', async () => {
+it('requires a fresh tool after a limited search instead of accepting a second empty review', async () => {
   const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
   const search = jest.spyOn(evidence, 'search');
   search.mockResolvedValueOnce({ hits: [], limited: true });
@@ -192,10 +194,11 @@ it('replans one limited search before accepting an empty ranking as no evidence'
     .mockResolvedValueOnce({ content: null, tool_calls: [tool()] })
     .mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) })
     .mockImplementationOnce(async input => {
+      expect(input).toMatchObject({ toolChoice: 'required', phase: 'plan' });
       expect(input.messages.some(message => message.role === 'system' && message.content?.includes('覆盖受限'))).toBe(true);
-      return { content: JSON.stringify({ action: 'search', rankedEvidenceIds: [], search: {
+      return { content: null, tool_calls: [tool('search_recordings', {
         terms: ['法环'], kind: 'subtitle', date: null
-      } }) };
+      })] };
     }).mockResolvedValueOnce(answer());
   expect((await runQuestionAgent(request, signal, evidence, complete)).answer).toBe('玩过法环。');
   expect(search).toHaveBeenCalledTimes(2);
@@ -205,9 +208,22 @@ it('bounds replanning when a limited search still provides no relevant evidence'
   const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
   jest.spyOn(evidence, 'search').mockResolvedValue({ hits: [], limited: true });
   const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [tool()] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) })
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool('search_recordings', { terms: ['艾尔登'], kind: 'subtitle', date: null })] })
     .mockResolvedValue({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) });
   expect(await runQuestionAgent(request, signal, evidence, complete)).toEqual({ answer: NO_EVIDENCE });
-  expect(complete).toHaveBeenCalledTimes(3);
+  expect(complete).toHaveBeenCalledTimes(4);
+  expect(evidence.search).toHaveBeenCalledTimes(2);
+});
+
+it('accepts an exhausted successful search without forcing another tool call', async () => {
+  const signal = new AbortController().signal, evidence = new RecordingEvidence([fixture], signal);
+  const search = jest.spyOn(evidence, 'search').mockResolvedValue({ hits: [], limited: false });
+  const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [tool()] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'insufficient', rankedEvidenceIds: [] }) });
+  expect(await runQuestionAgent(request, signal, evidence, complete)).toEqual({ answer: NO_EVIDENCE });
+  expect(search).toHaveBeenCalledTimes(1);
+  expect(complete).toHaveBeenCalledTimes(2);
 });
 
 it('can answer general questions in one model turn without searching recordings', async () => {
@@ -413,7 +429,7 @@ it('pins daiYu/gpt-6-luna, keeps credentials outside context, prevents redirects
   const body = JSON.parse(options.body);
   expect(body).toMatchObject({ model: 'gpt-6-luna', tool_choice: 'required', parallel_tool_calls: false, max_tokens: 2048 });
   expect(options.body).not.toContain('provider-secret');
-  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent', 'list_recordings', 'read_recordings', 'aggregate_evidence']);
+  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent', 'read_recording_calendar', 'read_recording_openings', 'list_recordings', 'read_recordings', 'aggregate_evidence']);
   transport.mockRejectedValue(new Error('provider-secret raw private response'));
   await expect(complete(input, new AbortController().signal)).rejects.toThrow(/^daiYu question request failed$/u);
   expect(() => questionProviderSettings({ ai: { text: { daiYu: { apiKey: 'x', baseUrl: 'http://external.example/v1' } } } })).toThrow('HTTPS');

@@ -1,11 +1,24 @@
 import { QuestionSource } from './QuestionPolicy';
 
-export const QUESTION_TOOL_NAMES = ['search_recordings', 'read_context', 'read_recent', 'list_recordings', 'read_recordings', 'aggregate_evidence'] as const;
+export const QUESTION_TOOL_NAMES = ['search_recordings', 'read_context', 'read_recent', 'read_recording_openings', 'read_recording_calendar', 'list_recordings', 'read_recordings', 'aggregate_evidence'] as const;
 export type QuestionToolName = typeof QUESTION_TOOL_NAMES[number];
 export function isQuestionToolName(name: unknown): name is QuestionToolName {
   return typeof name === 'string' && (QUESTION_TOOL_NAMES as readonly string[]).includes(name);
 }
 export const BROWSE_TOOLS = [
+  { type: 'function', function: { name: 'read_recording_calendar', strict: true,
+    description: '按日期批量查看字幕与弹幕录制资料分布，用于核对轮休、开播节奏。fromDate/toDate含首尾最多31天，返回每天星期与去重录制数、可精读ID；不读取全文。dayBoundaryHour定义一天起点0至12点，夜播可取6将凌晨续录归入前一天；这是观察口径，不证明真实开播日。无资料不等于未开播/休息，未来日期尚未发生。结合常识规律和近期原文锚点推算，区分观众说法与主播安排。',
+    parameters: { type: 'object', additionalProperties: false, properties: {
+      fromDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, toDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+      dayBoundaryHour: { type: 'integer', minimum: 0, maximum: 12 }
+    }, required: ['fromDate', 'toDate', 'dayBoundaryHour'] } } },
+  { type: 'function', function: { name: 'read_recording_openings', strict: true,
+    description: '批量读取多天原录播的开场字幕与时间点，用于开场/OP等待统计。fromDate/toDate为北京时间日期（含首尾，至多31天，可跨月）；一次读取最多8份的前endSeconds秒，先跨日期取样再补同日其他录制，归档副本按录制时钟去重。每条带引用ID与录像偏移，recordingStartedAt是录制起点而非真实开播；不同录制时钟仍可能是断线续录，需按原文排除。nextOffset翻下一批，nextCueOffset用read_recordings在相同时间范围续读。无字幕日期不等于未开播。每批总条数不超过384，统计前选各独立场次最早可辨开口，排除歌词/播放音频。',
+    parameters: { type: 'object', additionalProperties: false, properties: {
+      fromDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, toDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+      offset: { type: 'integer', minimum: 0, maximum: 10000 }, limit: { type: 'integer', minimum: 1, maximum: 8 },
+      endSeconds: { type: 'number', minimum: 1, maximum: 3600 }, cuesPerRecording: { type: 'integer', minimum: 1, maximum: 80 }
+    }, required: ['fromDate', 'toDate', 'offset', 'limit', 'endSeconds', 'cuesPerRecording'] } } },
   { type: 'function', function: { name: 'list_recordings', strict: true,
     description: '按日期分页列出资料，附录制/场次ID与少量字幕。collection选择原录播、精选摘要、切片；preview=head读开头，sample均匀抽样全文，none只列目录。适合探索近期内容、多场比较、寻找趣事；最多32份、每份12条。只返回目录可见资料，不证明完整开播历史。',
     parameters: { type: 'object', additionalProperties: false, properties: {

@@ -8,8 +8,9 @@ import { parseSubtitle, readSubtitle, recordingFolderDate, recordingSessionKey }
 import { activeRecording, recentMinutes } from './RecentRecording';
 import { DanmakuAttribution, hasDanmakuText, parseDanmaku } from './DanmakuEvidence';
 import { FtsMatch, FtsSearch } from './RecordingFtsIndex';
-import { BrowseResult, BrowseSource, RecordingBrowser, RecordingCollection } from './RecordingBrowser';
+import { BrowseResult, BrowseSource, OpeningResult, RecordingBrowser, RecordingCollection } from './RecordingBrowser';
 import { curatedSources, parseHighlight } from './CuratedRecordingSources';
+import { RecordingCalendar } from './RecordingCalendar';
 
 type EvidenceKind = BrowseSource['kind'];
 interface Cue extends DanmakuAttribution { seconds: number; text: string }
@@ -28,6 +29,8 @@ export interface QuestionEvidence {
   recent?(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean; [key: string]: unknown }>;
   list?(args: unknown): Promise<BrowseResult>;
   read?(args: unknown): Promise<BrowseResult>;
+  openings?(args: unknown): Promise<OpeningResult>;
+  calendar?(args: unknown): Promise<RecordingCalendar | { calendars: RecordingCalendar[]; limited: boolean }>;
   context(args: unknown): StoredEvidence | { error: string };
   citation(id: string): QuestionAnswer['source'] | undefined;
   clue(id: string): QuestionClue | undefined;
@@ -45,7 +48,7 @@ const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 const MAX_FILES = 250;
 const MAX_DIRECTORY_ENTRIES = 10000;
 const MAX_HITS = 16;
-const MAX_EVIDENCE = 512;
+const MAX_EVIDENCE = 2048;
 
 export function parseRecordingSearch(args: unknown): RecordingSearch {
   const input = args as Partial<RecordingSearch>;
@@ -113,6 +116,8 @@ export class RecordingEvidence {
     private readonly options: { botUid?: string; semanticSearch?: SemanticSearch; indexedSearch?: SemanticSearch; ftsSearch?: FtsSearch; question?: string; roomId?: string; askedAt?: number } = {}) {}
 
   list(args: unknown): Promise<BrowseResult> { return this.browser.list(args); }
+  openings(args: unknown): Promise<OpeningResult> { return this.browser.openings(args); }
+  calendar(args: unknown): Promise<RecordingCalendar> { return this.browser.calendar(args); }
   read(args: unknown): Promise<BrowseResult> {
     // A cited cue also grants access to its known source, never an arbitrary path.
     const input = args as { recordingIds?: unknown };
@@ -317,7 +322,9 @@ export class RecordingEvidence {
     const indexedMatches: Array<{ file: RecordingFile; index: number }> = [];
     for (const { search, recalled, isFts } of [{ search: fast?.available ? async () => fast.matches : this.options.indexedSearch, recalled: indexedMatches, isFts: !!fast?.available },
       { search: this.options.semanticSearch, recalled: semanticMatches, isFts: false }]) {
-      if (!search || input.kind === 'danmaku' && !isFts || !isFts && fast?.available && indexedMatches.length) continue;
+      // A keyword hit may only mention the topic. Explicit semantic queries must still recall the requested detail.
+      // Keep routine keyword searches and chronological exact-quote lookup on the fast path.
+      if (!search || input.kind === 'danmaku' && !isFts || !isFts && fast?.available && indexedMatches.length && (!input.query || earliest)) continue;
       try {
         const candidates = await search(input.date, terms, { query: input.query || undefined, session: anchor?.file });
         const roots = new Set<string>();

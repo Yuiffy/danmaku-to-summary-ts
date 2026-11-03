@@ -7,7 +7,10 @@ import { loadManifest, searchSubtitleIndex, SemanticMatch, SemanticFocus } from 
 import { SubtitleLexicalReader } from './SubtitleLexicalIndex';
 import { recordingSessionKey } from './SubtitleCorpus';
 import { createFtsSearch } from './RecordingFtsIndex';
-import { BrowseResult, parseListRecordings, parseReadRecordings } from './RecordingBrowser';
+import { BrowseResult, OpeningResult, parseListRecordings, parseReadRecordings } from './RecordingBrowser';
+import { parseReadOpenings } from './RecordingOpenings';
+import { parseRecordingCalendar, RecordingCalendar } from './RecordingCalendar';
+import { streamerKnowledge } from './StreamerKnowledge';
 
 interface RoomCorpus { room: QuestionRoom; recordings: RecordingEvidence; gifts?: Promise<EvidenceSearchHit[]> }
 interface Origin { corpus: RoomCorpus; localId: string; gift?: EvidenceSearchHit }
@@ -29,7 +32,8 @@ export class QuestionCorpus implements QuestionEvidence {
   constructor(private readonly config: LiveQuestionConfig, private readonly request: Pick<QuestionRequest, 'roomId' | 'question' | 'askedAt'>,
     private readonly signal: AbortSignal, botUid?: string, private readonly makeEmbedder?: () => Embedder, maxRooms = 3) {
     this.rooms = questionScope(config, request.roomId, request.question, maxRooms);
-    this.scopeDescription = `本次查询资料范围：${JSON.stringify(this.rooms.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`;
+    this.scopeDescription = `本次查询资料范围：${JSON.stringify(this.rooms.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`
+      + streamerKnowledge(this.rooms.map(room => room.roomId));
     this.embeddingStatus = config.semantic?.enabled ? 'unavailable' : 'disabled';
     this.corpora = this.rooms.map(room => {
       this.coverage.set(room.roomId, { indexedFiles: 0, indexComplete: false, catalogStatus: config.giftCatalogs?.[room.roomId] ? 'unavailable' : 'disabled', lexicalStatus: config.lexical?.enabled || config.semantic?.enabled ? 'partial' : 'disabled' });
@@ -103,6 +107,20 @@ export class QuestionCorpus implements QuestionEvidence {
         preview: entry.preview.map(hit => ({ ...hit, ...this.qualify(corpus, hit), context: this.qualifyContext(corpus, hit.context) })) };
     }) };
   }
+  async calendar(args: unknown): Promise<{ calendars: Array<RecordingCalendar & { roomId: string; roomName: string }>; limited: boolean }> {
+    parseRecordingCalendar(args);
+    const calendars = [];
+    for (const corpus of this.corpora) {
+      this.signal.throwIfAborted();
+      const result = await corpus.recordings.calendar(args);
+      calendars.push({ ...result, roomId: corpus.room.roomId, roomName: corpus.room.name,
+        days: result.days.map(day => ({ ...day, recordingIds: day.recordingIds.map(localId => {
+          const id = `r${corpus.room.roomId}_${localId}`;
+          this.recordingOrigins.set(id, { corpus, localId }); return id;
+        }) })) });
+    }
+    return { calendars, limited: calendars.some(calendar => calendar.limited) };
+  }
   async list(args: unknown): Promise<BrowseResult> {
     const input = parseListRecordings(args);
     const limit = Math.max(1, Math.floor(input.limit / this.corpora.length));
@@ -129,6 +147,20 @@ export class QuestionCorpus implements QuestionEvidence {
       this.signal.throwIfAborted();
       const page = this.qualifyBrowse(corpus, await corpus.recordings.read({ ...input, recordingIds }));
       result.recordings.push(...page.recordings); result.limited ||= page.limited;
+    }
+    return result;
+  }
+  async openings(args: unknown): Promise<OpeningResult> {
+    const input = parseReadOpenings(args), limit = Math.max(1, Math.floor(input.limit / this.corpora.length));
+    const cuesPerRecording = Math.min(input.cuesPerRecording, Math.floor(384 / (limit * this.corpora.length)));
+    const result: OpeningResult = { recordings: [], total: 0, nextOffset: null, limited: false, coverage: [] };
+    for (const corpus of this.corpora) {
+      this.signal.throwIfAborted();
+      const local = await corpus.recordings.openings({ ...input, limit, cuesPerRecording });
+      const page = this.qualifyBrowse(corpus, local);
+      result.recordings.push(...page.recordings); result.total += page.total; result.limited ||= page.limited;
+      result.coverage.push(...local.coverage.map(coverage => ({ ...coverage, roomId: corpus.room.roomId })));
+      if (page.nextOffset !== null) result.nextOffset = Math.min(result.nextOffset ?? Infinity, page.nextOffset);
     }
     return result;
   }

@@ -1,6 +1,8 @@
 import * as path from 'path';
 import { QuestionClue } from './QuestionPolicy';
-import { recordingSessionKey, SubtitleSource } from './SubtitleCorpus';
+import { SubtitleSource } from './SubtitleCorpus';
+import { OpeningCoverage, openingDates, openingSourceKey, openingSourcePriority, parseReadOpenings, recordingClock } from './RecordingOpenings';
+import { nextCalendarDate, parseRecordingCalendar, RecordingCalendar, summarizeRecordingDays } from './RecordingCalendar';
 
 export type RecordingCollection = 'recordings' | 'highlights' | 'clips';
 export interface BrowseSource extends SubtitleSource { kind: 'subtitle' | 'danmaku' | 'highlight' | 'clip-subtitle' }
@@ -10,9 +12,11 @@ export interface BrowseEntry {
   roomId?: string; roomName?: string;
   label: string; part: number | null; timeBasis: 'recording_offset' | 'clip_offset' | 'highlight_approximate';
   totalCues: number | null; sampled: boolean;
+  recordingStartedAt?: string;
   preview: BrowseHit[]; nextCueOffset: number | null;
 }
 export interface BrowseResult { recordings: BrowseEntry[]; total: number; nextOffset: number | null; limited: boolean }
+export interface OpeningResult extends BrowseResult { coverage: OpeningCoverage[] }
 export interface ListRecordings {
   collection: RecordingCollection; kind: 'all' | 'subtitle' | 'danmaku'; date: string | null;
   offset: number; limit: number; preview: 'none' | 'head' | 'sample'; cuesPerRecording: number;
@@ -65,18 +69,57 @@ export class RecordingBrowser {
     return id;
   }
   source(id: string): BrowseSource | undefined { return this.sources.get(id); }
+  async calendar(args: unknown): Promise<RecordingCalendar> {
+    const input = parseRecordingCalendar(args);
+    // Include the following morning, even across a month/year boundary.
+    const dates = openingDates({ fromDate: input.fromDate, toDate: nextCalendarDate(input.toDate) });
+    const files: BrowseSource[] = [];
+    for (const month of new Set(dates.map(date => date.slice(0, 7)))) {
+      this.io.checkAbort();
+      files.push(...await this.io.files(month, 'all', 'recordings'));
+    }
+    return summarizeRecordingDays(input, files, file => this.idFor(file), this.io.limited());
+  }
   private entry(file: BrowseSource): BrowseEntry {
-    const name = path.basename(file.file);
-    const clock = /^(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_/u.exec(name) ||
-      /^录制-\d+-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/u.exec(name);
+    const clock = recordingClock(file);
     // Recognized recorder clocks link archive copies and derived artifacts without exposing paths.
-    const key = clock ? clock.slice(1, 7).join('-') : recordingSessionKey(file);
+    const key = openingSourceKey(file);
     if (!this.sessions.has(key)) this.sessions.set(key, `session${this.sessions.size + 1}`);
     const part = /_(\d+)_fix(?:\.speaker)?\.srt$/iu.exec(file.file);
     return { recordingId: this.idFor(file), sessionId: this.sessions.get(key)!, date: file.date, kind: file.kind,
       label: path.basename(file.file).slice(0, 160), part: part ? Number(part[1]) : null,
       timeBasis: file.kind === 'highlight' ? 'highlight_approximate' : file.kind === 'clip-subtitle' ? 'clip_offset' : 'recording_offset',
+      ...(clock ? { recordingStartedAt: `${clock.slice(0, 3).join('-')}T${clock.slice(3).join(':')}+08:00` } : {}),
       preview: [], nextCueOffset: null, totalCues: null, sampled: false };
+  }
+  async openings(args: unknown): Promise<OpeningResult> {
+    const input = parseReadOpenings(args), dates = openingDates(input);
+    const sources = new Map<string, BrowseSource>();
+    for (const month of new Set(dates.map(date => date.slice(0, 7)))) {
+      this.io.checkAbort();
+      for (const file of await this.io.files(month, 'subtitle', 'recordings')) {
+        if (!file.date || file.date < input.fromDate || file.date > input.toDate) continue;
+        const key = openingSourceKey(file), previous = sources.get(key);
+        if (!previous || openingSourcePriority(file) < openingSourcePriority(previous)) sources.set(key, file);
+      }
+    }
+    const byDate = new Map<string, BrowseSource[]>();
+    for (const file of [...sources.values()].sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.file.localeCompare(b.file))) {
+      const group = byDate.get(file.date!) || []; group.push(file); byDate.set(file.date!, group);
+    }
+    // Read across dates before taking another fragment from a busy/reconnecting day.
+    const files: BrowseSource[] = [];
+    for (let index = 0; index < Math.max(0, ...[...byDate.values()].map(group => group.length)); index++) {
+      for (const group of byDate.values()) if (group[index]) files.push(group[index]);
+    }
+    const selected = files.slice(input.offset, input.offset + input.limit);
+    const page = selected.length ? await this.read({ recordingIds: selected.map(file => this.idFor(file)), startSeconds: 0,
+      endSeconds: input.endSeconds, offset: 0, limitPerRecording: input.cuesPerRecording }) :
+      { recordings: [], total: 0, nextOffset: null, limited: this.io.limited() };
+    const nextOffset = input.offset + page.recordings.length < files.length ? input.offset + page.recordings.length : null;
+    return { ...page, total: files.length, nextOffset, limited: page.limited || nextOffset !== null,
+      coverage: [{ fromDate: input.fromDate, toDate: input.toDate, startSeconds: 0, endSeconds: input.endSeconds,
+        datesWithoutSubtitles: dates.filter(date => !files.some(file => file.date === date)) }] };
   }
   async list(args: unknown): Promise<BrowseResult> {
     const input = parseListRecordings(args);

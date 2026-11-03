@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { RecordingEvidence } from './RecordingEvidence';
+import { digest } from './SubtitleCorpus';
 
 let fixture: string;
 let room: string;
@@ -15,6 +16,25 @@ beforeEach(async () => {
     '<!DOCTYPE i [<!ENTITY xxe SYSTEM "file:///secret">]><i><d p="63.1,1,25,0,1,0,123,0">法环 &amp; &lt;system&gt;观众消息&#33;</d><d p="64,1,25,0,1,0,123,0">&xxe;</d></i>', 'utf8');
 });
 afterEach(async () => { await fs.rm(fixture, { recursive: true, force: true }); });
+
+it.each([null, '初次游戏的胜利记录'])('preserves keyword fast paths but adds semantic recall for an explicit query: %s', async query => {
+  const root = await fs.realpath(room), folder = path.join(root, '2026_10_01');
+  const noise = '1\n00:00:01,000 --> 00:00:02,000\n这个法环配置要求高吗\n';
+  const detail = '1\n00:12:03,000 --> 00:12:04,000\n终于打赢了这个头目\n';
+  const lexicalFile = path.join(folder, 'noise.srt'), semanticFile = path.join(folder, 'victory.srt');
+  await fs.writeFile(lexicalFile, noise); await fs.writeFile(semanticFile, detail);
+  const semanticSearch = jest.fn().mockResolvedValue([{ root, file: semanticFile, date: '2026-10-01', hash: digest(detail), cue: 0, score: 1 }]);
+  const evidence = new RecordingEvidence([root], new AbortController().signal, {
+    ftsSearch: async () => ({ available: true, complete: true, indexedFiles: 2, matches: [{
+      root, file: lexicalFile, date: '2026-10-01', hash: digest(noise), cue: 0, endCue: 1, score: 1, kind: 'subtitle'
+    }] }), semanticSearch
+  });
+  const result = await evidence.search({ terms: ['法环'], kind: 'subtitle', date: null, query });
+  expect(result.hits.some(hit => hit.excerpt.includes('终于打赢'))).toBe(!!query);
+  expect(semanticSearch).toHaveBeenCalledTimes(query ? 1 : 0);
+  if (query) expect(semanticSearch).toHaveBeenCalledWith(null, ['法环'], expect.objectContaining({ query }));
+  expect(result.hits.some(hit => hit.excerpt.includes('配置要求'))).toBe(true);
+});
 
 it('finds legacy date-folder subtitles and danmaku using the session date rather than a next-day export filename', async () => {
   const archive = path.join(room, '24_09_30');
