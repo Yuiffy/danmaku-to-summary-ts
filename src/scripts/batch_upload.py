@@ -508,6 +508,11 @@ def load_generated_description(clip):
 
 async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None, before_submit=None, pacing=None):
     """上传单个切片，返回结果 dict"""
+    import clip_upload_registry as registry_api
+    quality_errors = registry_api.clip_upload_enqueue.quality_policy_errors(registry_api, [{**clip, 'prefix': prefix}])
+    if quality_errors:
+        print('  [QUALITY_POLICY] ' + '; '.join(quality_errors))
+        return {'idx': clip['idx'], 'title': clip['title'], 'status': 'quality_policy_hold', 'error': '; '.join(quality_errors)}
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
 
@@ -995,6 +1000,10 @@ async def main():
 
         def before_submit():
             nonlocal created_intent
+            import clip_upload_registry as registry_api
+            current_errors = registry_api.clip_upload_enqueue.quality_policy_errors(registry_api, [{**clip, 'prefix': args.prefix}])
+            if current_errors:
+                raise ValueError('; '.join(current_errors))
             if args.queue_job and not args.force:
                 validate_queue_submission({**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}, args.queue_job)
             if args.automatic_job:
@@ -1103,7 +1112,7 @@ async def main():
     # === 第3步：汇总 ===
     print(f"\n=== 上传完成 ===")
     ok = sum(1 for r in results if r['status'] in ('ok', 'ok_after_406'))
-    fail = sum(1 for r in results if r['status'] in ('fail', 'error'))
+    fail = sum(1 for r in results if r['status'] in ('fail', 'error', 'quality_policy_hold'))
     conflicts = len(title_conflicts)
     got_406 = sum(1 for r in results if r['status'] == 'got_406')
     rate_limited = sum(1 for r in results if r['status'] == 'rate_limited')
@@ -1120,7 +1129,7 @@ async def main():
     if rate_limited:
         # EX_TEMPFAIL: callers should preserve state and retry after a cooldown.
         return 75
-    return 2 if title_conflicts else 0
+    return 2 if title_conflicts or any(r['status'] == 'quality_policy_hold' for r in results) else 0
 
 
 if __name__ == '__main__':
