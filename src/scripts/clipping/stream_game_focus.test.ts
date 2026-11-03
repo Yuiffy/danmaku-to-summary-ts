@@ -21,6 +21,8 @@ describe('game episode title focus', () => {
   test('names the hardest bosses once and one area, instead of three boss spellings', () => {
     // The 2026-11-01 session as detected: one boss retried three times under different
     // spellings, a tutorial boss, a rest stop and a tower the player returns to twice.
+    // 斧光大 / 斩娘阿花 are frame-reading slips; `stream_game_name_spelling` repairs those
+    // before this stage (see its own suite), so this case locks the rest of the shape.
     const chapters = [
       chapter('启动游戏与首个 Boss 前准备', 0),
       chapter('调整手柄键位', 600),

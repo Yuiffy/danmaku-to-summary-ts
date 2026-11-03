@@ -10,6 +10,7 @@ const { createClipResourceAdaptiveScheduler } = require('./resource_scheduler');
 const { renderGamePart, gameCover } = require('./stream_game_media');
 const { verifyGame, PROTOCOL_VERSION, mediaSettings } = require('./stream_game_verification');
 const { restoreFrameNamedChapters } = require('./stream_game_names');
+const { correctFrameNames } = require('./stream_game_name_spelling');
 const { repairUnsupportedChapters } = require('./stream_game_editorial');
 const { buildParts, sha, includedRanges, mergeEvents } = require('./stream_game_plan');
 const { selectFocus, cleanLabel } = require('./stream_game_focus');
@@ -214,6 +215,14 @@ async function renderGames(plan, options, config, files) {
     const uncertain = plan.events.filter(e => e.verification?.decision === 'uncertain' && !absorbed(e));
     if (uncertain.length) throw new Error(`Game media review unresolved: ${uncertain.map(e => e.verification.reason).join('; ')}`);
     if (!accepted.length) return { status: 'no_verified_gameplay', planPath: files.plan };
+    // A frame-read name is literal OCR and can swap one glyph (斧老大 → 斧光大). Chat and
+    // subtitles spell it correctly over and over, so settle the spelling before the parts,
+    // the description and the episode title are all built from it.
+    for (const event of accepted) {
+        const applied = correctFrameNames(event, audienceFor(plan));
+        for (const row of applied) console.log(`[GAME_NAME_SPELLING] ${plan.recordedAt} ${row.from} → ${row.title} (${row.corrections.map(c => `${c.from}→${c.to}×${c.observed}`).join(', ') || 'shorter name'})`);
+    }
+    if (accepted.some(event => event.chapters?.some(chapter => chapter.nameCorrection))) writeJsonAtomic(files.plan, plan);
     const allParts = capabilities.multipartAllowed ? buildParts(accepted, config) : singleParts(accepted, config, capabilities);
     const signature = sha({ source: plan.source, verified: accepted, allParts, capabilities: { multipartAllowed: capabilities.multipartAllowed,
         maxFileBytes: capabilities.maxFileBytes, maxVideoSeconds: capabilities.maxVideoSeconds }, collections: config.games.map(g => g.collection) });
