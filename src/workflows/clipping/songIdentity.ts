@@ -62,12 +62,31 @@ export function sufficientLyricMatches(event: SongEvent, matches: LyricMatch[], 
 export function identifySongFromCatalog(event: SongEvent, rows: SongRow[], songs: CatalogSong[], transcript: { path: string; sha256: string }) {
   const candidates = songs.map(song => ({ song, matches: matchSongLyrics(event, rows, song.lyrics) }));
   const supported = candidates.filter(item => sufficientLyricMatches(event, item.matches, rows));
-  const names = [...new Set(supported.map(item => lyricText(songWorkName(item.song.name, item.song.artists))))];
-  if (names.length !== 1) return { status: 'unresolved' as const,
-    reason: names.length ? '多首不同歌曲均有歌词支持，需继续排查串歌或边界' : '尚无三句独立歌词支持同一首歌',
+  const workName = (item: { song: CatalogSong }) => lyricText(songWorkName(item.song.name, item.song.artists));
+  // Versions of the same work (e.g. "Love Story" vs "Love Story (Taylor's Version)") only need the shared work title.
+  const normalizeWorkTitle = (value: string) => value.replace(/\s*[(（\[【][^)）\]】]*[)）\]】]\s*$/u, '').trim() || value;
+  const matchedCharacters = (item: { matches: LyricMatch[] }) => item.matches.reduce((total, match) => total + match.matchedCharacters, 0);
+  if (!supported.length) return { status: 'unresolved' as const,
+    reason: '尚无三句独立歌词支持同一首歌',
     candidates: candidates.map(({ song, matches }) => ({ id: song.id, name: song.name, artists: song.artists, matchedLines: matches.length })) };
-  const best = supported.sort((a, b) => b.matches.reduce((sum, match) => sum + match.matchedCharacters, 0)
-    - a.matches.reduce((sum, match) => sum + match.matchedCharacters, 0))[0];
+  const groupChars = (items: Array<{ matches: LyricMatch[] }>) => items.reduce((total, item) => total + matchedCharacters(item), 0);
+  const groups = new Map<string, Array<{ song: CatalogSong; matches: LyricMatch[] }>>();
+  for (const item of supported) {
+    const title = normalizeWorkTitle(workName(item));
+    const group = groups.get(title);
+    if (group) group.push(item); else groups.set(title, [item]);
+  }
+  const ranked = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || groupChars(b[1]) - groupChars(a[1]));
+  const [title, group] = ranked[0];
+  // One shared work title resolves directly; a competing medley/cover loses when the
+  // same-title family holds a strict majority of candidates and lyric evidence.
+  const majority = ranked.length === 1
+    || (group.length > supported.length / 2 && groupChars(group) > groupChars(ranked.slice(1).flatMap(([, items]) => items)));
+  if (!majority) return { status: 'unresolved' as const,
+    reason: '多首不同歌曲均有歌词支持，需继续排查串歌或边界',
+    candidates: candidates.map(({ song, matches }) => ({ id: song.id, name: song.name, artists: song.artists, matchedLines: matches.length })) };
+  // Prefer the plainest catalog entry (no version suffix) so publication binds to the canonical work title.
+  const best = [...group].sort((a, b) => workName(a).length - workName(b).length || matchedCharacters(b) - matchedCharacters(a))[0];
   const indices = new Set(best.matches.flatMap(match => match.segmentIndices));
   return { status: 'identified' as const, item: { activityId: event.id, name: songWorkName(best.song.name, best.song.artists),
     method: 'catalog_lyric_match', transcriptPath: transcript.path, transcriptSha256: transcript.sha256,
