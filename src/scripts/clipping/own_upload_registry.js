@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const ownReview = require('./own_review_report');
+const { resolvePythonBin } = require('./python_bin');
 
 function parseUploadRegistryOutput(output) {
     const receipt = String(output || '').split(/\r?\n/).find(line => line.startsWith('REGISTRY_RESULT: '));
@@ -85,7 +86,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         '--tid', '21',
         '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
     ];
-    const result = spawnSync('python', args, {
+    const result = spawnSync(resolvePythonBin('python'), args, {
         cwd: path.resolve(__dirname, '../../..'),
         encoding: 'utf8',
         windowsHide: true,

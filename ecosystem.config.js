@@ -5,6 +5,13 @@
 
 const path = require('path');
 
+// PATH 上的 python 不一定装了切片封面所需依赖（Pillow/requests）；
+// 切片链路统一通过 CLIP_PYTHON_PATH 指定装了依赖的解释器。
+const clipPythonEnv = {
+  PYTHONIOENCODING: 'utf-8',
+  CLIP_PYTHON_PATH: process.env.CLIP_PYTHON_PATH || 'D:/develop/Python/python'
+};
+
 const gpuTdrEnv = {
   NODE_ENV: 'production',
   GPU_TDR_CAPTURE_DIR: 'D:\\diagnostics\\gpu-tdr',
@@ -239,7 +246,7 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
-        PYTHONIOENCODING: 'utf-8'
+        ...clipPythonEnv
       },
       log_date_format: '',
       error_file: path.join(__dirname, 'logs', 'clip-upload-queue-error.log'),
@@ -258,7 +265,7 @@ module.exports = {
       exec_mode: 'fork',
       autorestart: true,
       watch: false,
-      env: { NODE_ENV: 'production', PYTHONIOENCODING: 'utf-8' },
+      env: { NODE_ENV: 'production', ...clipPythonEnv },
       error_file: path.join(__dirname, 'logs/background-clip-queue-error.log'),
       out_file: path.join(__dirname, 'logs/background-clip-queue-out.log'),
       min_uptime: '10s',

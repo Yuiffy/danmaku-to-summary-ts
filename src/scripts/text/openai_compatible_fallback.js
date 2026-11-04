@@ -2,6 +2,7 @@
 // 供 ai_text_generator 的 daiYu fallbackChain 使用
 // 依赖注入: 由 ai_text_generator 在加载时 bindDeps 注入共享工具, 避免模块循环依赖
 const crypto = require('crypto');
+const fetch = require('node-fetch');
 const HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent;
 const configLoader = require('../config-loader');
 
@@ -45,7 +46,8 @@ async function generateTextWithOpenAICompatibleFallback(providerName, providerCo
             model,
             messages: deps().buildOpenAITextMessages(prompt, null, options.images),
             temperature: providerConfig.temperature ?? 0.7,
-            max_tokens: effectiveMaxTokens
+            max_tokens: effectiveMaxTokens,
+            ...(options.structuredOutputKey || options.responseFormat ? { response_format: { type: 'json_object' } } : {})
         };
         console.log(`[WAIT] 正在通过${providerName} API生成文本... (模型 ${model}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
         const response = await fetch(apiUrl, {
@@ -123,6 +125,7 @@ async function generateTextWithOpenAICompatibleFallback(providerName, providerCo
             maxTokens: effectiveMaxTokens
         });
     } catch (error) {
+        if (attemptState.requestStarted && !attemptState.response && /abort|timeout|timed out/iu.test(`${error.name} ${error.message}`)) error.outcomeUnknown = true;
         deps().recordFailedTextAttempt(attempts, providerName, model, error, attemptState);
         throw deps().buildTextModelFailureError(attempts, providerName);
     }
@@ -142,7 +145,22 @@ function generateTextWithDeepSeek(prompt, options = {}) {
     );
 }
 
-module.exports = { generateTextWithZai, generateTextWithDeepSeek, generateTextWithOpenAICompatibleFallback, runDaiYuFallbackChain, bindDeps };
+async function generateTextWithProfile(prompt, options) {
+    const config = configLoader.getConfig();
+    const { runTextProfile } = require('../workflow-runtime').loadWorkflow('text/profiles');
+    return runTextProfile(config, options.modelProfile, route => {
+        const request = { ...options, profileResolved: true, primaryModel: route.model, apiMode: route.apiMode,
+            exactModel: true, fallbackModelsEnabled: false, allowProviderFallback: false,
+            strictResponses: options.modelProfile === 'pro' || options.strictResponses === true,
+            attempts: [], fallback: false };
+        if (route.provider === 'daiYu') return deps().generateTextWithDaiYu(prompt, request);
+        if (route.provider === 'tuZi') return deps().generateTextWithTuZi(prompt, request);
+        return route.provider === 'zai' ? generateTextWithZai(prompt, request) : generateTextWithDeepSeek(prompt, request);
+    }, { deadlineAt: options.deadlineAt, attempts: options.attempts, fallback: options.fallback });
+}
+
+module.exports = { generateTextWithZai, generateTextWithDeepSeek, generateTextWithOpenAICompatibleFallback,
+    generateTextWithProfile, runDaiYuFallbackChain, bindDeps };
 
 /**
  * daiYu 全部候选失败后的兑底链调度: 优先 fallbackChain(新), 否则兼容旧 fallbackProvider 单级兑底

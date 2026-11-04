@@ -3,7 +3,7 @@ const { validateCreativePlan, assertRenderPlan } = require('./creative_plan');
 const { anchorSpatialPlan, validateAnchoredFaceInsets, focusBounds, layoutSubtitleAss } = require('./creative_layout');
 
 /** Check every node, including the actual burn layout, before spending time on a render. */
-function prepareCreativeDraft(raw, { moments, sourceId, duration, settings, assets, resolution, subtitleAss, subtitleStyle }) {
+function prepareCreativeDraft(raw, { moments, sourceId, duration, settings, assets, resolution, subtitleAss, subtitleStyle, evidence = {} }) {
     if (!Array.isArray(raw?.effects)) throw new Error('Invalid creative effects');
     const issues = [], normalized = [];
     for (const row of raw.effects) {
@@ -11,7 +11,9 @@ function prepareCreativeDraft(raw, { moments, sourceId, duration, settings, asse
             // Placement changes only follow schema validation; raw sticker positions use a different range.
             const anchored = validateAnchoredFaceInsets({ effects: [{ ...row, sticker: null }] }, resolution, settings).effects[0];
             const draft = { ...anchored, sticker: row.sticker };
-            const checked = validateCreativePlan({ effects: [draft] }, moments, sourceId, duration, settings, assets);
+            // 单节点只校验自己：variety 与跨节点补全留给最终整体计划。
+            const checked = validateCreativePlan({ effects: [draft] }, moments, sourceId, duration,
+                { ...settings, variety: false }, assets, evidence, { fillDanmaku: false });
             const spatial = anchorSpatialPlan(checked, resolution, settings, assets);
             for (const effect of spatial.effects) focusBounds(effect, resolution.width, resolution.height);
             layoutSubtitleAss(subtitleAss, spatial, subtitleStyle);
@@ -22,9 +24,9 @@ function prepareCreativeDraft(raw, { moments, sourceId, duration, settings, asse
         }
     }
     if (issues.length) throw new Error(`Creative preflight failed:\n${issues.join('\n')}`);
-    const plan = anchorSpatialPlan(validateCreativePlan({ ...raw, effects: normalized }, moments, sourceId, duration, settings, assets), resolution, settings, assets);
+    const plan = anchorSpatialPlan(validateCreativePlan({ ...raw, effects: normalized }, moments, sourceId, duration, settings, assets, evidence), resolution, settings, assets);
     // A sticker can be omitted when there is no room near its subject.
-    plan.effects = plan.effects.filter(row => row.zoom || row.faceInset || row.focusInset || row.sticker || row.sound || row.filter);
+    plan.effects = plan.effects.filter(row => row.zoom || row.faceInset || row.focusInset || row.sticker || row.danmaku || row.sound || row.filter);
     assertRenderPlan(plan, duration, settings, assets, true);
     layoutSubtitleAss(subtitleAss, plan, subtitleStyle);
     return plan;

@@ -245,7 +245,13 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
 }
 
 async function runEnhancements(metadata, context) {
-    const keywordTopicPrecision = metadata?.publicationKind === 'keyword_topic'
+    // Replayed/repaired keyword candidates keep the topic mode but may carry no
+    // publicationKind because they were not rendered by the automatic publication
+    // path. They are still keyword topics, so they must reach the same creative
+    // runner instead of being dropped by the own-stream room allowlist.
+    const keywordTopicCandidate = metadata?.publicationKind === 'keyword_topic'
+        || metadata?.mode === 'topic_candidate_manual_cut';
+    const keywordTopicPrecision = keywordTopicCandidate
         && metadata.precisionExperiment?.selected === true
         && context.options?.allowKeywordTopicPrecision === true;
     if (!enhancementEnabled(context.config?.enhancements, context.info?.roomId) && !keywordTopicPrecision) return metadata;

@@ -66,8 +66,26 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe', atSeconds 
     return { ...await entry.promise };
 }
 
-function probeMediaDuration(mediaPath, ffprobePath = 'ffprobe') {
-    return new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
+const fractionToNumber = value => {
+    const [numerator, denominator] = String(value || '').split('/').map(Number);
+    return Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0 ? numerator / denominator : NaN;
+};
+
+/** Normalising mixed playback rates needs one constant output rate; fall back to null. */
+function getVideoFrameRate(mediaPath, ffprobePath = 'ffprobe') {
+    return new Promise(resolve => childProcess.execFile(ffprobePath, [
+        '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate,r_frame_rate', '-of', 'json', String(mediaPath)
+    ], { encoding: 'utf8', timeout: 10000, windowsHide: true, shell: false, maxBuffer: 65536 }, (error, stdout) => {
+        if (error) return resolve(null);
+        try {
+            const stream = JSON.parse(String(stdout)).streams?.[0] || {};
+            const rate = [stream.avg_frame_rate, stream.r_frame_rate].map(fractionToNumber).find(value => Number.isFinite(value) && value >= 10 && value <= 120);
+            resolve(Number.isFinite(rate) ? Math.round(rate * 1000) / 1000 : null);
+        } catch { resolve(null); }
+    }));
+}
+
+function probeMediaDuration(mediaPath, ffprobePath = 'ffprobe') {    return new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
         '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', String(mediaPath)
     ], { encoding: 'utf8', timeout: 10000, windowsHide: true, shell: false, maxBuffer: 65536 },
     (error, stdout) => {
@@ -77,4 +95,4 @@ function probeMediaDuration(mediaPath, ffprobePath = 'ffprobe') {
     }));
 }
 
-module.exports = { getVideoResolution, probeMediaDuration };
+module.exports = { getVideoResolution, getVideoFrameRate, probeMediaDuration };

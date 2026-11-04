@@ -1,6 +1,6 @@
 export {};
 const fs = require('fs'), os = require('os'), path = require('path'), sharp = require('sharp');
-const { runCreativeEnhancement } = require('./creative_runner');
+const { runCreativeEnhancement, requestedLaugh } = require('./creative_runner');
 
 test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent', 'focus_qa_repaired', 'content_only', 'content_only_discarded_moments', 'content_only_topic_plan', 'context_only'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
     const contentOnly = outcome.startsWith('content_only');
@@ -139,7 +139,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                         frameIds: [0, 1, 2].map(n => `M${i + 1}F${n}`) }));
                 }
                 if (profileCase) value.effects[0] = { momentId: 'M1', frameIds: ['M1F0', 'M1F1', 'M1F2'], visualConfirmed: true, reason: '关键细节保持上下文',
-                    focusInset: { target: outcome === 'tutorial' ? 'chat' : 'detail', shape: 'rectangle', placement: 'source',
+                    focusInset: { target: 'detail', shape: 'rectangle', placement: 'source',
                         sourceBox: { x: .2, y: .2, width: .2, height: .1 }, magnification: 1.5, clearOfAction: true } };
                 if (contentOnly || outcome === 'context_only') value.effects = [];
                 if (spatialCase) {
@@ -264,3 +264,26 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
         expect(stages).toHaveLength(outcome.startsWith('visual_qa_') || outcome === 'focus_qa_repaired' ? 5 : spatialCase ? outcome === 'spatial_repair_twice' ? 5 : 4 : outcome === 'tutorial' ? 4 : profileCase ? 5 : outcome === 'render_failed' ? 2 : ['sound_plan', 'crop_repaired', 'crop_still_unsafe'].includes(outcome) ? 4 : 3);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }, 15000);
+
+// The sound pass answers with an empty array often enough that a laugh the operator
+// asked for by name has to be placed from the cue timeline instead of trusting it.
+test('a laugh named in the feedback lands on the quoted cue end, not on the sound pass', () => {
+    const assets = { audience_laugh: { kind: 'sound' }, sitcom_laugh: { kind: 'sound' } };
+    const speech = [{ start: 6.139, end: 7.34, text: '这已经碰过了', id: 'C2' },
+        { start: 74.709, end: 77.68, text: '我碰过了真的假的啊', id: 'C16' }];
+    // The plan's moments carry id/start/end; draft effect rows only know momentId,
+    // which is exactly the shape mismatch that silently skipped the override once.
+    const moments = [{ id: 'M4', start: 57.878, end: 68.073 }, { id: 'M5', start: 71.472, end: 79.383 }];
+    const placed = requestedLaugh(speech, moments, '本轮反馈：指定句子「我碰过了，真的假的啊」说完后加一次罐头笑声', assets);
+    // Punctuation and the split between cues must not matter: the quote resolves to C16.
+    expect(placed).toEqual({ momentId: 'M5', id: 'audience_laugh', offsetSeconds: 6.258, levelDb: -8,
+        reason: '用户点名的笑声：我碰过了，真的假的啊 说完后接一次罐头笑声' });
+    // A laugh must still land inside the moment it is attached to, never past its window.
+    const late = requestedLaugh([{ start: 79.3, end: 79.9, text: '我碰过了真的假的啊' }],
+        [{ id: 'M5', start: 71.472, end: 79.383 }], '「我碰过了真的假的啊」', assets);
+    expect(late.offsetSeconds).toBeLessThanOrEqual(9.311);
+    // Nothing to quote, or no laugh asset on disk, means no invented beat.
+    expect(requestedLaugh(speech, moments, '加一次罐头笑声', assets)).toBeNull();
+    expect(requestedLaugh(speech, moments, '「我碰过了真的假的啊」', {})).toBeNull();
+    expect(requestedLaugh(speech, moments, '「不存在的一句」', assets)).toBeNull();
+});

@@ -21,7 +21,7 @@ export function RecordingQuestions() {
     } catch (reason) { setError(active.signal.aborted ? '查询已取消' : reason instanceof Error ? reason.message : '查询失败'); }
     finally { controller.current = undefined; setBusy(false); }
   }
-  return <div className="questions-workspace"><p className="muted">从直播记忆里找答案和原文证据。直接在这里提问，结果只显示在本机。</p>
+  return <div className="questions-workspace"><p className="muted">查询直播概述、历史原文、股票行情、天气和公开网页。每次独立提问，回答与来源只显示在本机。</p>
     {(error || rooms.error) && <div className="notice error" role="alert">{error || rooms.error}{rooms.error && <button onClick={rooms.refresh}>重新加载直播间</button>}</div>}
     <form className="question-form" onSubmit={event => { event.preventDefault(); void query('ask'); }}>
       <div className="form-stack">
@@ -32,7 +32,7 @@ export function RecordingQuestions() {
         <p className="muted">问题点名其他主播时查对应房间；比较时写明双方，最多 3 个房间。每次独立检索，请写出完整问题。</p>
         <label>问题<textarea required maxLength={120} disabled={busy} value={question} onChange={event => setQuestion(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
-          placeholder="例如：这个月的舰礼是什么？" rows={3} /></label>
+          placeholder="例如：QQQ amd nvidia 标普 现在行情如何？" rows={3} /></label>
       </div>
       <details><summary>证据检索条件（用于“只查证据”）</summary><div className="form-grid">
         <label>关键词（逗号分隔，最多 5 个）<input disabled={busy} value={terms} onChange={event => setTerms(event.target.value)} /></label>
@@ -47,7 +47,7 @@ export function RecordingQuestions() {
     </form>
     {busy && <div className="empty" role="status">正在查询{mode === 'ask' ? '回答与引用' : '原始证据'}…</div>}
     {result && <section className="question-results"><div className="section-heading"><h2>{mode === 'ask' ? '回答与引用' : '检索证据'}</h2><span>{(result.elapsedMs / 1000).toFixed(1)} 秒</span></div>
-      {mode === 'ask' ? <><p className="question-answer">{result.result.answer}</p>{(result.result.clues || []).map((clue: any, index: number) => <blockquote key={index}><strong>{clue.roomName || clue.roomId} · {clue.date || '日期不详'} · {clue.time}</strong><p>{clue.excerpt}</p></blockquote>)}</> : <><p className="muted">{result.result.hits.length} 条命中 · {result.result.indexedFiles} 个字幕索引文件 · {result.result.indexComplete ? '索引完整' : '索引覆盖不完整'}{result.result.limited ? ' · 有范围限制' : ''}</p>{result.result.hits.map((hit: any, index: number) => <article key={index}><div className="eyebrow">{hit.roomName || hit.roomId} · {hit.date || '日期不详'} · {hit.time || hit.start || ''} · {hit.kind === 'danmaku' ? '观众弹幕' : hit.kind === 'gift-catalog' ? '舰礼档案' : '录像字幕'}</div><p>{hit.text || hit.excerpt}</p><details><summary>展开原文上下文</summary><pre>{JSON.stringify(hit.expanded?.context || hit.context, null, 2)}</pre></details></article>)}{!result.result.hits.length && <div className="empty">在当前资料范围内没有找到可靠证据</div>}</>}
+      {mode === 'ask' ? <><p className="question-answer">{result.result.answer}</p>{(result.result.clues || []).map((clue: any, index: number) => <blockquote key={index}><strong>{clue.kind === 'public-search' ? `${clue.provider} · ${clue.title}（查询时间，非数据发生时间）` : `${clue.roomName || clue.roomId} · ${clue.kind === 'live-overview' ? '直播概述（生成资料，非原话）' : '直播资料'}`} · {clue.date || '日期不详'} · {clue.time}</strong><p>{clue.excerpt}</p></blockquote>)}</> : <><p className="muted">{result.result.hits.length} 条命中 · {result.result.indexedFiles} 个字幕索引文件 · {result.result.indexComplete ? '索引完整' : '索引覆盖不完整'}{result.result.limited ? ' · 有范围限制' : ''}</p>{result.result.hits.map((hit: any, index: number) => <article key={index}><div className="eyebrow">{hit.roomName || hit.roomId} · {hit.date || '日期不详'} · {hit.time || hit.start || ''} · {hit.kind === 'danmaku' ? '观众弹幕' : hit.kind === 'gift-catalog' ? '舰礼档案' : '录像字幕'}</div><p>{hit.text || hit.excerpt}</p><details><summary>展开原文上下文</summary><pre>{JSON.stringify(hit.expanded?.context || hit.context, null, 2)}</pre></details></article>)}{!result.result.hits.length && <div className="empty">在当前资料范围内没有找到可靠证据</div>}</>}
     </section>}
   </div>;
 }

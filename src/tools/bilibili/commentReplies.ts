@@ -13,6 +13,8 @@ import { CommentWorker } from '../../services/bilibili/comment-replies/CommentWo
 import { CommentFeedbackStore } from '../../services/bilibili/comment-replies/CommentFeedbackStore';
 import { readQuestionRuntime } from '../../services/live-vote/questions/EvidenceQuery';
 import { createCommentKnowledge } from '../../services/bilibili/comment-replies/CommentKnowledge';
+import { createQuestionReadFactory } from '../../services/live-vote/questions/QuestionReadTools';
+import { createPublicSearchFactory } from '../../services/live-vote/questions/PublicSearchRuntime';
 import { CommentFeedError, CommentPoller } from '../../services/bilibili/comment-replies/CommentPolling';
 import { createProjectReader } from '../../services/bilibili/comment-replies/CommentProjects';
 import { createCommentVisualReader } from '../../services/bilibili/comment-replies/CommentVisual';
@@ -81,8 +83,10 @@ export async function runCommentReplies(args: string[]): Promise<void> {
     background: true
   } as QQImageConfig, settings) : undefined;
   const projects = config.projectSources?.length ? createProjectReader(root, config.projectSources) : undefined;
-  const knowledge = config.knowledge && options.mode !== 'dry-run' ? createCommentKnowledge(
-    await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)), config.knowledge,
+  const runtime = config.knowledge && options.mode !== 'dry-run' ? await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)) : undefined;
+  const questionTools = config.agentTools && config.knowledge && runtime ? createQuestionReadFactory(runtime, config.knowledge,
+    createPublicSearchFactory(config.providerConfigPath, settings.proxy)) : undefined;
+  const knowledge = config.knowledge && runtime ? createCommentKnowledge(runtime, config.knowledge,
     { video: (aid, signal) => api.video(aid, signal), now: Date.now,
       ...(projects && !config.agentTools ? { projects } : {}) }) : undefined;
   if (options.mode === 'check') {
@@ -100,7 +104,7 @@ export async function runCommentReplies(args: string[]): Promise<void> {
       config.videoVision === false ? undefined : createCommentVisualReader({
         target: async (aid, signal) => (await api.video(aid, signal, false)).visualTarget,
         shots: (aid, cid, signal) => api.videoShots(aid, cid, signal)
-      }), config.agentTools ? event => ({ projects, video: event.type === 1 ? signal => api.video(event.oid, signal) : undefined,
+      }), config.agentTools ? (event, signal) => ({ projects, questions: questionTools?.(event, signal), video: event.type === 1 ? signal => api.video(event.oid, signal) : undefined,
         report: entry => console.info(JSON.stringify(entry)) }) : undefined) : async () => '鹿饼收到啦，这是一条本地预览回复。',
     collectFeedback: options.mode === 'live' ? (event, note) => feedback.collect(event, note) : undefined,
     audience: (uid, signal) => api.audience(uid, signal),

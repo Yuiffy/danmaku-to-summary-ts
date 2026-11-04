@@ -13,33 +13,44 @@ import { qqImageCharacters } from './QQImageCatalog';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure, qqRequestId } from './QQDiagnostics';
 
+type SafeUpstreamMessage = NonNullable<QQDiagnostic['upstreamMessage']>;
+type ImageHttpFailure = { code: QQDiagnostic['code']; upstreamMessage?: SafeUpstreamMessage };
+
 /** Inspect only a bounded error envelope; arbitrary provider text never leaves this adapter. */
-async function imageHttpFailure(response: Response): Promise<QQDiagnostic['code']> {
+async function imageHttpFailure(response: Response): Promise<ImageHttpFailure> {
   try {
     const chunks: Buffer[] = [];
     let length = 0;
     const body = response.body;
     if (Buffer.isBuffer(body)) {
-      if (body.length > 16384) return 'http_error';
+      if (body.length > 16384) return { code: 'http_error' };
       chunks.push(body);
     } else {
       for await (const chunk of body) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         length += bytes.length;
-        if (length > 16384) return 'http_error';
+        if (length > 16384) return { code: 'http_error' };
         chunks.push(bytes);
       }
     }
-    const error = JSON.parse(Buffer.concat(chunks).toString('utf8'))?.error;
+    const text = Buffer.concat(chunks).toString('utf8').trim();
+    let parsed: any;
+    try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+    const error = parsed?.error;
+    const message = error?.message === 'Upstream request failed' || error?.message === 'Our servers are currently overloaded. Please try again later.'
+      ? error.message as SafeUpstreamMessage
+      : text === 'Upstream request failed' || text === 'Our servers are currently overloaded. Please try again later.'
+        ? text as SafeUpstreamMessage : undefined;
     if (response.status === 400 && error?.code === 'moderation_blocked') {
-      return typeof error.message === 'string' && /safety_violations=\[[^\]\r\n]*\bsexual\b[^\]\r\n]*\]/u.test(error.message)
-        ? 'image_sexual' : 'image_moderation';
+      return { code: typeof error.message === 'string' && /safety_violations=\[[^\]\r\n]*\bsexual\b[^\]\r\n]*\]/u.test(error.message)
+        ? 'image_sexual' : 'image_moderation', ...(message ? { upstreamMessage: message } : {}) };
     }
+    return { code: 'http_error', ...(message ? { upstreamMessage: message } : {}) };
   } catch { /* Unreadable or non-JSON error bodies retain their original HTTP failure. */ }
-  return 'http_error';
+  return { code: 'http_error' };
 }
 
-/** Fixed API, trusted local character references, one paid attempt, PNG-only local output. */
+/** Fixed API, trusted local character references, PNG-only local output. */
 export function createQQImageGenerator(root: string, appId: string, config: QQImageConfig,
   settings: ReturnType<typeof questionProviderSettings>, transport = fetch, inputs = new QQImageInputs(root, appId)) {
   return async (request: QQRequest, signal: AbortSignal, command?: QQImageCommand): Promise<QQImageResult> => {
@@ -80,7 +91,10 @@ export function createQQImageGenerator(root: string, appId: string, config: QQIm
         agent: settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined });
       if (Number.isInteger(response.status)) detail.httpStatus = response.status;
       detail.requestId = qqRequestId(response, settings.apiKey);
-      if (!response.ok) throw qqFailure(stage, await imageHttpFailure(response));
+      if (!response.ok) {
+        const failure = await imageHttpFailure(response);
+        throw qqFailure(stage, failure.code, failure.upstreamMessage ? { upstreamMessage: failure.upstreamMessage } : {});
+      }
       stage = 'image_decode';
       let result: any;
       try { result = await response.json(); }

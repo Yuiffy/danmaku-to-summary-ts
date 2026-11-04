@@ -8,6 +8,7 @@ const { probeMediaDuration } = require('./video_probe');
 const { buildSubtitleBurnVideoArgs, buildSubtitleBurnInputArgs } = require('./subtitle_encoding');
 const { fileDigest } = require('./source_snapshot');
 const { writeJsonAtomic } = require('./candidate_subtitles');
+const { resolvePythonBin } = require('./python_bin');
 const execFileAsync = promisify(execFile);
 
 /** Accurate decoding/encoding avoids keyframe-sized gaps or repeated content between viewing Ps.
@@ -72,7 +73,7 @@ async function activityCover(part, coverPath, config, presentation) {
         '-frames:v', '1', '-vf', 'scale=1920:-2', '-q:v', '2', framePath],
     { ffmpegPath: config.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动切片封面', timeoutMs: 60000 });
     writeJsonAtomic(presentationPath, presentation);
-    await execFileAsync('python', [path.resolve(__dirname, '../stream_activity_cover.py'), '--frame', framePath,
+    await execFileAsync(resolvePythonBin('python'), [path.resolve(__dirname, '../stream_activity_cover.py'), '--frame', framePath,
         '--presentation', presentationPath, '--output', coverPath], { windowsHide: true, shell: false, timeout: 60000, maxBuffer: 1024 * 1024 });
     return coverPath;
 }

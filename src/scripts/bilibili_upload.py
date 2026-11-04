@@ -31,6 +31,78 @@ ACCOUNT_MID = 412141275
 GENERIC_COLLECTION_LABELS = {'老岁片', 'AI老岁片'}
 ROOM_ID_PATTERN = re.compile(r'(?:录制-|[\\/])(\d{5,})[-_]')
 
+# @mention support in video descriptions.
+#
+# Bilibili only renders a clickable, blue "@昵称" when the description is
+# submitted as desc_v2 segments with a type=2 node carrying the user's uid
+# (biz_id). Plain text "@昵称" inside desc never linkifies, no matter the
+# spacing. Proven shape (verified live on BV11axR6FEg9, 2026-11-05):
+#   type-1 nodes: {"raw_text": text, "type": 1, "biz_id": ""}
+#   type-2 nodes: {"raw_text": 昵称, "type": 2, "biz_id": "<uid-as-string>"}
+# and the plain desc must contain "@昵称" followed by TWO spaces, because the
+# server flattens a type-2 node as "@昵称 " (one space) and rejects mismatched
+# descriptions with 21010 描述信息不合法.
+MENTION_UIDS = {
+    '岁己SUI': 1954091502,
+}
+
+
+def normalize_mention_spaces(desc: str, mention_uids=None) -> str:
+    """Ensure every @昵称 in desc is followed by exactly two spaces."""
+    mention_uids = MENTION_UIDS if mention_uids is None else mention_uids
+    for name in mention_uids:
+        # Consume horizontal whitespace (keep newlines) so the mention is
+        # always followed by exactly two spaces, matching the desc_v2 render
+        # rule "@昵称 " + one leading space on the following text node.
+        desc = re.sub(rf'@{re.escape(name)}(?:[^\S\n]+)?', f'@{name}  ', desc)
+    return desc
+
+
+def build_desc_v2_mentions(desc: str, mention_uids=None):
+    """Split desc into desc_v2 nodes around @昵称 mentions.
+
+    Returns None when desc contains no known mention. Mirrors biliup's
+    battle-tested creditsToDesc_v2: text nodes following a mention get a
+    leading space (the render rule adds "@昵称 " with one space itself).
+    """
+    mention_uids = MENTION_UIDS if mention_uids is None else mention_uids
+    if not mention_uids:
+        return None
+    names = '|'.join(re.escape(name) for name in mention_uids)
+    pattern = re.compile(rf'@({names})(?=\s|$)')
+    if not pattern.search(desc):
+        return None
+    nodes = []
+    last = 0
+    for match in pattern.finditer(desc):
+        text = desc[last:match.start()]
+        if text:
+            nodes.append({'raw_text': text if not nodes else ' ' + text.lstrip(' '), 'biz_id': '', 'type': 1})
+        nodes.append({'raw_text': match.group(1), 'biz_id': str(mention_uids[match.group(1)]), 'type': 2})
+        last = match.end()
+    tail = desc[last:]
+    if tail:
+        # Render flattens a type-2 node as "@昵称 " (one space); desc carries
+        # two spaces after the mention, so the following node keeps exactly
+        # one leading space to stay consistent (empty nodes are rejected
+        # with 21010, hence the space-only node is kept).
+        nodes.append({'raw_text': ' ' + tail.lstrip(' '), 'biz_id': '', 'type': 1})
+    return nodes
+
+
+class MentionVideoMeta(video_uploader.VideoMeta):
+    """VideoMeta that injects a desc_v2 mention structure into the payload."""
+
+    def __init__(self, *args, desc_v2_nodes=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._desc_v2_nodes = desc_v2_nodes
+
+    def __dict__(self) -> dict:
+        payload = super().__dict__()
+        if self._desc_v2_nodes:
+            payload['desc_v2'] = self._desc_v2_nodes
+        return payload
+
 
 def hidden_subprocess_kwargs():
     """Prevent fallback ffmpeg from flashing a console on Windows."""
@@ -620,6 +692,12 @@ async def upload_video(
     print(f'[INFO] 分区: {tid}')
     print(f"[INFO] 标签: {', '.join(tags)}")
 
+    # Render "@昵称" mentions as clickable desc_v2 nodes (see MENTION_UIDS).
+    desc = normalize_mention_spaces(desc)
+    desc_v2_nodes = build_desc_v2_mentions(desc)
+    if desc_v2_nodes:
+        print(f'[INFO] 简介 @ 提及: {len([n for n in desc_v2_nodes if n["type"] == 2])} 个已转 desc_v2')
+
     page = video_uploader.VideoUploaderPage(
         path=video_path,
         title=title,
@@ -665,7 +743,7 @@ async def upload_video(
         print('[ERROR] 无法创建封面')
         return None
 
-    meta = video_uploader.VideoMeta(
+    meta_kwargs = dict(
         tid=tid,
         title=title,
         desc=desc,
@@ -675,6 +753,8 @@ async def upload_video(
         source='直播切片',
         dynamic=dynamic,
     )
+    meta = (MentionVideoMeta(desc_v2_nodes=desc_v2_nodes, **meta_kwargs)
+            if desc_v2_nodes else video_uploader.VideoMeta(**meta_kwargs))
 
     from clip_upload_pacing import paced_uploader_type, PreuploadRateLimited, UploadPaused, http_status
     uploader_type = (paced_uploader_type(video_uploader.VideoUploader, pacing, [page])

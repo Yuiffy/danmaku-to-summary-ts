@@ -173,6 +173,18 @@ revision under `precision_revisions/<ID>/`. Read the returned `RESULT.json` and
 QA evidence; a fallback is a failed attempt, not a completed precision clip.
 This command does not upload, replace published media, or send notifications.
 See `docs/clip-precision-experiment.md` for its contract.
+Two optional switches change the cut itself. `--speed-plan <json>` speeds up
+no-information stretches (walking, re-fighting, waiting) at 1.2–10x; windows are
+absolute recording seconds, bound to the clip ID, snapped to subtitle boundaries,
+and rejected when they cover setup/payoff/reaction/closing content or when less
+than half of a window survives the edit. Below 2.5x a sped cue must still clear
+0.75s of reading time; at 2.5x and above the original captions for that span are
+dropped and the render stamps a "rate × fast-forward, duration" badge in the top
+right corner, so the jump reads as an edit rather than as stutter. `--no-bgm`
+keeps the operator's own audio bed
+without adding post BGM, for recordings that already carry music. A clip created
+through the manual queue has no own-stream selection plan, so it also requires
+`--local-clip-note` stating why that segment was requested.
 Use `--style compact` when the user wants tight story editing, face/key-object
 closeups, denser effects and background music. It keeps approved subtitle words,
 maps complete retained cue groups to the shortened timeline, and separately
@@ -287,6 +299,15 @@ npm run manual:clips -- add ... --profile old_sui
 ```
 
 `small_sui` uses the `【小岁】` upload prefix. `old_sui` uses the `老岁片 ` prefix and separate old-clip tags. The profile must not change subtitle size, font, two-stage copy-mode burn, cover source, or timing logic.
+
+Add content tags for every clip so Bilibili search/collection can pick them up:
+pass `--tags-extra "影之刃零,搞笑"` (comma or CJK-comma separated, deduplicated
+automatically) with the game name from the stream title `《…》` and any fitting
+mood tag. The mood whitelist (`src/scripts/content_tags.js`) currently carries
+搞笑 / 高能 / 温情 / 翻唱 — extend that file rather than inventing ad-hoc tags.
+The workspace manual-clip form has the same field (`tagsExtra`). Automatic AI
+clips derive the same tags in `topic_clipper.js` from the stream title and the
+clip transcript.
 
 ### 3. Cut and burn
 

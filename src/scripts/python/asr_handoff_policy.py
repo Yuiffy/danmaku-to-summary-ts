@@ -109,6 +109,23 @@ class BoundaryPolicy:
                 and isinstance(free, (int, float)) and math.isfinite(free)
                 and free >= self.config['ultra_min_free_mb'])
 
+    def ultra_caps_ok(self, sample):
+        """Hard-cap-only check: mid-band external load (busy but below the
+        shared-admission bar) still qualifies for the yield-based ultra tier
+        as long as the utilization, memory, and free VRAM caps hold. Unknown
+        utilization (failed attribution) must not veto admission when the
+        memory caps are measured and pass."""
+        util = sample.get('external_util_pct')
+        memory = sample.get('external_memory_pct')
+        free = sample.get('external_free_mb')
+        util_ok = ((not isinstance(util, (int, float)) or not math.isfinite(util))
+                   or 0 <= util <= self.config['ultra_max_external_util_pct'])
+        memory_ok = (isinstance(memory, (int, float)) and math.isfinite(memory)
+                     and 0 <= memory <= self.config['ultra_max_memory_pct'])
+        free_ok = (isinstance(free, (int, float)) and math.isfinite(free)
+                   and free >= self.config['ultra_min_free_mb'])
+        return util_ok and memory_ok and free_ok
+
     def observe(self, sample, now):
         # Missing/error samples and monitoring gaps cannot prove sustained idle.
         stale = self.last_sample is None or now - self.last_sample > self.config['poll_s'] * 3
@@ -130,7 +147,7 @@ class BoundaryPolicy:
             self.overload_since = (now if self.overload_since is None or stale else self.overload_since) if overload else None
             if not idle:
                 self.low_impact = True
-                self.ultra_low_impact = self.ultra_available(sample)
+                self.ultra_low_impact = self.ultra_available(sample) or self.ultra_caps_ok(sample)
             elif self.idle_since is not None and now - self.idle_since >= self.config['idle_s']:
                 self.low_impact = False
                 self.ultra_low_impact = False
@@ -144,22 +161,37 @@ class BoundaryPolicy:
         gpu_ok = (sample.get('gpu_idle') is True and sample.get('game_running') is False
                   and self.last_sample is not None
                   and now - self.last_sample <= self.config['poll_s'] * 3)
+        # Missing or stale telemetry leaves the device unconfirmed, but an
+        # indefinite "waiting for compute resources" stall serves nobody:
+        # fall through to CPU background or the ultra-low-impact GPU tier
+        # (small batches plus yields) instead of waiting.
+        fresh = self.last_sample is not None and now - self.last_sample <= self.config['poll_s'] * 3
+        unconfirmed = ((not fresh or (sample.get('gpu_idle') is None
+                                      and not isinstance(sample.get('external_util_pct'), (int, float))))
+                       and sample.get('game_running') is not True)
+        if unconfirmed:
+            if (current == 'cpu' and cpu_running) or cpu_ok:
+                return 'cpu'
+            self.low_impact = True
+            self.ultra_low_impact = True
+            return 'cuda'
         if self.config['allow_shared_gpu']:
             fresh = self.last_sample is not None and now - self.last_sample <= self.config['poll_s'] * 3
             usable = fresh and self.shared_available(sample)
             ultra = fresh and self.ultra_available(sample)
+            busy_ultra = fresh and not usable and self.ultra_caps_ok(sample)
             recovered = (usable and now >= self.gpu_retry_after and self.usable_since is not None
                          and now - self.usable_since >= self.config['idle_s'])
             # A suspended worker may come back on the ultra-low-impact tier once the cooldown
             # expired: that tier runs small batches and yields, so a busy owner stays usable.
-            ultra_recovered = ultra and now >= self.gpu_retry_after
+            ultra_recovered = (ultra or busy_ultra) and now >= self.gpu_retry_after
             if current == 'cuda':
                 grace = (fresh and not ultra and sample.get('memory_pressure') is not True
                          and self.overload_since is not None
                          and now - self.overload_since < self.config['gpu_busy_s'])
-                admitted = (recovered or ultra_recovered) if self.gpu_suspended else usable or ultra or grace
+                admitted = (recovered or ultra_recovered) if self.gpu_suspended else usable or ultra or busy_ultra or grace
                 return 'cuda' if admitted else ('cpu' if cpu_ok else 'wait')
-            if (ultra and not self.shared_available(sample) and not self.gpu_suspended
+            if ((ultra or busy_ultra) and not self.shared_available(sample) and not self.gpu_suspended
                     and (remaining >= self.config['min_remaining_s'] or not cpu_ok)):
                 return 'cuda'
             return 'cuda' if recovered and (remaining >= self.config['min_remaining_s'] or not cpu_ok) else ('cpu' if cpu_ok else 'wait')
@@ -174,6 +206,8 @@ class BoundaryPolicy:
             return 'cuda' if gpu_ok else ('cpu' if cpu_ok else 'wait')
         sustained = gpu_ok and self.idle_since is not None and now - self.idle_since >= self.config['idle_s']
         if sustained and (remaining >= self.config['min_remaining_s'] or not cpu_ok):
+            self.low_impact = False
+            self.ultra_low_impact = False
             return 'cuda'
         return 'cpu' if cpu_ok else 'wait'
 

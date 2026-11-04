@@ -15,13 +15,18 @@ interface Journal { version: 1; appId: string; jobs: Record<string, Job> }
 interface JobIO {
   generate(request: QQRequest, signal: AbortSignal, command: QQImageCommand): Promise<QQImageResult>;
   now(): number;
-  report(event: { event: string; requestId: string; scope: 'group'; failure?: QQDiagnostic }): void;
+  report(event: { event: string; requestId: string; scope: 'group'; failure?: QQDiagnostic; retryAttempt?: number }): void;
   fatal(error: unknown): Promise<void>;
 }
 const PENDING = '图片任务已接收，正在后台生成。稍后在本群再次艾特我即可领取，不用重复提交生图。';
 const MAX_JOBS = 1000;
 const HASH = /^[a-f0-9]{64}$/u;
+const MAX_GENERATION_ATTEMPTS = 2;
 const conversation = (request: QQRequest) => qqDigest(JSON.stringify([request.scope, request.targetId]));
+
+/** Retry only an explicit upstream gateway failure; moderation and uncertain timeouts stay single-shot. */
+const retryableImageFailure = (failure: QQDiagnostic) => failure.stage === 'image_http' && failure.code === 'http_error' &&
+  [502, 503, 504].includes(failure.httpStatus || 0);
 
 /** Durable image attempts, independent of passive QQ replies. A new authenticated mention owns each delivery. */
 export class QQImageJobs {
@@ -93,20 +98,30 @@ export class QQImageJobs {
   private async run(request: QQRequest, command: QQImageCommand, controller: AbortController): Promise<void> {
     const timer = setTimeout(() => controller.abort(qqFailure('image_http', 'timeout')), this.timeoutMs);
     try {
-      let result: QQImageResult;
-      try {
-        // The durable running intent above always precedes provider IO.
-        result = await this.io.generate(request, controller.signal, command);
-        controller.signal.throwIfAborted();
-      } catch (error) {
-        const failure = qqDiagnostic(error, 'image_http', 'unexpected', controller.signal);
-        await this.change(state => {
-          state.jobs[request.key] = { ...state.jobs[request.key], status: controller.signal.aborted ? 'unknown' : 'failed',
-            failure, updatedAt: this.io.now() };
-        });
-        this.io.report({ event: 'qq_image_job_failed', requestId: request.key, scope: 'group', failure });
-        return;
+      let result: QQImageResult | undefined;
+      let failure: QQDiagnostic | undefined;
+      for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+        try {
+          // The durable running intent above always precedes provider IO.
+          result = await this.io.generate(request, controller.signal, command);
+          controller.signal.throwIfAborted();
+          failure = undefined;
+          break;
+        } catch (error) {
+          failure = qqDiagnostic(error, 'image_http', 'unexpected', controller.signal);
+          if (attempt < MAX_GENERATION_ATTEMPTS && retryableImageFailure(failure)) {
+            this.io.report({ event: 'qq_image_job_retry', requestId: request.key, scope: 'group', failure, retryAttempt: attempt + 1 });
+            continue;
+          }
+          await this.change(state => {
+            state.jobs[request.key] = { ...state.jobs[request.key], status: controller.signal.aborted ? 'unknown' : 'failed',
+              failure, updatedAt: this.io.now() };
+          });
+          this.io.report({ event: 'qq_image_job_failed', requestId: request.key, scope: 'group', failure });
+          return;
+        }
       }
+      if (!result) return;
       await this.change(state => {
         state.jobs[request.key] = { ...state.jobs[request.key], status: 'ready', updatedAt: this.io.now(),
           image: { model: result.model, sha256: result.sha256, prompt: result.prompt } };

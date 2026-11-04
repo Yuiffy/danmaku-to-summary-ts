@@ -25,6 +25,7 @@ function getActivityConfig(root = {}) {
         verification: { ...DEFAULTS.verification, ...raw.verification,
             localAsr: { ...DEFAULTS.verification.localAsr, ...raw.verification?.localAsr } },
         songs: { ...DEFAULTS.songs, ...raw.songs }, watch: { ...DEFAULTS.watch, ...raw.watch } };
+    config.verification = require('../workflow-runtime').loadWorkflow('text/profiles').resolveMediaProfile(root, config.verification);
     if (config.watch.blackAlignment?.enabled) config.watch.blackAlignment = require('../workflow-runtime')
         .loadWorkflow('clipping/watchBlackPolicy').blackSettings(config.watch.blackAlignment);
     if (config.watch.blackAlignment?.enabled) config.watch.blackAlignment.cadence = require('../workflow-runtime')

@@ -19,7 +19,7 @@ const lineBudgets: Record<string, number> = {
   'src/scripts/own_stream_clipper.js': 1871,
   'src/scripts/python/sensevoice_speaker.py': 2331,
   'src/scripts/tuzi_chat_completions.py': 2258,
-  'src/scripts/ai_text_generator.js': 2010,
+  'src/scripts/ai_text_generator.js': 2006,
   'src/scripts/enhanced_auto_summary.js': 1941,
   'src/scripts/clipping/topic_compilation.js': 1600,
   'src/scripts/audio_processor.js': 1420,

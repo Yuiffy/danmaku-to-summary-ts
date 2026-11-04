@@ -31,7 +31,7 @@ export function createCommentAnswerer(settings: ReturnType<typeof questionProvid
     dynamic?(id: string, signal: AbortSignal): Promise<CommentPost>;
     feedbackVideo?(event: CommentEvent, signal: AbortSignal): Promise<FeedbackVideo> },
   visual?: ReturnType<typeof createCommentVisualReader>,
-  toolSources?: (event: CommentEvent) => CommentAgentSources) {
+  toolSources?: (event: CommentEvent, signal: AbortSignal) => CommentAgentSources) {
   return async (text: string, signal: AbortSignal, event?: CommentEvent, audience?: CommentAudience): Promise<string | CommentAnswer> => {
     if (signal.aborted || Array.from(text).length > LIMITS.inputChars) throw new Error('Invalid comment agent input');
     const evidence = context && event ? await context(event, signal) : undefined;
@@ -60,13 +60,13 @@ export function createCommentAnswerer(settings: ReturnType<typeof questionProvid
     if (visual && event && needsCommentVisual(event, evidence)) try { preview = await visual(event, signal, evidence?.visualTarget); }
     catch (error) { if (error instanceof CommentPlatformBlocked || signal.aborted) throw error; }
     signal.throwIfAborted();
-    const availableSources = event && toolSources ? toolSources(event) : undefined;
-    const sources = availableSources?.video || availableSources?.projects?.catalog.length ? { ...availableSources,
+    const availableSources = event && toolSources ? toolSources(event, signal) : undefined;
+    const sources = availableSources?.questions || availableSources?.video || availableSources?.projects?.catalog.length ? { ...availableSources,
       ...(visual && event?.type === 1 && availableSources.video && !preview ? {
         visual: (signal: AbortSignal, target?: Parameters<typeof visual>[2]) => visual(event, signal, target) } : {}) } : undefined;
     const system = (collectFeedback ? COMMENT_FEEDBACK_SYSTEM : commentReplySystem(text, event?.type,
       { knowledge: !!context, projects: !!social?.config.projectSources?.length, visual: !!visual })).replace(sources ? '无工具，' : '\u0000', '') +
-      (sources ? COMMENT_TOOL_SYSTEM : '') + (preview || sources?.visual ? COMMENT_VISUAL_RULES : '');
+      (sources ? COMMENT_TOOL_SYSTEM + (sources.questions?.scope || '') : '') + (preview || sources?.visual ? COMMENT_VISUAL_RULES : '');
     const visualMap = preview ? { visualPreviewSeconds: preview.times } : undefined;
     const mapBytes = Buffer.byteLength(JSON.stringify(visualMap || {}), 'utf8');
     const promptBytes = sources ? 6500 : 3456;

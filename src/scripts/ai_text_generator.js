@@ -887,7 +887,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
 }
 
 // zai/deepSeek 兜底生成器拆分至 text/openai_compatible_fallback.js (架构行数预算)
-const { generateTextWithZai, generateTextWithDeepSeek, runDaiYuFallbackChain } = require('./text/openai_compatible_fallback');
+const { generateTextWithZai, generateTextWithDeepSeek, generateTextWithProfile, runDaiYuFallbackChain } = require('./text/openai_compatible_fallback');
 
 // 注入共享工具给兜底模块 (函数声明有提升, 此处引用安全)
 require('./text/openai_compatible_fallback').bindDeps({
@@ -903,6 +903,7 @@ require('./text/openai_compatible_fallback').bindDeps({
     unwrapSharedLiveOutput,
     logAiUsage,
     generateTextWithTuZi,
+    generateTextWithDaiYu,
     normalizeDaiYuApiMode
 });
 
@@ -910,6 +911,8 @@ require('./text/openai_compatible_fallback').bindDeps({
 // 调用daiYu API生成文本（OpenAI兼容，支持thinking）
 async function generateTextWithDaiYu(prompt, options = {}) {
     ({prompt,options}=prepareSharedLiveOutput(prompt,options));
+    const profile = workflowRuntime.loadWorkflow('text/profiles').selectTextProfile(configLoader.getConfig(), options);
+    if (profile) return generateTextWithProfile(prompt, { ...options, modelProfile: profile });
     if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
         allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
     if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);

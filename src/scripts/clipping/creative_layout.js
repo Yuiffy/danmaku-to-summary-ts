@@ -4,18 +4,20 @@ const { insetGeometry } = require('./face_inset');
 const { focusGeometry } = require('./focus_inset');
 
 function focusBounds(row, width, height) {
-    if (row.focusInset) return focusGeometry(row.focusInset, width, height);
-    if (row.faceInset) { const g = insetGeometry(row.faceInset, width, height); return { ...g, outputWidth: g.size, outputHeight: g.size }; }
+    // 贴纸自带 anchorBox 时跟着主体走：同一条里还有弹幕放大时，不能把汗滴挂到弹幕框旁边去。
     const b = row.sticker?.anchorBox;
     if (b && [b.x, b.y, b.width, b.height].every(Number.isFinite) && b.x >= 0 && b.y >= 0 && b.width > 0 && b.height > 0
         && b.x + b.width <= 1 && b.y + b.height <= 1) return { left: b.x * width, top: b.y * height, outputWidth: b.width * width, outputHeight: b.height * height };
+    if (row.faceInset) { const g = insetGeometry(row.faceInset, width, height); return { ...g, outputWidth: g.size, outputHeight: g.size }; }
+    if (row.focusInset) return focusGeometry(row.focusInset, width, height);
     return null;
 }
 
 function groupSticker(sticker, box, width, height, assets) {
     if (!sticker || !box) return sticker;
     const png = assets[sticker.id]?.kind === 'sticker';
-    const boundedWidth = png ? Math.max(.08, Math.min(sticker.width || .2, .14, box.outputWidth / width * .65)) : sticker.width;
+    // 漫符类贴图的尺寸按画面宽度定，跟主体框大小无关；框小时按比例缩会小到看不清。
+    const boundedWidth = png ? Math.max(.08, Math.min(sticker.width || .2, .14)) : sticker.width;
     const w = png ? boundedWidth * width : height * .12, h = png ? height * .22 : height * .14;
     const gap = height * .025;
     const locations = [
@@ -23,9 +25,17 @@ function groupSticker(sticker, box, width, height, assets) {
         { side: 'left', x: box.left - w / 2 - gap, y: Math.max(box.top + h / 2, height * .02 + h / 2) },
         { side: 'right', x: box.left + box.outputWidth + w / 2 + gap, y: Math.max(box.top + h / 2, height * .02 + h / 2) }
     ];
-    const p = locations.find(p => p.x - w / 2 >= width * .02 && p.x + w / 2 <= width * .98
-        && p.y - h / 2 >= height * .02 && p.y + h / 2 <= height * .82);
-    if (!p) return null; // Do not move a reaction into an unrelated corner to make it fit.
+    const p = locations.find(p => p.x - w / 2 >= width * .02 - 1 && p.x + w / 2 <= width * .98 + 1
+        && p.y - h / 2 >= height * .02 - 1 && p.y + h / 2 <= height * .82 + 1)
+        // 头像本身贴着右下角时，正上方的横向居中常常就差一两像素出界；就近夹回安全区，
+        // 比整张贴纸消失好，也能保证汗滴始终跟着头部。
+        ?? (() => {
+            const above = locations[0];
+            const x = Math.min(Math.max(above.x, width * .02 + w / 2), width * .98 - w / 2);
+            const y = Math.min(Math.max(above.y, height * .02 + h / 2), height * .82 - h / 2);
+            return { side: 'above', x, y };
+        })();
+    if (!(w < width * .96)) return null; // A sticker wider than the safe area has no honest placement.
     return { ...sticker, x: p.x / width, y: p.y / height, ...(png ? { width: boundedWidth, heightLimit: .22 } : {}),
         anchor: 'subject', anchorSide: p.side };
 }

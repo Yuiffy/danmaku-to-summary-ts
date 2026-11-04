@@ -20,11 +20,14 @@ def precision_public_copy(metadata, public_copy=None):
 def render_precision(args, api):
     script = Path(__file__).parent / 'clipping' / 'precision_revision.js'
     command = ['node', str(script), '--id', str(args.id), '--registry', str(api.REGISTRY_PATH), '--note', args.note]
-    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position', 'context_danmaku_at', 'single_host_note'):
+    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position', 'context_danmaku_at', 'single_host_note',
+                  'speed_plan', 'local_clip_note'):
         if getattr(args, field, None) is not None:
             command.extend(['--' + field.replace('_', '-'), str(getattr(args, field))])
     if args.allow_cover_face_overlap:
         command.append('--allow-cover-face-overlap')
+    if getattr(args, 'no_bgm', False):
+        command.append('--no-bgm')
     return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
 
 
@@ -65,6 +68,9 @@ def register_commands(sub, api):
     p.add_argument('--sound-level-overrides', default=None, help='Source-bound sound levels for a matching local revision')
     p.add_argument('--cover-text-position', choices=('center', 'bottom'), default=None)
     p.add_argument('--allow-cover-face-overlap', action='store_true', help='User-approved cover-only face/text overlap; other QA remains active')
+    p.add_argument('--speed-plan', default=None, help='Source-second rate plan for traversal/grinding; subtitles stay whole and readable')
+    p.add_argument('--no-bgm', action='store_true', help='Keep the original audio mix and add no background music')
+    p.add_argument('--local-clip-note', default=None, help='Explicit user request that turns a rendered manual clip into a local precision revision')
     p.set_defaults(func=lambda args: render_precision(args, api))
     p = sub.add_parser('replace-precision', help='Replace an uploaded BV with a user-reviewed precision revision')
     p.add_argument('--id', required=True, type=int)

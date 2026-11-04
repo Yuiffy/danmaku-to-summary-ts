@@ -31,19 +31,22 @@ function mediaSettings(root, config, kind) {
     const provider = visual.provider || inheritedProvider;
     const inherit = provider === inheritedProvider;
     const credentials = root.ai?.text?.[provider] || {};
-    return { provider, model: visual.model || (inherit && ai[`${prefix}Model`])
+    return require('../workflow-runtime').loadWorkflow('text/profiles').resolveMediaProfile(root, {
+        ...((kind !== 'visual' && ai[`${prefix}ModelProfile`]) ? { modelProfile: ai[`${prefix}ModelProfile`] } : {}),
+        provider, model: visual.model || (inherit && ai[`${prefix}Model`])
             || credentials.textModel || credentials.model || (provider === 'daiYu' ? ai.model || 'gpt-6-luna' : undefined),
         apiMode: provider === 'gemini' ? 'gemini_native' : visual.apiMode || (inherit && ai[`${prefix}ApiMode`])
             || (provider === 'daiYu' ? 'openai_chat' : 'gemini_native'),
         endpoint: provider === 'gemini' ? 'https://generativelanguage.googleapis.com' : credentials.baseUrl
             || (provider === 'tuZi' ? 'https://api.tu-zi.com' : undefined),
-        timeoutMs: visual.timeoutMs || ai.timeoutMs || 600000, maxTokens: visual.maxTokens || ai.maxTokens };
+        timeoutMs: visual.timeoutMs || ai.timeoutMs || 600000, maxTokens: visual.maxTokens || ai.maxTokens });
 }
 
 async function requestWithTransportRetry(request, ...args) {
     for (let attempt = 0; ; attempt++) {
         try { return await request(...args); }
         catch (error) {
+            if (error.outcomeUnknown || error.attempts?.some(attempt => attempt.outcomeUnknown)) throw error;
             if (attempt >= 1 || !/socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timed out|timeout|HTTP (429|50[234])/iu.test(error.message)) throw error;
             console.warn('[GAME_MEDIA_RETRY]', error.message);
             await new Promise(resolve => setTimeout(resolve, 1000));

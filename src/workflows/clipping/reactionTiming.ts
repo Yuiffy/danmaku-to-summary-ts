@@ -1,4 +1,4 @@
-interface Span { start: number; end: number }
+interface Span { start: number; end: number; speed?: number }
 export interface ReactionHold { after: number; seconds: number; cueId: string }
 export interface ReactionTimeline {
     version: number; sourceDuration: number; duration: number; keep: Span[];

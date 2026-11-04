@@ -1,6 +1,6 @@
 import { VoteDanmaku } from '../VoteSession';
 import {
-  busyQuestionMessage, formatQuestionAnswer, LiveQuestionConfig, parseLiveQuestion,
+  busyQuestionMessage, formatQuestionAnswerParts, LiveQuestionConfig, parseLiveQuestion,
   QuestionAnnounce, QuestionAnswerer, QuestionAuthorize, QuestionRecordWriter, QuestionRequest,
   QUESTION_LIMITS, receivedQuestionMessage, unsafeQuestionText, validateQuestionConfig
 } from './QuestionPolicy';
@@ -87,7 +87,10 @@ export class LiveQuestionSession {
     }).then(async result => {
       if (!result || !current()) return;
       clearTimeout(timeout);
-      this.announce(task.request.roomId, formatQuestionAnswer(result, this.maxChars), current);
+      for (const part of formatQuestionAnswerParts(result, this.maxChars)) {
+        if (!current()) break;
+        this.announce(task.request.roomId, part, current);
+      }
       if (this.record) {
         try { await this.record({ request: task.request, result }, task.controller.signal, current); }
         catch { console.error('Question evidence record was not confirmed; no automatic resend.'); }

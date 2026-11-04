@@ -46,7 +46,12 @@ export async function curateClipWindows<T extends Record<string, any>>(clips: T[
     const hashFile = async (file: string) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
     const sourceSrtSha256 = await hashFile(input.sourceSrt);
     const policy = coverageSettings(settings);
-    const eligible = clips.map((clip, index) => ({ clip, index })).filter(({ clip }) => input.kind === 'topic' ? !clip.preflight || clip.preflight.status === 'ready'
+    // Peer coverage is an independent duplicate check. A topic can be pending
+    // preflight because of an unresolved wording/attribution issue and still
+    // benefit from seeing an existing Bilibili clip in the review page.
+    const eligible = clips.map((clip, index) => ({ clip, index })).filter(({ clip }) => input.kind === 'topic'
+        ? Number.isFinite(Number((clip.window || clip).start)) && Number.isFinite(Number((clip.window || clip).end))
+            && Number((clip.window || clip).end) > Number((clip.window || clip).start)
         : ['model_global_rerank', 'model_full_context', 'model_chunked'].includes(clip.selectionSource)
             && (clip.globalSelection?.score ?? (clip.selectionSource === 'model_chunked' ? clip.modelScore : clip.score)) >= policy.minScore);
     if (input.kind === 'own') eligible.sort((a, b) => (b.clip.globalSelection?.score ?? b.clip.modelScore ?? b.clip.score)

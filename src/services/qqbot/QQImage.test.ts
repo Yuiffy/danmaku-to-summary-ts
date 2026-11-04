@@ -204,6 +204,18 @@ test('image HTTP failures retain status and upstream ID while omitting the provi
   expect(JSON.stringify(error.diagnostic)).not.toMatch(/private|fake-qq-key/u); expect(transport).toHaveBeenCalledTimes(1);
 });
 
+test.each(['Upstream request failed', 'Our servers are currently overloaded. Please try again later.'])('records an allow-listed upstream message without leaking arbitrary body text: %s', async message => {
+  const transport = jest.fn(async () => new Response(JSON.stringify({ error: { message, secret: 'do-not-store' } }),
+    { status: 502, headers: { 'x-request-id': 'image-upstream-502' } }));
+  const generate = createQQImageGenerator(root, '900000001', options,
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
+  let error: any;
+  try { await generate(confirmedRequest('生成星空图片'), new AbortController().signal); } catch (caught) { error = caught; }
+  expect(error.diagnostic).toMatchObject({ code: 'http_error', httpStatus: 502, requestId: 'image-upstream-502', upstreamMessage: message });
+  expect(JSON.stringify(error.diagnostic)).not.toContain('do-not-store');
+  expect(transport).toHaveBeenCalledTimes(1);
+});
+
 test.each([
   ['moderation_blocked', 'image_moderation'],
   ['invalid_image', 'http_error'],

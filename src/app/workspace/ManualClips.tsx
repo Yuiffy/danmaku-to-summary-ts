@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { api, statusText, useResource } from './client';
 
 export function ManualClipForm({ onQueued }: { onQueued: () => void }) {
-  const [form, setForm] = useState({ mediaPath: '', srtPath: '', start: '', end: '', title: '', description: '', coverText: '', profile: 'small_sui' });
+  const [form, setForm] = useState({ mediaPath: '', srtPath: '', start: '', end: '', title: '', description: '', coverText: '', tagsExtra: '', profile: 'small_sui' });
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   async function submit(action: string) {
     setBusy(true); setError('');
@@ -22,6 +22,7 @@ export function ManualClipForm({ onQueued }: { onQueued: () => void }) {
       <label>简介<textarea required value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} /></label>
       <label>封面文字<textarea required rows={2} value={form.coverText} onChange={event => setForm({ ...form, coverText: event.target.value })} /></label>
       <label>投稿样式<select value={form.profile} onChange={event => setForm({ ...form, profile: event.target.value })}><option value="small_sui">【小岁】</option><option value="old_sui">老岁片</option></select></label>
+      <label>附加标签（可选，逗号分隔：游戏名 / 搞笑 / 温情等）<input value={form.tagsExtra} placeholder="例：影之刃零,搞笑" onChange={event => setForm({ ...form, tagsExtra: event.target.value })} /></label>
     </div><div className="button-row"><button className="primary" disabled={busy} type="submit">加入待制作队列</button><button disabled={busy} type="button" onClick={() => void submit('cut-manual')}>制作下一条待制作任务</button></div><p className="muted">制作完成后保留待审核；审核与投稿在下方任务中执行。</p></form>
   </details>;
 }

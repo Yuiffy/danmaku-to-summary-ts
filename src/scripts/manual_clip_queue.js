@@ -10,8 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const topicClipper = require('./topic_clipper');
+const { normalizeTagList } = require('./content_tags');
 const configLoader = require('./config-loader');
 const { createClipResourceAdaptiveScheduler } = require('./clipping/resource_scheduler');
+const { resolvePythonBin } = require('./clipping/python_bin');
 
 const projectRoot = path.resolve(__dirname, '../..');
 const defaultQueuePath = path.join(projectRoot, 'data/runtime/manual_clip_queue.json');
@@ -264,7 +266,7 @@ function importJson(metadataPath, reviewPath, task) {
         '--tid', String(task.tid || 21),
         '--label', profile.label
     ];
-    const result = spawnSync('python', args, {
+    const result = spawnSync(resolvePythonBin('python'), args, {
         cwd: projectRoot,
         encoding: 'utf8',
         // Keep the registry helper completely detached from the user's desktop.
@@ -287,7 +289,7 @@ function enqueueIds(ids) {
         path.join(projectRoot, 'src/scripts/clip_upload_registry.py'),
         'enqueue', '--ids', ids.join(',')
     ];
-    const result = spawnSync('python', args, {
+    const result = spawnSync(resolvePythonBin('python'), args, {
         cwd: projectRoot,
         encoding: 'utf8',
         windowsHide: true,
@@ -409,6 +411,11 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     }
     const profile = task.upload ? { name: 'topic', titlePrefix: task.upload.prefix, tags: task.upload.tags }
         : resolveQueueProfile(task.profile);
+    // Merge user-specified extra tags (CLI --tags-extra / web form) after the
+    // profile's base tags, deduplicated, so they win the tail slots.
+    const baseTags = Array.isArray(profile.tags) ? profile.tags : [];
+    const tags = Array.from(new Set([...baseTags, ...(Array.isArray(task.tagsExtra) ? task.tagsExtra : [])]));
+    const profileWithTags = { ...profile, tags };
     const metadata = {
         ...task.sourceMetadata,
         version: 1,
@@ -423,11 +430,11 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
         streamTitle: task.streamTitle || null,
         uploadSource: task.upload?.source || buildUploadSource(task),
         window,
-        copy: { title: task.title, coverText: task.coverText, description: task.description, tags: profile.tags },
-        upload: task.upload || {
+        copy: { title: task.title, coverText: task.coverText, description: task.description, tags: profileWithTags.tags },
+        upload: task.upload ? { ...task.upload, tags: profileWithTags.tags } : {
             source: buildUploadSource(task),
             prefix: profile.titlePrefix,
-            tags: profile.tags,
+            tags: profileWithTags.tags,
             tid: Number(task.tid || 21),
             roomId: task.roomId || '25788785',
             streamerName: task.streamerName || '岁己SUI'
@@ -464,7 +471,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
         '## 来源', `来源：${uploadSource}`,
         recordedAt ? `直播开始时间：${recordedAt}` : null,
         '',
-        '## Tags', profile.tags.join(', '),
+        '## Tags', profileWithTags.tags.join(', '),
         '',
         '## 本地文件', `视频: ${outputVideo}`, `字幕: ${outputSrt}`, `封面: ${coverPath}`,
         ''
@@ -549,6 +556,7 @@ async function main(argv = process.argv.slice(2)) {
             streamTitle,
             recordedAt,
             tid: Number(options.tid || 21),
+            tagsExtra: normalizeTagList(options.tagsExtra),
             autoUpload: Boolean(options.autoUpload),
             notify: options.notify !== false
         };
@@ -618,6 +626,7 @@ if (require.main === module) {
 module.exports = {
     QUEUE_PROFILES,
     resolveQueueProfile,
+    normalizeTagList,
     formatRecordedDate,
     resolveRecordedDate,
     formatRecordedAt,

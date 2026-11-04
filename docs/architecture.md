@@ -98,6 +98,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `services/qqbot`, `tools/qqbot` | authenticated QQ mention admission, fixed private guidance, bounded Agents SDK loop selecting recording and image tools, room-scoped evidence and local tool traces, server-bound source/reference images with one paid image attempt and account receipts; see [QQ bot guide](qqbot.md) | ordinary group chatter/history, arbitrary agent tools or paths, Bilibili publication/credentials, shared media queues or automatic activation |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
+| `questions/QuestionReadTools`, `PublicSearchRuntime`, `StockSearch` | shared recording/public read-only tool sessions for Web, danmaku, QQ and comments; per-question public IDs, bounded security resolution/quotes and configured search transport | model credentials from another channel, publication, image jobs, arbitrary URLs/paths |
 | `questions/RecordingBrowser`, `RecordingOpenings`, `RecordingCalendar`, `CuratedRecordingSources`, `QuestionTools` | per-question opaque recording IDs, dated listing, bounded batch/range reads, multi-day opening windows and recorded-text presence calendars, recorder-clock copy deduplication, previews and arithmetic over cited time offsets | task-specific agents, arbitrary directory traversal, media/queue writes, inferring speakers or authoritative broadcast starts/absence |
 | `questions/StreamerKnowledge` | operator-confirmed broadcaster facts, room-scoped hints shared by the recording agent and QQ | automatic learning from chat, treating audience statements as confirmed facts, claiming current schedules from a habitual cadence |
 | `services/live-vote/questions/SubtitleIndex`, `SubtitleLexicalIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded full-text/semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
@@ -376,6 +377,14 @@ starting a scheduler. The larger JS orchestration is still being migrated in
 stages; these compatibility entrypoints remain the supported CLI paths.
 
 ### Configuration and history
+
+Text tier policy lives in `workflows/text/profiles`: `ai.text.profiles.flash/pro`
+hold bounded credential-free routes, and `defaultProfile` opts ordinary daiYu
+calls into flash. Existing text and media adapters own HTTP and usage recording.
+Explicitly pinned strict stages retain single-model behavior. Topic preflight
+and game/activity verifiers opt into pro; their cache signatures bind resolved
+routes and their evidence validation remains independent of provider fallback.
+See [text tier runtime settings](runtime-notes.md#text-model-profiles).
 
 `core/config/config-contract.json` defines the Node/Python contract. The readers
 select one main JSON file: explicit `CONFIG_PATH`, then `production.json` when

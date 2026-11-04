@@ -189,7 +189,10 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
         <div>{detail.cover && <Image className="review-cover" src={asset('cover')} alt="当前视频封面" width={480} height={300} unoptimized />}
           {detail.media ? <CoverEditor key={`${id}-${part}-${detail.mediaRevision}`} id={id} part={part} detail={detail} text={coverText} onText={setCoverText} disabled={processing} onSaved={resource.refresh} />
             : <p className="muted">成片制作完成后，可以拖动选帧并裁剪封面。</p>}</div></section>}
-      {tab === 'evidence' && <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>}
+      {tab === 'evidence' && <>
+        <PeerCoverageEvidence curation={detail.evidence.curation} />
+        <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>
+      </>}
       {tab === 'rebuild' && (detail.category === 'clip' ? <section className="inspector-section"><p className="muted">源时间使用整场录播的绝对秒数。重制准备修订，制作生成新视频；精剪会调用配置的 AI 流程。</p><div className="form-grid"><label>开始秒数<input value={start} onChange={event => setStart(event.target.value)} /></label><label>结束秒数<input value={end} onChange={event => setEnd(event.target.value)} /></label></div><label className="check-label"><input type="checkbox" checked={allowLong} onChange={event => setAllowLong(event.target.checked)} />保留完整的长话题</label>{allowLong && <label>完整话题说明<input value={durationNote} onChange={event => setDurationNote(event.target.value)} /></label>}<div className="button-row"><button disabled={processing} onClick={() => void act('rebuild')}>准备重制修订</button><button disabled={processing} onClick={() => void act('precision')}>AI 精剪</button></div></section> : detail.category === 'activity' ? <ActivityRevision busy={processing} kind={detail.evidence.kind} act={act} /> : <p className="muted inspector-section">完整游戏包保留连续内容，可逐 P 预览、审核和整包投稿。</p>)}
       {detail.uploadJob && (detail.uploadJob.cancelling ? <p role="status">正在取消，后台停止后可修改并重新投稿。</p>
         : detail.uploadJob.submissionStarted ? <p role="status">已进入最终提交，请核对投稿回执。</p>
@@ -201,4 +204,21 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       </footer>
     </>}
   </>;
+}
+
+function PeerCoverageEvidence({ curation }: { curation?: Record<string, any> }) {
+  const matches = Array.isArray(curation?.matches) ? curation.matches : [];
+  const searches = Array.isArray(curation?.searches) ? curation.searches : [];
+  if (!curation || (!matches.length && !searches.length)) return null;
+  const status = (value: string) => ({ covered: '已确认同题', subtitle_unavailable: '搜到但无完整字幕',
+    same_event_unconfirmed: '疑似同题待人工核', read_failed: '读取失败待人工核', different_event: '已排除同题', own_account: '本账号' } as Record<string, string>)[value] || value;
+  return <section className="inspector-section">
+    <div className="section-heading"><h3>外部同题切片核查</h3><span className="muted">{curation.status === 'covered' ? '已阻止重复自制' : '仅作审核线索，未确认前不会自动替代'}</span></div>
+    {curation.reason && <p className="muted">{curation.reason}</p>}
+    {matches.length ? <div className="form-stack">{matches.map((match: any) => <div key={`${match.bvid}-${match.status}`}>
+      <a href={match.url || `https://www.bilibili.com/video/${match.bvid}/`} target="_blank" rel="noreferrer">{match.bvid} · {match.title || '未命名视频'}</a>
+      <small>{status(match.status)}{match.reason ? ` · ${match.reason}` : ''}</small>
+    </div>)}</div> : <p className="muted">已执行检索，未留下可展示的外部候选。</p>}
+    {searches.length > 0 && <details><summary>查看使用过的 B 站搜索词</summary><ul>{searches.map((search: any, index: number) => <li key={`${search.query}-${index}`}>{search.query}（命中 {search.bvids?.length || 0} 条）</li>)}</ul></details>}
+  </section>;
 }

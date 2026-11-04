@@ -12,6 +12,7 @@ function FailureDetail({ value }: { value: QQDiagnostic }) {
       {value.httpStatus !== undefined && ` · HTTP ${value.httpStatus}`}{value.finishReason && ` · finish_reason=${value.finishReason}`}</small>
     {value.budgetBefore !== undefined && <p>累计预留 {value.budgetBefore} + 本轮 {value.charge} / 上限 {value.budgetLimit}；请求 {value.requestBytes} 字节</p>}
     {value.requestId && <p>上游请求 ID：<code>{value.requestId}</code></p>}
+    {value.upstreamMessage && <p>上游说明：<code>{value.upstreamMessage}</code></p>}
     {(value.errorName || value.systemCode) && <p>异常类型：{value.errorName} {value.systemCode}</p>}
     {value.validation && <p>校验项：{value.validation} · 输出 {value.outputChars} 字</p>}
     {value.fingerprint && <small>异常指纹：{value.fingerprint}</small>}

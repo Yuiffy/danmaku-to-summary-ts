@@ -11,6 +11,14 @@ const { recordSelectionDiagnostic } = require('./selection_request');
 const MEDIA_PACKET_VERSION = 7;
 
 async function requestMediaVerification(prompt, inputs, root, settings) {
+    if (settings.modelProfile && !settings.profileResolved) {
+        if (inputs.some(input => input.mimeType.startsWith('audio/'))) throw new Error('Text model profiles do not accept raw audio');
+        const { runTextProfile } = require('../workflow-runtime').loadWorkflow('text/profiles');
+        const deadlineAt = settings.deadlineAt || Date.now() + (settings.timeoutMs || 600000);
+        return runTextProfile(root, settings.modelProfile, route => requestMediaVerification(prompt, inputs, root,
+            { ...settings, provider: route.provider, model: route.model, apiMode: 'openai_chat', profileResolved: true,
+                deadlineAt, timeoutMs: Math.max(1, deadlineAt - Date.now()) }), { deadlineAt, apiMode: 'chatCompletions' });
+    }
     const provider = settings.provider || 'tuZi';
     if (provider === 'daiYu' && inputs.some(input => input.mimeType.startsWith('audio/'))) {
         throw new Error('DaiYu GPT audio inputs are unsupported; use independent_local_asr evidence with text/images');
@@ -38,7 +46,7 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
         ...(provider === 'zai' && settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}) };
     const native = provider === 'gemini' || settings.apiMode === 'gemini_native';
     // A configured endpoint may include the /v1 suffix already; zai's /api/paas/v4 has no such tail.
-    const baseUrl = String(credentials.baseUrl || 'https://api.tu-zi.com').replace(/\/(?:v1)?\/?$/u, '');
+    const baseUrl = String(credentials.baseUrl || 'https://api.tu-zi.com').replace(/\/+$/u, '').replace(/\/v1$/u, '');
     const url = provider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
         : native ? `${baseUrl}/v1beta/models/${model}:generateContent`
             : `${baseUrl}${provider === 'zai' ? '' : '/v1'}/chat/completions`;
@@ -89,7 +97,8 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
         elapsedMs: Date.now() - started, requestId: response.headers?.get?.('x-request-id') || null,
         responseId: data.responseId || data.id || null, usageFinal: true });
     recordAiUsage(attempt);
-    return { text, meta: { model, apiMode: native ? 'gemini_native' : 'openai_chat', attempts: [attempt] } };
+    return { text, meta: { provider, model, apiMode: native ? 'gemini_native' : 'openai_chat', attempts: [
+        { ...attempt, apiModeUsed: native ? 'gemini_native' : 'chatCompletions' }] } };
     } catch (error) {
         if (attempt.usageRecorded) { error.attempts = [attempt, ...(error.attempts || [])]; throw error; }
         Object.assign(attempt, mediaUsage(data?.usageMetadata || data?.usage), { status: 'failure',
@@ -97,6 +106,9 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
             responseId: data?.responseId || data?.id || null, httpStatus: response?.status || null,
             usageFinal: data ? true : null });
         recordAiUsage(attempt);
+        if (!response && /abort|timeout|timed out/iu.test(`${error.name} ${error.message}`)) {
+            attempt.outcomeUnknown = true; error.outcomeUnknown = true;
+        }
         error.attempts = [attempt];
         throw error;
     }

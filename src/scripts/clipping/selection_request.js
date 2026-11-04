@@ -43,7 +43,7 @@ async function requestSelectionTextInPhase(prompt, requestOptions, config, rootC
     const retry = { ...config.ai?.retry, ...config.ai?.retryByStage?.[stageName], ...requestOptions.retry };
     requestOptions = { ...requestOptions, ...(Object.keys(retry).length ? { retry } : {}) };
     const stage = config.ai?.stages?.[stageName];
-    if (stage && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
+    if (stage && !requestOptions.modelProfile && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
         const started = Date.now();
         try {
             const result = await require('./enhancement_runner').requestStage({ ...stage, retry: { ...retry, ...stage.retry } }, config.ai.stageBudget,
@@ -56,8 +56,10 @@ async function requestSelectionTextInPhase(prompt, requestOptions, config, rootC
         }
     }
     const generator = require('../ai_text_generator');
-    const provider = config.ai?.provider || rootConfig.ai?.text?.provider || 'gemini';
+    const provider = requestOptions.modelProfile ? 'daiYu' : config.ai?.provider || rootConfig.ai?.text?.provider || 'gemini';
     const textConfig = rootConfig.ai?.text || {};
+    const profiles = require('../workflow-runtime').loadWorkflow('text/profiles');
+    const profile = provider === 'daiYu' ? profiles.selectTextProfile(rootConfig, requestOptions) : undefined;
     const settings = name => {
         const { apiKey, proxy, retry, transientMaxAttempts, transientRetryDelayMs, ...rest } = textConfig[name] || {};
         return rest;
@@ -84,7 +86,9 @@ async function requestSelectionTextInPhase(prompt, requestOptions, config, rootC
             directory: config.ai?.selectionCacheEnabled === false ? null : info?.selectionCacheDirectory,
             phase, prompt,
             signature: { provider, requestProtocolVersion: generator.TEXT_REQUEST_PROTOCOL_VERSION || 1,
-                requestOptions: semanticRequestOptions, daiYu: settings('daiYu'), tuZi: settings('tuZi'), gemini: settings('gemini') },
+                requestOptions: semanticRequestOptions, daiYu: settings('daiYu'), tuZi: settings('tuZi'), gemini: settings('gemini'),
+                ...(profile ? { modelProfile: profile, modelProfileRoutes: profiles.resolveTextProfile(rootConfig, profile),
+                    zai: settings('zai'), deepSeek: settings('deepSeek') } : {}) },
             validate
         }, generate);
         if (hasIncompleteTextGeneration(result?.meta)) {

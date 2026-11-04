@@ -171,7 +171,8 @@ async function calibrateBoundaries(events, args) {
         const evidenceDirectory = path.join(directory, 'temp', 'boundary-verification', sha(signature).slice(0, 16));
         const evidence = { evidenceDirectory, method: local ? 'independent_local_asr' : 'short_audio_energy_batch', audioIntervals: batch.events.flatMap(r => r.intervals),
             model: settings.model || root.ai?.text?.gemini?.model, apiMode: settings.apiMode };
-        const unavailable = !args.request && !root.ai?.text?.[settings.provider || 'tuZi']?.apiKey;
+        const unavailable = !args.request && !(settings.modelProfileRoutes || [{ provider: settings.provider || 'tuZi' }])
+            .some(route => root.ai?.text?.[route.provider]?.apiKey);
         if (!settings.enabled || unavailable || batch.audioSeconds > settings.batchMaxAudioSeconds) {
             const reason = !settings.enabled ? 'Boundary calibration disabled' : unavailable ? 'Boundary verifier unavailable'
                 : 'Boundary packet exceeds configured audio budget';
@@ -262,6 +263,8 @@ async function calibrateBoundaries(events, args) {
                     }
                 });
                 recordSelectionDiagnostic(diagnostics, { phase: 'activity-boundaries' }, response);
+                if (settings.modelProfile) Object.assign(evidence, { model: response.meta?.model || settings.model,
+                    provider: response.meta?.provider || response.meta?.attempts?.at(-1)?.provider || settings.provider });
                 const responsePath = path.join(evidenceDirectory, 'RESPONSE.json');
                 let localBinding;
                 if (local) {
@@ -280,6 +283,8 @@ async function calibrateBoundaries(events, args) {
                 return { ...response, calibrated, ...(local ? { localAudioEvidence, packet, localBinding } : {}) };
             });
             if (response.meta?.selectionCache?.hit) result.cacheHits++;
+            if (settings.modelProfile) Object.assign(evidence, { model: response.meta?.model || settings.model,
+                provider: response.meta?.provider || response.meta?.attempts?.at(-1)?.provider || settings.provider });
             if (local && (fileDigest(response.localAudioEvidence.resultPath) !== response.localAudioEvidence.sha256
                 || response.packet.frames.some(f => fileDigest(f.path) !== f.sha256))) throw new Error('Local activity evidence changed after verification');
             if (response.localBinding?.nativeListening && fileDigest(response.localBinding.nativeListening.path) !== response.localBinding.nativeListening.sha256) throw new Error('Native listening evidence changed');

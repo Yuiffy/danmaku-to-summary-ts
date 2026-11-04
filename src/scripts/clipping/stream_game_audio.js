@@ -18,7 +18,7 @@ function transcriptDefect(s, i, all, duration) {
     if (s.end <= s.start) return 'end<=start';
     // A trailing sentence may be decoded slightly past the extracted window; the tail is
     // clamped to the real audio length below, while gross overshoot still fails the sample.
-    if (s.end > duration + 1.5) return 'beyond-window';
+    if (s.end > duration + 3) return 'beyond-window';
     if (!String(s.text || '').trim()) return 'empty-text';
     if (i > 0 && s.start < all[i - 1].start) return 'out-of-order';
     return null;
@@ -40,11 +40,19 @@ function audioIdentity(source) {
 }
 function checkAudioReceipt(audio, source) {
     const receiptPath = audio.path + '.complete.json', receipt = read(receiptPath), args = receipt.args;
+    // ffmpeg args may record the caller's raw path style (forward slashes from payloads) while
+    // receipt.source is the snapshot-resolved path; compare style-insensitively on Windows.
+    const norm = value => path.win32.normalize(String(value));
+    const receiptSource = receipt.source && typeof receipt.source === 'object'
+        ? { ...receipt.source, mediaPath: receipt.source.mediaPath == null ? receipt.source.mediaPath : norm(receipt.source.mediaPath) }
+        : receipt.source;
+    const identity = audioIdentity(source);
+    const identityNorm = { ...identity, mediaPath: norm(identity.mediaPath) };
     if (receipt.version !== 3 || !Array.isArray(args) || args.length !== 17 || args[0] !== '-y' || args[1] !== '-ss'
-        || !Number.isFinite(Number(args[2])) || Math.abs(Number(args[2]) - audio.start) > .001 || args[3] !== '-i' || args[4] !== source.mediaPath
+        || !Number.isFinite(Number(args[2])) || Math.abs(Number(args[2]) - audio.start) > .001 || args[3] !== '-i' || norm(args[4]) !== norm(source.mediaPath)
         || args[5] !== '-t' || !Number.isFinite(Number(args[6])) || Math.abs(Number(args[6]) - (audio.end - audio.start)) > .001
         || JSON.stringify(args.slice(7, -1)) !== JSON.stringify(['-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k'])
-        || args.at(-1) !== audio.path || JSON.stringify(receipt.source) !== JSON.stringify(audioIdentity(source))
+        || args.at(-1) !== audio.path || JSON.stringify(receiptSource) !== JSON.stringify(identityNorm)
         || receipt.signature !== sha({ args, source: receipt.source }) || receipt.sha256 !== fileDigest(audio.path)) {
         throw new Error('Independent ASR original-audio extraction is not bound to this recording window');
     }

@@ -2,6 +2,10 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { overviewText, readLiveOverview } from './LiveOverview';
+import { QuestionCorpus } from './QuestionCorpus';
+import { runQuestionAgent } from './QuestionAgent';
+import { aggregateEvidence } from './QuestionTools';
+import { formatQuestionRecord } from './QuestionPolicy';
 
 let root: string;
 const room = '25788785', signal = () => new AbortController().signal;
@@ -31,6 +35,23 @@ test('latest overview reads all three same-session artifacts, not generic old su
   expect(value.artifacts.map(item => item.kind)).toEqual(['live-summary', 'goodnight-reply', 'comic-script']);
   expect(JSON.stringify(value)).toContain('黑衣人3');
   expect(JSON.stringify(value)).not.toMatch(/旧手术|未来资料|requestId|secret|private|绘图指令|source.srt/u);
+});
+
+test('Web/danmaku agent can cite the shared overview, with generated-source labels and no fake recording arithmetic', async () => {
+  await write('2026-10-27', '_LIVE_CONTENT.json', summary('演唱Innocence和观看黑衣人3'));
+  const request = { roomId: room, question: '最新直播大概播了什么', askedAt: at };
+  const corpus = new QuestionCorpus({ enabled: true, providerConfigPath: path.join(root, 'unused.json'), recordingRoots: { [room]: [root] } }, request, signal());
+  const id = `r${room}_overview1_1`;
+  const complete = jest.fn().mockResolvedValueOnce({ content: null, tool_calls: [{ id: 'overview', type: 'function',
+    function: { name: 'read_live_overview', arguments: JSON.stringify({ date: null }) } }] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'answer', certainty: 'supported',
+      rankedEvidenceIds: [id], evidenceIds: [id], answer: '最近有概述的10月27日那场唱歌并看黑衣人3，仅据生成概述。', shortAnswer: '据概述，唱歌看黑衣人3。' }) });
+  try {
+    const result = await runQuestionAgent(request, signal(), corpus, complete);
+    expect(result.clues).toEqual([expect.objectContaining({ kind: 'live-overview', date: '2026-10-27' })]);
+    expect(formatQuestionRecord({ request, result })).toContain('直播概述（生成资料，非原话）');
+    expect(() => aggregateEvidence({ evidenceIds: [id], groupBy: 'all' }, key => corpus.citation(key))).toThrow('Unknown timed evidence');
+  } finally { await corpus.close(); }
 });
 
 test('invalid summary falls back to the newest same-session goodnight, with no older-session blending', async () => {

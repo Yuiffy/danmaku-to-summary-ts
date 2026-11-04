@@ -45,18 +45,36 @@
   "audio": {
     "enabled": true,
     "audioOnlyRooms": [],
-    "formats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac", ".opus"],
+    "formats": [
+      ".m4a",
+      ".aac",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".flac",
+      ".opus"
+    ],
     "defaultFormat": ".opus",
     "defaultProfile": "opus48k",
     "outputProfiles": {
       "opus48k": {
         "format": ".opus",
-        "ffmpegArgs": ["-c:a", "libopus", "-b:a", "48k"]
+        "ffmpegArgs": [
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "48k"
+        ]
       },
       "aac64k": {
         "format": ".m4a",
         "outputSuffix": "_64k",
-        "ffmpegArgs": ["-c:a", "aac", "-b:a", "64k"]
+        "ffmpegArgs": [
+          "-c:a",
+          "aac",
+          "-b:a",
+          "64k"
+        ]
       }
     },
     "ffmpeg": {
@@ -85,7 +103,10 @@
       "deleteBakAfterConversion": false,
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
-      "publishedClipRetention": { "enabled": false, "afterUploadDays": 3 },
+      "publishedClipRetention": {
+        "enabled": false,
+        "afterUploadDays": 3
+      },
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
@@ -96,8 +117,15 @@
     }
   },
   "asr": {
-    "device_handoff": { "enabled": false, "idle_s": 45, "min_remaining_s": 600 },
-    "cpu_fallback": { "enabled": false, "min_available_memory_gb": 10 },
+    "device_handoff": {
+      "enabled": false,
+      "idle_s": 45,
+      "min_remaining_s": 600
+    },
+    "cpu_fallback": {
+      "enabled": false,
+      "min_available_memory_gb": 10
+    },
     "live": {
       "enabled": false,
       "room_ids": [],
@@ -119,7 +147,11 @@
     "default_backend": "paraformer",
     "subtitleProofreading": {
       "enabled": true,
-      "roomIds": ["25788785", "26966466", "30655190"],
+      "roomIds": [
+        "25788785",
+        "26966466",
+        "30655190"
+      ],
       "contextSeconds": 20,
       "maxContextChars": 400
     },
@@ -221,7 +253,9 @@
         ]
       },
       "exclude_pattern": {
-        "小四": ["小四位(?![于列居置])"]
+        "小四": [
+          "小四位(?![于列居置])"
+        ]
       }
     },
     "routing": [
@@ -757,7 +791,7 @@
         "segment_paraformer": true,
         "ultra_low_impact": {
           "batch_size_s": 30,
-          "yield_s": 1.0,
+          "yield_s": 1,
           "max_external_util_pct": 98,
           "max_memory_pct": 85,
           "min_free_mb": 2048
@@ -919,7 +953,13 @@
     "itineraryMemory": {
       "enabled": true,
       "scope": "selected",
-      "streamerIds": ["sui", "shiori", "mizuki", "miting", "mofu"],
+      "streamerIds": [
+        "sui",
+        "shiori",
+        "mizuki",
+        "miting",
+        "mofu"
+      ],
       "model": "gpt-6-luna",
       "directory": "data/runtime/itinerary-memory"
     },
@@ -942,6 +982,52 @@
     "text": {
       "enabled": true,
       "provider": "daiYu",
+      "defaultProfile": "flash",
+      "profiles": {
+        "flash": {
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-6-luna",
+              "apiMode": "responses"
+            },
+            {
+              "provider": "zai",
+              "model": "glm-5.3-flash",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "deepSeek",
+              "model": "deepseek-flash",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-6-luna",
+              "apiMode": "responses"
+            }
+          ]
+        },
+        "pro": {
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-6.1-sol",
+              "apiMode": "responses"
+            },
+            {
+              "provider": "zai",
+              "model": "glm-5.3",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "deepSeek",
+              "model": "deepseek-flash",
+              "apiMode": "chatCompletions"
+            }
+          ]
+        }
+      },
       "sharedPromptCache": {
         "enabled": true,
         "continuationEnabled": false,
@@ -1237,11 +1323,35 @@
       "sui": {
         "displayName": "岁己SUI",
         "aiClipName": "小岁",
-        "roomIds": ["25788785"],
-        "searchTags": ["岁己", "岁己SUI"],
-        "mentionLabels": ["岁己", "岁己SUI"],
-        "speakerLabels": ["岁己SUI", "sui", "SUI"],
-                "aliases": ["岁己", "SUI", "岁几", "碎己", "碎几", "碎机", "碎即", "穗即", "岁机", "岁已", "小岁"],
+        "roomIds": [
+          "25788785"
+        ],
+        "searchTags": [
+          "岁己",
+          "岁己SUI"
+        ],
+        "mentionLabels": [
+          "岁己",
+          "岁己SUI"
+        ],
+        "speakerLabels": [
+          "岁己SUI",
+          "sui",
+          "SUI"
+        ],
+        "aliases": [
+          "岁己",
+          "SUI",
+          "岁几",
+          "碎己",
+          "碎几",
+          "碎机",
+          "碎即",
+          "穗即",
+          "岁机",
+          "岁已",
+          "小岁"
+        ],
         "referenceImages": [
           "src/scripts/reference_images/25788785.png"
         ],
@@ -1250,10 +1360,25 @@
       "shiori": {
         "displayName": "栞栞",
         "aiClipName": "小栞",
-        "roomIds": ["26966466"],
-        "mentionLabels": ["栞栞", "栞栞Shiori", "小栞", "Shiori"],
-        "speakerLabels": ["栞栞", "Shiori"],
-        "aliases": ["栞", "签签", "千千", "浅浅"],
+        "roomIds": [
+          "26966466"
+        ],
+        "mentionLabels": [
+          "栞栞",
+          "栞栞Shiori",
+          "小栞",
+          "Shiori"
+        ],
+        "speakerLabels": [
+          "栞栞",
+          "Shiori"
+        ],
+        "aliases": [
+          "栞",
+          "签签",
+          "千千",
+          "浅浅"
+        ],
         "referenceImages": [
           "public/reference_images/栞栞制服加獭獭栞.png"
         ],
@@ -1261,11 +1386,26 @@
       },
       "rhea": {
         "displayName": "瑞娅",
-        "roomIds": ["23260993"],
-        "uploadTags": ["瑞瑞"],
-        "mentionLabels": ["瑞娅", "瑞亚", "蕊娅", "Rhea"],
-        "speakerLabels": ["瑞娅", "Rhea"],
-        "aliases": ["瑞亚", "蕊娅"],
+        "roomIds": [
+          "23260993"
+        ],
+        "uploadTags": [
+          "瑞瑞"
+        ],
+        "mentionLabels": [
+          "瑞娅",
+          "瑞亚",
+          "蕊娅",
+          "Rhea"
+        ],
+        "speakerLabels": [
+          "瑞娅",
+          "Rhea"
+        ],
+        "aliases": [
+          "瑞亚",
+          "蕊娅"
+        ],
         "referenceImages": [
           "public/reference_images/瑞娅.png"
         ],
@@ -1273,9 +1413,20 @@
       },
       "seki": {
         "displayName": "星汐Seki",
-        "roomIds": ["1603600"],
-        "speakerLabels": ["星汐Seki", "星汐", "Seki", "seki"],
-        "aliases": ["星夕", "星西", "星希"],
+        "roomIds": [
+          "1603600"
+        ],
+        "speakerLabels": [
+          "星汐Seki",
+          "星汐",
+          "Seki",
+          "seki"
+        ],
+        "aliases": [
+          "星夕",
+          "星西",
+          "星希"
+        ],
         "referenceImages": [
           "public/reference_images/seki_standing.png"
         ],
@@ -1320,9 +1471,17 @@
       },
       "miting": {
         "displayName": "米汀",
-        "roomIds": ["31368705"],
-        "speakerLabels": ["米汀", "Miting"],
-        "aliases": ["米丁", "米婷"],
+        "roomIds": [
+          "31368705"
+        ],
+        "speakerLabels": [
+          "米汀",
+          "Miting"
+        ],
+        "aliases": [
+          "米丁",
+          "米婷"
+        ],
         "referenceImages": [
           "public/reference_images/miting_official_standing.png"
         ],
@@ -1330,10 +1489,23 @@
       },
       "harei": {
         "displayName": "花礼Harei",
-        "roomIds": ["1820703922"],
-        "mentionLabels": ["花礼Harei", "花礼", "Harei"],
-        "speakerLabels": ["花礼Harei", "花礼", "Harei"],
-        "aliases": ["礼礼", "小礼"],
+        "roomIds": [
+          "1820703922"
+        ],
+        "mentionLabels": [
+          "花礼Harei",
+          "花礼",
+          "Harei"
+        ],
+        "speakerLabels": [
+          "花礼Harei",
+          "花礼",
+          "Harei"
+        ],
+        "aliases": [
+          "礼礼",
+          "小礼"
+        ],
         "referenceImages": [
           "public/reference_images/花礼新衣抱小礼猫.png"
         ],
@@ -1341,11 +1513,29 @@
       },
       "nightin": {
         "displayName": "南町Nightin",
-        "roomIds": ["24872476"],
-        "searchTags": ["南町Nightin", "南町"],
-        "mentionLabels": ["南町Nightin", "南町", "Nightin", "大N", "大N老师"],
-        "speakerLabels": ["南町Nightin", "南町", "Nightin"],
-        "aliases": ["大N", "大N老师"],
+        "roomIds": [
+          "24872476"
+        ],
+        "searchTags": [
+          "南町Nightin",
+          "南町"
+        ],
+        "mentionLabels": [
+          "南町Nightin",
+          "南町",
+          "Nightin",
+          "大N",
+          "大N老师"
+        ],
+        "speakerLabels": [
+          "南町Nightin",
+          "南町",
+          "Nightin"
+        ],
+        "aliases": [
+          "大N",
+          "大N老师"
+        ],
         "referenceImages": [
           "public/reference_images/Nightin_南町_赛车自拍.jpg"
         ],
@@ -1388,11 +1578,29 @@
       },
       "liko": {
         "displayName": "莉蔻Liko",
-        "roomIds": ["1713548468"],
-        "searchTags": ["莉蔻Liko", "莉蔻"],
-        "mentionLabels": ["莉蔻Liko", "莉蔻", "莉可", "Liko", "侏儒兔"],
-        "speakerLabels": ["莉蔻Liko", "莉蔻", "Liko"],
-        "aliases": ["莉可", "莉蔻酱"],
+        "roomIds": [
+          "1713548468"
+        ],
+        "searchTags": [
+          "莉蔻Liko",
+          "莉蔻"
+        ],
+        "mentionLabels": [
+          "莉蔻Liko",
+          "莉蔻",
+          "莉可",
+          "Liko",
+          "侏儒兔"
+        ],
+        "speakerLabels": [
+          "莉蔻Liko",
+          "莉蔻",
+          "Liko"
+        ],
+        "aliases": [
+          "莉可",
+          "莉蔻酱"
+        ],
         "referenceImages": [
           "public/reference_images/Liko_莉蔻_立绘.png"
         ],
@@ -1400,11 +1608,29 @@
       },
       "kloa": {
         "displayName": "克罗雅Kloa",
-        "roomIds": ["1986461465"],
-        "searchTags": ["克罗雅Kloa", "克罗雅"],
-        "mentionLabels": ["雅小妹"],
-        "speakerLabels": ["克罗雅Kloa", "克罗雅", "Kloa"],
-        "aliases": ["克莱雅", "柯莱雅", "克洛雅", "克罗娅", "雅小妹", "雅雅"],
+        "roomIds": [
+          "1986461465"
+        ],
+        "searchTags": [
+          "克罗雅Kloa",
+          "克罗雅"
+        ],
+        "mentionLabels": [
+          "雅小妹"
+        ],
+        "speakerLabels": [
+          "克罗雅Kloa",
+          "克罗雅",
+          "Kloa"
+        ],
+        "aliases": [
+          "克莱雅",
+          "柯莱雅",
+          "克洛雅",
+          "克罗娅",
+          "雅小妹",
+          "雅雅"
+        ],
         "referenceImages": [
           "public/reference_images/克罗雅无头罩3.jpg"
         ],
@@ -1412,11 +1638,28 @@
       },
       "izayoi": {
         "displayName": "十六萤Izayoi",
-        "roomIds": ["1741667419"],
-        "searchTags": ["十六萤Izayoi", "十六萤"],
-        "mentionLabels": ["十六萤Izayoi", "十六萤", "十六", "Izayoi"],
-        "speakerLabels": ["十六萤Izayoi", "十六萤", "Izayoi"],
-        "aliases": ["萤萤", "16萤"],
+        "roomIds": [
+          "1741667419"
+        ],
+        "searchTags": [
+          "十六萤Izayoi",
+          "十六萤"
+        ],
+        "mentionLabels": [
+          "十六萤Izayoi",
+          "十六萤",
+          "十六",
+          "Izayoi"
+        ],
+        "speakerLabels": [
+          "十六萤Izayoi",
+          "十六萤",
+          "Izayoi"
+        ],
+        "aliases": [
+          "萤萤",
+          "16萤"
+        ],
         "referenceImages": [
           "public/reference_images/十六萤Izayoi.png"
         ],
@@ -1425,9 +1668,16 @@
       "komichi": {
         "displayName": "四时小路Komichi",
         "aiClipName": "小路",
-        "roomIds": ["1700301235"],
-        "searchTags": ["四时小路Komichi", "四时小路"],
-        "uploadTags": ["小路边"],
+        "roomIds": [
+          "1700301235"
+        ],
+        "searchTags": [
+          "四时小路Komichi",
+          "四时小路"
+        ],
+        "uploadTags": [
+          "小路边"
+        ],
         "referenceImages": [
           "public/reference_images/komichi_official_standing.png",
           "public/reference_images/komichi_official_sign.png"
@@ -1473,9 +1723,16 @@
       "sumire": {
         "displayName": "枝堇Sumire",
         "aiClipName": "小枝",
-        "roomIds": ["1727076670"],
-        "searchTags": ["枝堇Sumire", "枝堇"],
-        "uploadTags": ["Sumire"],
+        "roomIds": [
+          "1727076670"
+        ],
+        "searchTags": [
+          "枝堇Sumire",
+          "枝堇"
+        ],
+        "uploadTags": [
+          "Sumire"
+        ],
         "referenceImages": [
           "public/reference_images/sumire_vr_official_standing.png"
         ]
@@ -1546,19 +1803,9 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-      "26966466": {
-        "audioOnly": true,
-        "anchorName": "小栞",
-        "anchorNicknames": [
-          "栞栞",
-          "栞栞Shiori",
-          "Shiori"
-        ],
-        "fanName": "獭獭栞",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true,
-        "wordLimit": 250
+      "25034104": {
+        "anchorName": "明前奶绿",
+        "audioOnly": false
       },
       "25788785": {
         "audioOnly": false,
@@ -1577,7 +1824,7 @@
         "enableDelayedReply": true,
         "wordLimit": 800,
         "minComicDurationMinutes": 0,
-        "comicGenerationProbability": 1.0,
+        "comicGenerationProbability": 1,
         "imageGeneration": {
           "enabled": true,
           "routes": [
@@ -1638,16 +1885,22 @@
           }
         }
       },
-      "1967216004": {
-        "anchorName": "三理Mit3uri",
-        "audioOnly": false
+      "26966466": {
+        "audioOnly": true,
+        "anchorName": "小栞",
+        "anchorNicknames": [
+          "栞栞",
+          "栞栞Shiori",
+          "Shiori"
+        ],
+        "fanName": "獭獭栞",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 250
       },
-      "1791260716": {
-        "anchorName": "犬绒Mofu",
-        "audioOnly": false
-      },
-      "25034104": {
-        "anchorName": "明前奶绿",
+      "30655190": {
+        "anchorName": "弥月Mizuki",
         "audioOnly": false
       },
       "1713546334": {
@@ -1658,12 +1911,16 @@
         "anchorName": "小松绿Viridis",
         "audioOnly": false
       },
-      "30655190": {
-        "anchorName": "弥月Mizuki",
-        "audioOnly": false
-      },
       "1727074031": {
         "anchorName": "羽啾chu2u",
+        "audioOnly": false
+      },
+      "1791260716": {
+        "anchorName": "犬绒Mofu",
+        "audioOnly": false
+      },
+      "1967216004": {
+        "anchorName": "三理Mit3uri",
         "audioOnly": false
       }
     }
@@ -1673,15 +1930,52 @@
     "densityPercentile": 0.35,
     "lowEnergySampleRate": 0.1,
     "myUserId": "14279",
-    "stopWords": ["晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱", "感谢观看", "谢谢观看", "优优独播剧场——YoYo Television Series Exclusive", "杨茜茜", "李宗盛"],
+    "stopWords": [
+      "晚上好",
+      "晚安",
+      "来了",
+      "打call",
+      "拜拜",
+      "卡了",
+      "嗯",
+      "好",
+      "草",
+      "哈哈",
+      "确实",
+      "牛",
+      "可爱",
+      "感谢观看",
+      "谢谢观看",
+      "优优独播剧场——YoYo Television Series Exclusive",
+      "杨茜茜",
+      "李宗盛"
+    ],
     "fillerRegex": "^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+"
   },
   "clipTopics": {
-    "memeRecall": { "enabled": false, "contextSeconds": 60, "rules": [] },
-    "editorialStyles": { "enabled": false, "mode": "precision", "requirePrecision": true, "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
+    "memeRecall": {
+      "enabled": false,
+      "contextSeconds": 60,
+      "rules": []
+    },
+    "editorialStyles": {
+      "enabled": false,
+      "mode": "precision",
+      "requirePrecision": true,
+      "opManifests": [
+        "public/branding/shikamochi/OP-sad-v1.json",
+        "public/branding/shikamochi/OP-watch-v1.json"
+      ]
+    },
     "enabled": false,
     "mode": "local_review",
-    "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
+    "keywords": [
+      "岁己",
+      "小岁",
+      "饼干岁",
+      "岁岁",
+      "SUI"
+    ],
     "aiModel": "gpt-6-luna",
     "ignoredRoomIds": [],
     "prePaddingSeconds": 20,
@@ -1705,7 +1999,8 @@
       "strategy": "single",
       "qualityRules": true,
       "transientMaxAttempts": 2,
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
+      "modelProfile": "pro",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
@@ -1755,51 +2050,127 @@
   },
   "streamGameClips": {
     "enabled": false,
-    "roomIds": ["25788785"],
+    "ai": {
+      "frameModelProfile": "pro",
+      "frameProvider": "daiYu",
+      "frameApiMode": "openai_chat",
+      "frameModel": "gpt-6.1-sol"
+    },
+    "roomIds": [
+      "25788785"
+    ],
     "outputDirName": "stream_game_clips",
     "autoUpload": false,
     "authorizationNote": "",
     "maxSingleVideoSeconds": 3600,
     "requireOriginalStreamCopy": false,
-    "games": [{
-      "id": "elden-ring", "name": "艾尔登法环",
-      "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
-      "tid": 17, "tags": ["岁己", "小岁", "艾尔登法环", "老头环", "游戏实况", "虚拟主播"],
-      "collection": { "seasonId": null, "sectionId": null }
-    }]
+    "games": [
+      {
+        "id": "elden-ring",
+        "name": "艾尔登法环",
+        "aliases": [
+          "艾尔登法环",
+          "艾登法环",
+          "法环",
+          "老头环",
+          "ELDEN RING"
+        ],
+        "tid": 17,
+        "tags": [
+          "岁己",
+          "小岁",
+          "艾尔登法环",
+          "老头环",
+          "游戏实况",
+          "虚拟主播"
+        ],
+        "collection": {
+          "seasonId": null,
+          "sectionId": null
+        }
+      }
+    ]
   },
   "streamActivityClips": {
-    "automaticPublication": { "mode": "off", "roomIds": ["25788785"], "policyVersion": "stream-activity-v1", "activatedAt": null, "authorizationNote": "" },
+    "automaticPublication": {
+      "mode": "off",
+      "roomIds": [
+        "25788785"
+      ],
+      "policyVersion": "stream-activity-v1",
+      "activatedAt": null,
+      "authorizationNote": ""
+    },
     "enabled": false,
     "detectionMode": "summary",
-    "roomIds": ["25788785"],
+    "roomIds": [
+      "25788785"
+    ],
     "outputDirName": "stream_activity_clips",
     "chunkSeconds": 1800,
     "contextSeconds": 180,
     "maxEvidenceChars": 90000,
-    "ai": { "model": "gpt-6-luna", "timeoutMs": 600000, "maxTokens": 16000 },
-    "verification": { "enabled": true, "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol",
+    "ai": {
+      "model": "gpt-6-luna",
+      "timeoutMs": 600000,
+      "maxTokens": 16000
+    },
+    "verification": {
+      "enabled": true,
+      "provider": "daiYu",
+      "apiMode": "openai_chat",
+      "model": "gpt-6.1-sol",
+      "modelProfile": "pro",
       "evidenceMethod": "independent_local_asr",
       "localAsr": {
         "sensevoiceModel": "iic/SenseVoiceSmall",
         "whisperModel": "deepdml/faster-whisper-large-v3-turbo-ct2",
         "device": "cuda",
         "chunkSeconds": 8
-      }, "contextSeconds": 180, "maxAudioSeconds": 1200, "timeoutMs": 180000,
-      "boundaryContextSeconds": 45, "batchMaxEvents": 8, "batchMaxAudioSeconds": 600, "maxBatchRequests": 3, "boundaryTimeoutMs": 60000 },
+      },
+      "contextSeconds": 180,
+      "maxAudioSeconds": 1200,
+      "timeoutMs": 180000,
+      "boundaryContextSeconds": 45,
+      "batchMaxEvents": 8,
+      "batchMaxAudioSeconds": 600,
+      "maxBatchRequests": 3,
+      "boundaryTimeoutMs": 60000
+    },
     "songs": {
-      "enabled": true, "paddingSeconds": 2, "tid": 31,
-      "tags": ["岁己", "小岁", "歌切", "虚拟主播"],
-      "collection": { "seasonId": null, "sectionId": null }
+      "enabled": true,
+      "paddingSeconds": 2,
+      "tid": 31,
+      "tags": [
+        "岁己",
+        "小岁",
+        "歌切",
+        "虚拟主播"
+      ],
+      "collection": {
+        "seasonId": null,
+        "sectionId": null
+      }
     },
     "watch": {
-      "enabled": true, "targetPartSeconds": 1500, "maxPartSeconds": 1800, "tid": 21,
-      "tags": ["岁己", "小岁", "同步视听", "虚拟主播"],
-      "collection": { "seasonId": null, "sectionId": null }
+      "enabled": true,
+      "targetPartSeconds": 1500,
+      "maxPartSeconds": 1800,
+      "tid": 21,
+      "tags": [
+        "岁己",
+        "小岁",
+        "同步视听",
+        "虚拟主播"
+      ],
+      "collection": {
+        "seasonId": null,
+        "sectionId": null
+      }
     }
   },
   "clipCuration": {
-    "enabled": false,
+    "enabled": true,
     "roomIds": [
       "25788785"
     ],
@@ -1807,7 +2178,8 @@
     "minScore": 90,
     "maxStandalone": 5,
     "maxCandidates": 50,
-    "maxSearchResults": 3,
+    "maxSearchResults": 5,
+    "maxSearchQueries": 4,
     "supportActions": [
       "like",
       "favorite",
@@ -1817,17 +2189,34 @@
     "supportIntervalSeconds": 60
   },
   "ownStreamClips": {
-    "editorialStyles": { "enabled": false, "mode": "precision", "requirePrecision": true, "opManifests": ["public/branding/shikamochi/OP-sad-v1.json", "public/branding/shikamochi/OP-watch-v1.json"] },
+    "editorialStyles": {
+      "enabled": false,
+      "mode": "precision",
+      "requirePrecision": true,
+      "opManifests": [
+        "public/branding/shikamochi/OP-sad-v1.json",
+        "public/branding/shikamochi/OP-watch-v1.json"
+      ]
+    },
     "campaigns": [
       {
         "id": "fuya-pilgrimage-2026-10",
         "earlyTrigger": {
           "enabled": false,
-          "titleKeywords": ["芙娅之魂", "我魂"],
+          "titleKeywords": [
+            "芙娅之魂",
+            "我魂"
+          ],
           "activatedAt": "2026-10-23T23:48:00+08:00"
         },
-        "requiredGames": ["芙娅之魂", "芙娅之魂巡礼测试"],
-        "gameAliases": { "普雅之魂": "芙娅之魂", "抚雅之魂": "芙娅之魂" },
+        "requiredGames": [
+          "芙娅之魂",
+          "芙娅之魂巡礼测试"
+        ],
+        "gameAliases": {
+          "普雅之魂": "芙娅之魂",
+          "抚雅之魂": "芙娅之魂"
+        },
         "enabled": true,
         "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
         "startsAt": "2026-10-22T10:51:05+08:00",
@@ -1883,23 +2272,78 @@
         }
       }
     ],
-    "radioDanmaku": { "enabled": true, "mode": "portrait", "roomIds": ["25788785"], "fontScale": 2, "fps": 30 },
+    "radioDanmaku": {
+      "enabled": true,
+      "mode": "portrait",
+      "roomIds": [
+        "25788785"
+      ],
+      "fontScale": 2,
+      "fps": 30
+    },
     "enabled": true,
     "automaticPublication": {
-      "mode": "off", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
-      "activatedAt": null, "authorizationNote": "", "concurrency": 2
+      "mode": "off",
+      "roomIds": [
+        "25788785"
+      ],
+      "policyVersion": "own-stream-v1",
+      "activatedAt": null,
+      "authorizationNote": "",
+      "concurrency": 2
     },
     "enhancements": {
       "enabled": true,
       "workflow": "creative",
-      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "allowCoverFaceOverlap": true, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
-      "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
-      "roomIds": ["25788785"],
+      "creative": {
+        "style": "compact",
+        "avatarMode": "auto",
+        "focusPlacement": "source",
+        "faceInsetDiameter": 0.6,
+        "allowCoverFaceOverlap": true,
+        "laughAsset": "sitcom_laugh",
+        "laughAssets": [
+          "sitcom_laugh",
+          "sitcom_laugh_chuckle",
+          "sitcom_laugh_warm",
+          "sitcom_laugh_applause"
+        ],
+        "maxMoments": 24,
+        "maxZoom": 5,
+        "soundEffects": true,
+        "filters": true,
+        "variety": true,
+        "assetManifest": "config/clip-creative-assets.json"
+      },
+      "pacing": {
+        "noiseDb": -40,
+        "nonSpeechVad": true,
+        "minRemovedSeconds": 3,
+        "minRemovedRatio": 0.02,
+        "maxRemovedRatio": 0.2,
+        "maxPausesPerClip": 2,
+        "maxScannedSeconds": 120
+      },
+      "roomIds": [
+        "25788785"
+      ],
       "editing": true,
-      "experiment": { "enabled": true, "ratio": 1, "maxClips": 1 },
-      "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
+      "experiment": {
+        "enabled": true,
+        "ratio": 1,
+        "maxClips": 1
+      },
+      "budget": {
+        "mode": "log_only",
+        "ledgerPath": "data/runtime/clip-enhancement-ledger.json"
+      },
       "stageDefaults": {
-        "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
+        "retry": {
+          "maxAttempts": 2,
+          "baseDelayMs": 1000,
+          "maxDelayMs": 10000,
+          "jitterRatio": 0.2
+        },
         "provider": "daiYu",
         "model": "gpt-6-luna",
         "apiMode": "responses",
@@ -1907,14 +2351,30 @@
         "maxTokens": 16000,
         "maxInputTokens": 1000000,
         "timeoutMs": 600000,
-        "capabilities": { "reasoningEfforts": ["high"], "images": true, "imageTokenUpperBound": 65536 }
+        "capabilities": {
+          "reasoningEfforts": [
+            "high"
+          ],
+          "images": true,
+          "imageTokenUpperBound": 65536
+        }
       },
       "stages": {
-        "selection": { "maxTokens": 8000 },
-        "edit": { "maxTokens": 8000 },
-        "packaging": { "maxTokens": 16000 },
-        "cover": { "maxTokens": 8000 },
-        "qa": { "maxTokens": 12000 }
+        "selection": {
+          "maxTokens": 8000
+        },
+        "edit": {
+          "maxTokens": 8000
+        },
+        "packaging": {
+          "maxTokens": 16000
+        },
+        "cover": {
+          "maxTokens": 8000
+        },
+        "qa": {
+          "maxTokens": 12000
+        }
       }
     },
     "attribution": {
@@ -1944,17 +2404,31 @@
       "maxTokens": 12000
     },
     "mode": "local_review",
-    "roomIds": ["25788785"],
+    "roomIds": [
+      "25788785"
+    ],
     "maxCandidates": 80,
     "maxClips": 50,
     "publicationPolicy": {
       "mode": "curated",
-      "roomIds": ["25788785"],
+      "roomIds": [
+        "25788785"
+      ],
       "minScore": 90,
       "maxStandalone": 5,
       "standoutScore": 92,
       "hardLimit": true,
-      "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }
+      "bundles": {
+        "enabled": false,
+        "minScore": 70,
+        "protectScore": 90,
+        "maxGroups": 2,
+        "maxMembers": 3,
+        "maxSeconds": 300,
+        "minCombinedScore": 85,
+        "minScoreGain": 5,
+        "maxCandidates": 20
+      }
     },
     "chunkSeconds": 2700,
     "aiConcurrency": 4,
@@ -1986,7 +2460,7 @@
     "alignBoundaries": true,
     "boundaryStartBacktrackSeconds": 12,
     "boundaryEndExtendSeconds": 45,
-    "boundarySilenceGapSeconds": 2.0,
+    "boundarySilenceGapSeconds": 2,
     "boundaryTrailingSilenceLookbackSeconds": 14,
     "avoidOverlappingClips": true,
     "finalOverlapToleranceSeconds": 0,
@@ -1997,9 +2471,20 @@
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
-      "rankThenEdit": { "enabled": true, "cardChars": 700, "rankMaxTokens": 12000, "detailBatchSize": 3, "detailConcurrency": 3 },
+      "rankThenEdit": {
+        "enabled": true,
+        "cardChars": 700,
+        "rankMaxTokens": 12000,
+        "detailBatchSize": 3,
+        "detailConcurrency": 3
+      },
       "recallMaxClipsPerChunk": 12,
-      "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
+      "retry": {
+        "maxAttempts": 2,
+        "baseDelayMs": 1000,
+        "maxDelayMs": 10000,
+        "jitterRatio": 0.2
+      },
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
       "maxCandidateDanmakuLines": 14,
@@ -2040,7 +2525,9 @@
     "selectionPolicy": {
       "roomOverrides": {
         "25788785": {
-          "excludedCategories": ["不切岁己本人现实家庭关系中的负面或争议性内容，包括吵架、冷战、指责、财务纠纷及涉及家人隐私的冲突，避免脱离具体情况引人误解；不得以改标题、搞笑包装或拆短片段绕过。普通家人提及、童年坐车、无冲突的成长经历和日常回忆允许，不因出现爸爸、小时候、亲戚等词就排除；晕车主题里提到以前坐爸爸的车不属于家庭矛盾。游戏虚构角色、明确角色扮演和他人新闻按实际内容判断。"]
+          "excludedCategories": [
+            "不切岁己本人现实家庭关系中的负面或争议性内容，包括吵架、冷战、指责、财务纠纷及涉及家人隐私的冲突，避免脱离具体情况引人误解；不得以改标题、搞笑包装或拆短片段绕过。普通家人提及、童年坐车、无冲突的成长经历和日常回忆允许，不因出现爸爸、小时候、亲戚等词就排除；晕车主题里提到以前坐爸爸的车不属于家庭矛盾。游戏虚构角色、明确角色扮演和他人新闻按实际内容判断。"
+          ]
         }
       },
       "requireTimeCoverage": false,

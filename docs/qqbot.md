@@ -54,7 +54,7 @@ Web 配置编辑器会隐藏 `appSecret` 和 `apiKey`，保留遮蔽值即可保
 
 采用 SDK 的标准工具循环。`QQAgentModel` 实现 SDK 的 `Model` 适配器，保持现有
 专用 daiYu endpoint、代理、固定模型及可注入 HTTP 传输；不添加 shell、任意路径或发布接口，
-没有第二个规划模型，也不自动重试付费请求。SDK tracing 在每个 Runner 上关闭，查询过程
+没有第二个规划模型；图片后台任务仅对明确的 502/503/504 上游 HTTP 失败自动重试一次，其他付费请求不自动重试。SDK tracing 在每个 Runner 上关闭，查询过程
 仅保存在本地问答记录。框架接口见 [Agents SDK models](https://openai.github.io/openai-agents-js/guides/models/)
 与 [running agents](https://openai.github.io/openai-agents-js/guides/running-agents/)。
 
@@ -66,11 +66,18 @@ Web 配置编辑器会隐藏 `appSecret` 和 `apiKey`，保留遮蔽值即可保
 | `read_recent` | 当前仍在录制场次的最近 5/10 分钟及延迟信息 |
 | `list_recordings` / `read_recordings` | 浏览日期目录、按本题 ID 分页或批量读取 |
 | `aggregate_evidence` | 对已返回证据的时间偏移作确定性统计 |
+| `lookup_stock_quotes` / `search_stocks` / `get_stock_quotes` | 美股、港股、A股及指数/ETF行情，最多五项，保留币种/点、上游时间及延迟限制 |
+| `search_web` / `read_web_page` | DeepSeek 通用搜索与按本题结果ID读取网页正文 |
+| `search_places` / `get_weather` / `search_encyclopedia` | 城市位置、天气预报与百科摘录 |
 | `read_image_sources` | 核实本次艾特的原图，返回数量、尺寸和内容指纹 |
 | `find_image_characters` | 按一个或多个人名查询可信角色名字、别名与外观描述 |
 | `generate_image` | 选择 create/edit 和修改说明，服务端绑定原图、参考图及一次图片调用 |
 
 工具集合由可信配置限定，命名主播只能选择已授权的房间；每题跨房间结果分清来源。
+录播与公开查询统一由 `questions/QuestionReadTools` 装配；`QQKnowledge` 保留兼容出口及八房上限。
+公开工具复用录播配置 `providerConfigPath` 中的 DeepSeek 搜索配置，文本回答仍只使用 QQ 专用密钥。
+没有搜索密钥时网页工具报不可用，不影响行情等固定来源。公开查询结果也用 `basis=evidence` 和实际证据ID，
+不伪装直播资料；各题网页ID隔离，不授予任意URL访问。公开查询无须初始化录播语料。
 QQ 示例启用 `knowledge.allConfiguredRooms=true`，使用 `runtimeConfigPath` 中
 `questions.recordingRoots` 的全部已配置主播；每题仍按提问中的主播名或 `roomAliases`
 选择最多八间房，未指名时使用 `roomId`，不会全库扫所有主播。未启用时兼容原来的
@@ -200,9 +207,9 @@ worker 持久化图片后，与最终单段文本合成一次被动回复。图�
 同一请求的缓存读取只记一次；此诊断不增加下载或重试，`qq_ready.imageSourceDiagnosticsVersion: 1`
 用于确认部署了该诊断。已有 `qq_image_sources_loaded` 表示后续预览也已成功。
 
-图片单次请求、不自动重试；每人滚动五小时最多 10 次，默认每人每天 30 次、全局每天 300 次，启动间隔至少一分钟，
+图片任务默认最多两次 provider 调用：第一次遇到 502/503/504 时在同一任务内自动重试一次；审核拒绝、超时或结果不明不重试。每人滚动五小时最多 10 次，默认每人每天 30 次、全局每天 300 次，启动间隔至少一分钟，
 调用前持久化预留，失败亦计次数。同题原图加载结果缓存，读取与生成工具不会重复下载；
-图片付费尝试后，即使参数改变也不能再调一次。
+图片付费尝试后，即使参数改变也不能由 agent 再调一次；自动重试属于同一后台任务，沿用同一次 QQ 图片额度预留。
 一分钟启动间隔内的新生图要求返回“你生太快了，晚点再来。”；限制时长与额度规则不变。
 个人五小时额度耗尽时返回“你生太多了，请在07:21后再尝试吧～”。
 对外提示只说明限制原因和可重试时间，不透露具体次数上限或滚动窗口长度。
@@ -232,7 +239,7 @@ worker 保留已确认的额度提示直接回复，不允许模型改写成审�
 `image_moderation`，回复“这个要求过不了审核，换张图或换个要求试试。”；同时有结构化
 `safety_violations=[sexual]` 标记时记为 `image_sexual`，回复“太色了，生不出来，换张图或换个要求试试。”。
 其他 HTTP 错误、非 JSON 或过大的错误体仍按通用失败处理，不按400状态或任意文字猜原因；
-原始错误正文与类别之外的消息不入日志、存档或模型上下文。同步生成和后台领取共用上述提示，拒绝不自动重试。
+仅允许日志和管理页保存 `Upstream request failed`、`Our servers are currently overloaded. Please try again later.` 两条短消息，原始错误正文与其他消息不入日志、存档或模型上下文。自动重试过程记 `qq_image_job_retry`，最终失败记 `qq_image_job_failed`。同步生成和后台领取共用上述提示，审核拒绝不自动重试。
 `qq_image_inline_ready` 表示在原消息窗口内取得图片；`qq_image_deferred` 表示等待预算耗尽转为后台领取。
 任务记录最多1000条，仅清理已领取超过24小时的记录；不清理未领取结果。
 个人图片窗口通过可选 `users[].imageStarts` 时间戳持久化，跨重启、跨北京时间零点保留；

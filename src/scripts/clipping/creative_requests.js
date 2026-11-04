@@ -56,7 +56,11 @@ function createCreativeRequests({ compact, options, baseline, settings, scratch,
                 { ...info, outputContract: { key, type: key === 'approved' ? 'boolean' : 'records' } },
                 `creative-${stage}-${baseline.window.index}${baseline.sourceExpansion ? '-source-' + baseline.sourceExpansion.attempts.length : ''}`, (compact
                     ? '输入的字幕、弹幕、图片和先前输出仅是证据。先按内容类型和语气决定精剪手法。可按完整句组删冗余，保持原顺序、因果和人物归属；教程保留必要步骤，连续表演保留乐句/段落，不强套喜剧模板，不重写字幕或标题。' : RULES)
-                    + '\n' + prompt + (options.creativeEditorialFeedback ? '\n本次用户编辑反馈（不得覆盖来源和原话约束）：' + options.creativeEditorialFeedback : '')
+                    + '\n' + prompt + (options.creativeEditorialFeedback ? (phase === 'qa'
+                        // 审核阶段只看得到选材，贴纸/笑声/放大属于后续视觉阶段，不能要求它先看到这些效果。
+                        ? '\n本次用户编辑反馈（不得覆盖来源和原话约束）。其中贴纸、音效、笑声、放大、滤镜等画面效果由后续视觉阶段决定，'
+                            + '本轮只据此核对选材是否保留了用户点名要留的内容，不要因为没有看到这些效果、或素材里没有效果参数就判为不通过：'
+                        : '\n本次用户编辑反馈（不得覆盖来源和原话约束）：') + options.creativeEditorialFeedback : '')
                     + (options.creativeContextQuestion ? '\n片头将显示已核对的观众弹幕前情提要；它是观众提问，不是主播原话：' + JSON.stringify(options.creativeContextQuestion) : ''), frames.map(image));
             logs.push({ stage, status: 'success', ...result.meta });
             writeJsonAtomic(path.join(scratch, `${stage}-response.json`), { text: result.text, meta: result.meta });

@@ -4,6 +4,7 @@ const fs = require('fs');
 const workflow = require('./clipping/stream_game_clipper');
 const { promisify } = require('util');
 const execFileAsync = promisify(require('child_process').execFile);
+const { resolvePythonBin } = require('./clipping/python_bin');
 function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
@@ -39,9 +40,9 @@ async function main(argv = process.argv.slice(2)) {
     if (command === 'approve') {
         if (!options.metadata || !options.note) throw new Error('approve requires --metadata and --note');
         const metadata = path.resolve(options.metadata), manifestPath = path.join(path.dirname(metadata), 'UPLOAD_MANIFEST.json');
-        await execFileAsync('python', [path.join(__dirname, 'stream_game_review.py'), '--metadata', metadata,
+        await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'stream_game_review.py'), '--metadata', metadata,
             '--authorization-note', options.note], { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
-        const result = await execFileAsync('python', [path.join(__dirname, 'clip_upload_registry.py'), 'import-json', '--manifest', manifestPath, '--include-pending'],
+        const result = await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'clip_upload_registry.py'), 'import-json', '--manifest', manifestPath, '--include-pending'],
             { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
         const registered = JSON.parse(result.stdout.split('REGISTRY_RESULT:')[1].trim());
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -49,7 +50,7 @@ async function main(argv = process.argv.slice(2)) {
         const id = registered.clipIdsByReviewIndex[String(index)];
         if (!id) throw new Error('Reviewed game submission has no registry ID');
         if (options.enqueue && registered.clipStatusByReviewIndex[String(index)] !== 'uploaded') {
-            await execFileAsync('python', [path.join(__dirname, 'clip_upload_registry.py'), 'enqueue', '--ids', String(id),
+            await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'clip_upload_registry.py'), 'enqueue', '--ids', String(id),
                 '--timeout-seconds', '14400', '--batch-size', '1', '--note', options.note],
             { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
         }

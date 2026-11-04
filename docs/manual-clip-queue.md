@@ -135,6 +135,19 @@ npm run manual:clips -- add `
 
 不传 `--srt` 时会尝试使用与录播同名的 `.srt`；不传 `--output-dir` 时输出到录播目录下的 `manual_requested_clips`。
 
+### 附加内容标签
+
+`add` 支持可选 `--tags-extra`（逗号/中文逗号/空格分隔，自动去重），与队列 profile 的基础标签合并后写入 `copy.tags` 和 `upload.tags`：
+
+```powershell
+npm run manual:clips -- add ... --tags-extra "影之刃零,搞笑"
+```
+
+标签约定：游戏名取自直播标题 `《…》`；情绪标签使用 `src/scripts/content_tags.js`
+中的白名单（搞笑/高能/温情/翻唱），新标签先在该文件登记再使用，避免打出 B 站不存在的无效标签。
+Workspace 手工切片表单有对应输入框（`tagsExtra` 字段）；自动 AI 切片在
+`topic_clipper.js` 中依据直播标题与片内文本推导同样的标签。
+
 ### 标题用梗的离线评估
 
 标题可以借用圈内称呼、原话和网络表达，但梗只能改变表达，不能补出片内没有的事实、

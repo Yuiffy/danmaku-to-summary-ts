@@ -9,7 +9,10 @@ function validateFocusInset(raw) {
     if (raw.shape === 'circle') return { ...face.validateFaceInset(raw), target: raw.target, shape: raw.shape };
     const b = raw.sourceBox;
     if (!b || !finite(b.x, 0, 1) || !finite(b.y, 0, 1) || !finite(b.width, .025, .6) || !finite(b.height, .025, .6)
-        || b.x + b.width > 1 || b.y + b.height > 1 || !finite(raw.magnification, 1.2, 3)) throw new Error('Invalid focus text/detail region');
+        || b.x + b.width > 1 || b.y + b.height > 1 || !finite(raw.magnification, 1.2, 3)) throw new Error(
+        'Invalid focus text/detail region: sourceBox must be inside the frame with width/height .025–.6 of the frame, magnification 1.2–3'
+        + `; got sourceBox ${JSON.stringify(b)} magnification ${raw.magnification}. A taller box cannot be enlarged inside the frame —`
+        + ' pick the few chat lines or the detail that matters (.12–.35 tall), not a whole chat column');
     return { target: raw.target, shape: 'rectangle', placement: 'source', sourceBox: { ...b }, magnification: raw.magnification, clearOfAction: true };
 }
 function focusGeometry(raw, width, height) {

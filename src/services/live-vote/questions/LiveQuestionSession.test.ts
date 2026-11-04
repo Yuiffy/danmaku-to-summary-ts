@@ -230,6 +230,42 @@ it('sends one short answer and moves the full answer and dated clues to the reco
   expect(formatQuestionRecord(payload)).toContain('2026-10-01 00:01:02 录像字幕');
 });
 
+it('sends one compact summary for multi-security public quotes within the danmaku limit', async () => {
+  const sent = jest.fn();
+  const session = sessionWithAuthority(config, async () => ({
+    basis: 'public', answer: '完整行情', shortAnswer: '参考行情，可能延迟。',
+    publicQuotes: [
+      { symbol: 'usQQQ', name: 'QQQ', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 690.85, previousClose: 685, open: 688, change: 5.85, changePercent: 0.81, high: 692, low: 684, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' },
+      { symbol: 'usAMD', name: 'AMD', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 201.2, previousClose: 198, open: 199, change: 3.2, changePercent: 1.62, high: 203, low: 197, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' },
+      { symbol: 'usNVDA', name: '英伟达', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 188.4, previousClose: 190, open: 189, change: -1.6, changePercent: -0.84, high: 191, low: 187, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' },
+      { symbol: 'usINX', name: '标普500', market: 'US', currency: 'USD', assetType: '指数', priceUnit: '点', price: 6800.1, previousClose: 6790, open: 6795, change: 10.1, changePercent: 0.15, high: 6810, low: 6780, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' }
+    ]
+  }), sent, '99');
+  session.ingest(message(), () => true, now);
+  await session.flush();
+  const answers = sent.mock.calls.slice(1).map(call => call[1] as string);
+  expect(answers).toHaveLength(1);
+  expect(answers[0]).toContain('参考 QQQ+1% AMD+2% NVDA-1% 标普0%');
+  expect(Array.from(answers[0]).length).toBeLessThanOrEqual(40);
+});
+
+it('keeps the compact public summary within the smaller account limit', async () => {
+  const sent = jest.fn();
+  const session = sessionWithAuthority(config, async () => ({
+    basis: 'public', answer: '行情', shortAnswer: '行情',
+    publicQuotes: [
+      { symbol: 'usQQQ', name: 'QQQ', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 1, previousClose: null, open: null, change: null, changePercent: 1, high: null, low: null, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' },
+      { symbol: 'usAMD', name: 'AMD', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 2, previousClose: null, open: null, change: null, changePercent: 2, high: null, low: null, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' },
+      { symbol: 'usNVDA', name: '英伟达', market: 'US', currency: 'USD', assetType: '股票/ETF', priceUnit: 'USD', price: 3, previousClose: null, open: null, change: null, changePercent: 3, high: null, low: null, sourceTime: '20261104160000', sourceTimeZone: '上游未标明时区，不作换算' }
+    ]
+  }), sent, '99', 20);
+  session.ingest(message(), () => true, now);
+  await session.flush();
+  expect(sent.mock.calls.map(call => call[1])).toEqual([
+    receivedQuestionMessage('以前玩过法环吗?', 20), '鹿饼答：Q+1%A+2%N+3%'
+  ]);
+});
+
 it('rejects configuration that expands filesystem scope or disables frequency protection', () => {
   for (const unlimitedUids of [['带鱼'], [14279], ['0'], '14279']) {
     expect(() => validateQuestionConfig({ ...config, unlimitedUids } as LiveQuestionConfig)).toThrow();

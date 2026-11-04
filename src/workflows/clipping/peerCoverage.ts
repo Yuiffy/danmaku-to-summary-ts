@@ -12,13 +12,21 @@ export interface PeerVideo {
 }
 export interface CoverageSettings {
     enabled?: boolean; minScore?: number; maxStandalone?: number; maxCandidates?: number;
-    maxSearchResults?: number; supportActions?: Array<'like' | 'favorite' | 'repost'>; favoriteFolderId?: string;
+    maxSearchResults?: number; maxSearchQueries?: number;
+    supportActions?: Array<'like' | 'favorite' | 'repost'>; favoriteFolderId?: string;
     maxSupportPerDay?: number; supportIntervalSeconds?: number;
+}
+export type CoverageMatchStatus = 'own_account' | 'subtitle_unavailable' | 'read_failed'
+    | 'different_event' | 'same_event_unconfirmed' | 'covered';
+export interface CoverageMatch {
+    bvid: string; aid: string; ownerId: string; title: string; description: string;
+    publishedAt: number; url: string; status: CoverageMatchStatus; reason?: string;
 }
 export interface CoverageDecision {
     candidateId: string; inputDigest: string; status: 'original' | 'covered' | 'rejected' | 'needs_review' | 'budget';
     reason: string; score?: number; peer?: PeerVideo; comparison?: Record<string, any>;
-    searches?: Array<{ query: string; bvids: string[] }>; support?: unknown;
+    searches?: Array<{ query: string; bvids: string[]; results?: CoverageMatch[] }>;
+    matches?: CoverageMatch[]; support?: unknown;
 }
 export interface CoverageIO {
     accountId: string;
@@ -33,10 +41,10 @@ const normalized = (value: string) => value.replace(/[\p{P}\p{Z}\s]/gu, '').toLo
 export const coverageDigest = (candidate: CoverageCandidate): string => createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 
 export function coverageSettings(raw: CoverageSettings = {}): Required<Omit<CoverageSettings, 'favoriteFolderId'>> & { favoriteFolderId?: string } {
-    const settings = { enabled: false, minScore: 90, maxStandalone: 5, maxCandidates: 50, maxSearchResults: 3,
+    const settings = { enabled: false, minScore: 90, maxStandalone: 5, maxCandidates: 50, maxSearchResults: 5, maxSearchQueries: 4,
         supportActions: ['like', 'favorite'] as Array<'like' | 'favorite'>, maxSupportPerDay: 10, supportIntervalSeconds: 60, ...raw };
     for (const [field, low, high] of [['minScore', 0, 100], ['maxStandalone', 1, 5], ['maxCandidates', 1, 100],
-        ['maxSearchResults', 1, 5], ['maxSupportPerDay', 0, 20], ['supportIntervalSeconds', 30, 86400]] as const) {
+        ['maxSearchResults', 1, 5], ['maxSearchQueries', 1, 6], ['maxSupportPerDay', 0, 20], ['supportIntervalSeconds', 30, 86400]] as const) {
         const value = settings[field];
         if (!Number.isInteger(value) || value < low || value > high) throw new Error(`Invalid clipCuration.${field}`);
     }
@@ -44,6 +52,40 @@ export function coverageSettings(raw: CoverageSettings = {}): Required<Omit<Cove
         || new Set(settings.supportActions).size !== settings.supportActions.length) throw new Error('Invalid peer support actions');
     if (settings.favoriteFolderId !== undefined && !/^[1-9]\d*$/u.test(settings.favoriteFolderId)) throw new Error('Invalid favorite folder');
     return settings;
+}
+
+const compactQuery = (value: unknown): string => typeof value === 'string'
+    ? value.replace(/<[^>]*>/gu, '').replace(/[\r\n\t]+/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 80) : '';
+
+/**
+ * Model queries are useful but not authoritative. Add deterministic title and
+ * source-cue queries so a weak/incorrect model query cannot hide an existing
+ * upload whose title uses different wording.
+ */
+export function buildCoverageQueries(candidate: CoverageCandidate, modelQueries: unknown, limit = 4): string[] {
+    const values: string[] = [];
+    const add = (value: unknown) => {
+        const query = compactQuery(value);
+        if (query.length >= 3 && !values.includes(query)) values.push(query);
+    };
+    if (Array.isArray(modelQueries)) for (const query of modelQueries) add(query);
+    add(candidate.title);
+    add(candidate.host && candidate.title ? `${candidate.host} ${candidate.title}` : candidate.title);
+    const cues = [...candidate.cues].sort((a, b) => b.text.length - a.text.length);
+    for (const cue of cues.slice(0, 3)) add(candidate.host ? `${candidate.host} ${cue.text}` : cue.text);
+    return values.slice(0, Math.max(1, limit));
+}
+
+function matchSummary(video: PeerVideo, status: CoverageMatchStatus, reason?: string): CoverageMatch {
+    return { bvid: video.bvid, aid: video.aid, ownerId: video.ownerId, title: video.title.slice(0, 200), description: video.description.slice(0, 600),
+        publishedAt: video.publishedAt, url: `https://www.bilibili.com/video/${video.bvid}/`, status, ...(reason ? { reason } : {}) };
+}
+
+function reviewReason(matches: CoverageMatch[]): string {
+    const candidates = matches.filter(match => match.status !== 'different_event' && match.status !== 'own_account');
+    if (!candidates.length) return '存在检索结果，但尚未从完整字幕确认同一事件，待核后决定是否自制';
+    const labels = candidates.slice(0, 3).map(match => `${match.bvid}${match.title ? `《${match.title}》` : ''}`);
+    return `已发现疑似同题成片 ${labels.join('、')}，但${candidates.some(match => match.status === 'subtitle_unavailable') ? '对方字幕不可用或不完整' : '共同原话/起因发展结果证据不足'}，待人工核查后决定是否自制`;
 }
 
 function candidateValid(candidate: CoverageCandidate): boolean {
@@ -101,7 +143,7 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
     let accepted = 0, suspended = false;
     for (const [index, candidate] of candidates.entries()) {
         const base = { candidateId: candidate.id, inputDigest: coverageDigest(candidate) };
-        let decision: CoverageDecision;
+        let decision: CoverageDecision = { ...base, status: 'needs_review', reason: '选材或平台检索不可用，不能认定没有同题切片' };
         if (accepted >= settings.maxStandalone || index >= settings.maxCandidates) {
             decision = { ...base, status: 'budget', reason: '本场精选制作名额已满或达到有界检索上限' };
         } else if (suspended || !candidateValid(candidate)) {
@@ -116,23 +158,42 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
                 if (!assessment.worthPublishing || assessment.score < settings.minScore) {
                     decision = { ...base, status: 'rejected', score: assessment.score, reason: assessment.reason };
                 } else {
-                    if (!Array.isArray(assessment.queries) || assessment.queries.length < 1 || assessment.queries.length > 2
-                        || assessment.queries.some((q: any) => typeof q !== 'string' || q.trim().length < 3 || q.length > 80)) throw new Error('invalid_search_queries');
-                    decision = { ...base, status: 'original', score: assessment.score, reason: assessment.reason, searches: [] };
+                    const queries = buildCoverageQueries(candidate, assessment.queries, settings.maxSearchQueries);
+                    if (!queries.length) throw new Error('invalid_search_queries');
+                    decision = { ...base, status: 'original', score: assessment.score, reason: assessment.reason, searches: [], matches: [] };
                     const seen = new Set<string>();
                     let unverified = false;
-                    for (const query of [...new Set<string>(assessment.queries)]) {
+                    for (const query of queries) {
                         const found = await io.search(query, settings.maxSearchResults);
-                        decision.searches!.push({ query, bvids: found.map(v => v.bvid) });
+                        const search = { query, bvids: found.map(v => v.bvid), results: [] as CoverageMatch[] };
+                        decision.searches!.push(search);
                         for (const hit of found) {
-                            if (hit.ownerId === io.accountId || seen.has(hit.bvid)) continue;
+                            if (hit.ownerId === io.accountId) {
+                                const own = matchSummary(hit, 'own_account', '本账号成片不作为外部覆盖');
+                                search.results!.push(own); decision.matches!.push(own); continue;
+                            }
+                            if (seen.has(hit.bvid)) continue;
                             seen.add(hit.bvid);
-                            const peer = await io.read(hit);
-                            if (!peer.complete || !peer.cues.length || JSON.stringify(peer).length > 65000) { unverified = true; continue; }
-                            const comparison = parseModelJson(await io.request(`compare-${candidate.id}-${peer.bvid}`, comparisonPrompt(candidate, peer)));
+                            let peer: PeerVideo;
+                            try { peer = await io.read(hit); }
+                            catch { unverified = true; const failed = matchSummary(hit, 'read_failed', '读取对方视频字幕失败');
+                                search.results!.push(failed); decision.matches!.push(failed); continue; }
+                            if (!peer.complete || !peer.cues.length || JSON.stringify(peer).length > 65000) {
+                                unverified = true; const missing = matchSummary(peer, 'subtitle_unavailable', '没有可核验的完整平台字幕');
+                                search.results!.push(missing); decision.matches!.push(missing); continue;
+                            }
+                            let comparison: Record<string, any>;
+                            try { comparison = parseModelJson(await io.request(`compare-${candidate.id}-${peer.bvid}`, comparisonPrompt(candidate, peer))); }
+                            catch { unverified = true; const failed = matchSummary(peer, 'same_event_unconfirmed', '同题比较未返回可验证证据');
+                                search.results!.push(failed); decision.matches!.push(failed); continue; }
                             if (['sameEvent', 'complete', 'quality'].some(key => typeof comparison?.[key] !== 'boolean')
-                                || typeof comparison.reason !== 'string' || !comparison.reason.trim()) throw new Error('invalid_peer_comparison');
+                                || typeof comparison.reason !== 'string' || !comparison.reason.trim()) {
+                                unverified = true; const failed = matchSummary(peer, 'same_event_unconfirmed', '同题比较证据格式不完整');
+                                search.results!.push(failed); decision.matches!.push(failed); continue;
+                            }
                             if (confirmedCoverage(candidate, peer, comparison, io.accountId)) {
+                                const covered = matchSummary(peer, 'covered', comparison.reason);
+                                search.results!.push(covered); decision.matches!.push(covered);
                                 decision = { ...decision, status: 'covered', reason: comparison.reason, peer, comparison };
                                 // Save the editorial decision before any public interaction. A failed interaction never triggers a duplicate upload.
                                 await io.save([...decisions, decision]);
@@ -140,17 +201,23 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
                                 catch { decision.support = { status: 'unavailable', reason: '互动未确认，保留同题覆盖证据' }; }
                                 break;
                             }
+                            const result = matchSummary(peer, comparison.sameEvent ? 'same_event_unconfirmed' : 'different_event', comparison.reason);
+                            search.results!.push(result); decision.matches!.push(result);
                             if (comparison.sameEvent) unverified = true;
                         }
                         if (decision.status === 'covered') break;
                     }
-                    if (decision.status === 'original' && unverified) decision = { ...decision, status: 'needs_review',
-                        reason: '存在可能同题的成片但字幕或完整性证据不足，待核后决定是否自制' };
+                    if (decision.status === 'original' && unverified) decision = { ...decision, status: 'needs_review', reason: reviewReason(decision.matches || []) };
                     if (decision.status === 'original') accepted++;
                 }
             } catch {
                 suspended = true;
-                decision = { ...base, status: 'needs_review', reason: '选材或平台检索不可用，不能认定没有同题切片' };
+                const partial = decision as CoverageDecision | undefined;
+                decision = { ...base, ...(partial?.score === undefined ? {} : { score: partial.score }),
+                    ...(partial?.searches ? { searches: partial.searches } : {}), ...(partial?.matches ? { matches: partial.matches } : {}),
+                    status: 'needs_review', reason: partial?.matches?.length
+                        ? `${reviewReason(partial.matches)}；平台检索中断，不能认定没有同题切片`
+                        : '选材或平台检索不可用，不能认定没有同题切片' };
             }
         }
         decisions.push(decision);

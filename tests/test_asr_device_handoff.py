@@ -68,6 +68,42 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(policy.choose('cpu', {**sample, 'available_gb': 3}, 0, 1000, cpu_running=True), 'wait')
         self.assertEqual(policy.choose('cuda', sample, 0, 1000), 'wait')
 
+    def test_unconfirmed_device_falls_back_instead_of_waiting(self):
+        missing = {'gpu_idle': None, 'game_running': None, 'available_gb': 0}
+        policy = BoundaryPolicy(settings({}))
+        policy.observe(missing, 0)
+        self.assertEqual(policy.choose('cuda', missing, 0, 1000), 'cuda')
+        self.assertTrue(policy.ultra_low_impact)
+        rich = BoundaryPolicy(settings({}))
+        rich.observe({**missing, 'available_gb': 16}, 0)
+        self.assertEqual(rich.choose('cuda', {**missing, 'available_gb': 16}, 0, 1000), 'cpu')
+        self.assertEqual(rich.choose('cpu', {**missing, 'available_gb': 0}, 0, 1000, cpu_running=True), 'cpu')
+        self.assertEqual(rich.choose('cuda', {**missing, 'game_running': True}, 0, 1000), 'wait')
+
+    def test_midband_busy_gpu_still_admits_ultra(self):
+        midband = {'gpu_idle': False, 'game_running': False, 'available_gb': 0,
+                   'memory_pressure': False, 'external_util_pct': 60,
+                   'external_memory_pct': 75, 'external_free_mb': 4000}
+        policy = BoundaryPolicy(settings({'device_handoff': {'allow_shared_gpu': True}}))
+        policy.observe(midband, 0)
+        self.assertEqual(policy.choose('cuda', midband, 0, 1000), 'cuda')
+        self.assertTrue(policy.ultra_low_impact)
+        capped = {**midband, 'external_util_pct': 99}
+        self.assertEqual(policy.choose('cuda', capped, 0, 1000), 'wait')
+        unknown_util = {'gpu_idle': False, 'game_running': False, 'available_gb': 0,
+                        'memory_pressure': True, 'external_memory_pct': 75,
+                        'external_free_mb': 4000}
+        self.assertEqual(policy.choose('cuda', unknown_util, 0, 1000), 'cuda')
+        over_mem = {**unknown_util, 'external_memory_pct': 90, 'external_free_mb': 1000}
+        self.assertEqual(policy.choose('cuda', over_mem, 0, 1000), 'wait')
+
+        unknown_util = {'gpu_idle': False, 'game_running': False, 'available_gb': 0,
+                        'memory_pressure': True, 'external_memory_pct': 75,
+                        'external_free_mb': 4000}
+        self.assertEqual(policy.choose('cuda', unknown_util, 0, 1000), 'cuda')
+        over_mem = {**unknown_util, 'external_memory_pct': 90, 'external_free_mb': 1000}
+        self.assertEqual(policy.choose('cuda', over_mem, 0, 1000), 'wait')
+
     def test_invalid_settings_rejected(self):
         for value in (0, -1, float('nan'), float('inf')):
             with self.assertRaises(ValueError):

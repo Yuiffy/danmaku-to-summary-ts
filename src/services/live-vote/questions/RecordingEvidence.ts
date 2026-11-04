@@ -25,6 +25,7 @@ export interface EvidenceSearchHit extends EvidenceHit {
 export interface StoredEvidence { hit: EvidenceHit; context: EvidenceSearchHit['context'] }
 export interface QuestionEvidence {
   scopeDescription?: string;
+  overview?(args: unknown): Promise<unknown>;
   search(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean }>;
   recent?(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean; [key: string]: unknown }>;
   list?(args: unknown): Promise<BrowseResult>;

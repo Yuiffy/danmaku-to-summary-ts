@@ -11,6 +11,7 @@ import { BrowseResult, OpeningResult, parseListRecordings, parseReadRecordings }
 import { parseReadOpenings } from './RecordingOpenings';
 import { parseRecordingCalendar, RecordingCalendar } from './RecordingCalendar';
 import { streamerKnowledge } from './StreamerKnowledge';
+import { readLiveOverview } from './LiveOverview';
 
 interface RoomCorpus { room: QuestionRoom; recordings: RecordingEvidence; gifts?: Promise<EvidenceSearchHit[]> }
 interface Origin { corpus: RoomCorpus; localId: string; gift?: EvidenceSearchHit }
@@ -23,6 +24,8 @@ export class QuestionCorpus implements QuestionEvidence {
   embeddingStatus: 'disabled' | 'ready' | 'unavailable';
   private readonly corpora: RoomCorpus[];
   private readonly origins = new Map<string, Origin>();
+  private readonly overviewClues = new Map<string, QuestionClue>();
+  private overviewCalls = 0;
   private readonly recordingOrigins = new Map<string, { corpus: RoomCorpus; localId: string }>();
   private readonly semanticCache = new Map<string, Promise<SemanticMatch[]>>();
   private embedder?: Embedder;
@@ -121,6 +124,24 @@ export class QuestionCorpus implements QuestionEvidence {
     }
     return { calendars, limited: calendars.some(calendar => calendar.limited) };
   }
+  async overview(args: unknown) {
+    const input = args as { date: string | null };
+    if (!input || Object.keys(input).join(',') !== 'date' || input.date !== null && typeof input.date !== 'string') throw new Error('Expected date');
+    const overviews = [];
+    const call = ++this.overviewCalls;
+    for (const room of this.rooms) {
+      this.signal.throwIfAborted();
+      const value = await readLiveOverview(this.config.recordingRoots[room.roomId], room.roomId, input.date, this.request.askedAt ?? Date.now(), this.signal);
+      overviews.push({ room: room.name, roomId: room.roomId, ...value, artifacts: value.artifacts.map((artifact, index) => {
+        const evidenceId = `r${room.roomId}_overview${call}_${index + 1}`;
+        const clue: QuestionClue = { kind: 'live-overview', roomId: room.roomId, roomName: room.name,
+          date: value.session?.date || null, time: value.session?.time || '', title: artifact.kind, excerpt: artifact.text };
+        this.overviewClues.set(evidenceId, clue);
+        return { ...clue, ...artifact, evidenceId, sourceKind: clue.kind };
+      }) });
+    }
+    return { overviews };
+  }
   async list(args: unknown): Promise<BrowseResult> {
     const input = parseListRecordings(args);
     const limit = Math.max(1, Math.floor(input.limit / this.corpora.length));
@@ -218,6 +239,8 @@ export class QuestionCorpus implements QuestionEvidence {
     this.signal.throwIfAborted();
     const input = args as { evidenceId?: unknown };
     if (!input || Object.keys(input).length !== 1 || typeof input.evidenceId !== 'string') return { error: 'Invalid evidence ID' };
+    const overview = this.overviewClues.get(input.evidenceId);
+    if (overview) return { hit: { ...overview, evidenceId: input.evidenceId }, context: [] };
     const origin = this.origins.get(input.evidenceId);
     if (!origin) return { error: 'Unknown evidence ID' };
     const { corpus, gift } = origin;
@@ -225,6 +248,7 @@ export class QuestionCorpus implements QuestionEvidence {
     return 'error' in result ? result : { hit: this.qualify(corpus, result.hit, gift), context: this.qualifyContext(corpus, result.context, gift) };
   }
   clue(id: string): QuestionClue | undefined {
+    if (this.overviewClues.has(id)) return this.overviewClues.get(id);
     const origin = this.origins.get(id);
     if (!origin) return undefined;
     const { corpus, gift } = origin;

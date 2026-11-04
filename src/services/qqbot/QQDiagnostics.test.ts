@@ -25,3 +25,9 @@ test('upstream request IDs omit credentials, arbitrary text and overlong values 
   }
   expect(qqRequestId({ headers: new Headers({ 'x-request-id': 'private-api-key', 'request-id': 'req-456' }) }, 'private-api-key')).toBe('req-456');
 });
+
+test('diagnostic projections allow only the two bounded upstream messages', () => {
+  const base = qqDiagnostic(new Error('provider'), 'image_http', 'http_error');
+  expect(validQQDiagnostic({ ...base, upstreamMessage: 'Upstream request failed' })).toBe(true);
+  expect(validQQDiagnostic({ ...base, upstreamMessage: 'private provider response' as any })).toBe(false);
+});

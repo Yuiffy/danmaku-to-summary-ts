@@ -92,7 +92,9 @@ export async function resumeStage<T>(state: StageProgress, stage: string,
 
 /** Retry transport failures only; valid responses and evidence errors are final. */
 export function transientActivityFailure(error: unknown): boolean {
-  const failure = error as { message?: string; code?: string; type?: string; attempts?: { httpStatus?: number }[] };
+  const failure = error as { message?: string; code?: string; type?: string; outcomeUnknown?: boolean;
+    attempts?: { httpStatus?: number; outcomeUnknown?: boolean }[] };
+  if (failure?.outcomeUnknown || failure?.attempts?.some(attempt => attempt.outcomeUnknown)) return false;
   const status = failure?.attempts?.at(-1)?.httpStatus
     ?? Number(/\bHTTP (\d{3})\b/u.exec(failure?.message || '')?.[1]);
   if (status >= 400) return status === 408 || status === 429 || status >= 500 && status <= 599;

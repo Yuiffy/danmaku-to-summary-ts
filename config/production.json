@@ -177,6 +177,52 @@
     "text": {
       "enabled": true,
       "provider": "daiYu",
+      "defaultProfile": "flash",
+      "profiles": {
+        "flash": {
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-6-luna",
+              "apiMode": "responses"
+            },
+            {
+              "provider": "zai",
+              "model": "glm-5.3-flash",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "deepSeek",
+              "model": "deepseek-flash",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-6-luna",
+              "apiMode": "responses"
+            }
+          ]
+        },
+        "pro": {
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-6.1-sol",
+              "apiMode": "responses"
+            },
+            {
+              "provider": "zai",
+              "model": "glm-5.3",
+              "apiMode": "chatCompletions"
+            },
+            {
+              "provider": "deepSeek",
+              "model": "deepseek-flash",
+              "apiMode": "chatCompletions"
+            }
+          ]
+        }
+      },
       "sharedPromptCache": {
         "enabled": true,
         "continuationEnabled": true,
@@ -1895,7 +1941,8 @@
       "strategy": "single",
       "qualityRules": true,
       "transientMaxAttempts": 2,
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
+      "modelProfile": "pro",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
@@ -1967,7 +2014,8 @@
       "boundaryModel": "gemini-3.1-pro-preview",
       "frameProvider": "daiYu",
       "frameApiMode": "openai_chat",
-      "frameModel": "gpt-6.1-sol"
+      "frameModel": "gpt-6.1-sol",
+      "frameModelProfile": "pro"
     },
     "visual": {
       "provider": "zai",
@@ -2042,6 +2090,7 @@
       "provider": "daiYu",
       "apiMode": "openai_chat",
       "model": "gpt-6.1-sol",
+      "modelProfile": "pro",
       "evidenceMethod": "independent_local_asr"
     },
     "roomIds": [
@@ -3532,6 +3581,9 @@
       "gpu_throttle": {
         "enabled": true,
         "busy_sm_threshold": 80,
+        "ultra_low_impact": {
+          "max_external_util_pct": 100
+        },
         "busy_mem_threshold": 80,
         "busy_fb_threshold_mb": 12000,
         "check_interval_s": 10,
@@ -3743,5 +3795,21 @@
       "vramUsageThreshold": 70,
       "checkIntervalSeconds": 30
     }
+  },
+  "clipCuration": {
+    "enabled": true,
+    "roomIds": [
+      "25788785"
+    ],
+    "includeKeywordTopics": true,
+    "maxSearchResults": 5,
+    "maxSearchQueries": 4,
+    "supportActions": [
+      "like",
+      "favorite",
+      "repost"
+    ],
+    "maxSupportPerDay": 10,
+    "supportIntervalSeconds": 60
   }
 }

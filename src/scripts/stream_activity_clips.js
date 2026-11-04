@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const { execFile } = require('child_process');
+const { resolvePythonBin } = require('./clipping/python_bin');
 const execFileAsync = promisify(execFile);
 
 function parseArgs(argv) {
@@ -163,12 +164,12 @@ async function main(argv = process.argv.slice(2)) {
     if (command === 'approve') {
         if (!options.metadata || !options.note) throw new Error('approve requires --metadata and --note');
         const metadataPath = path.resolve(options.metadata);
-        const approved = await execFileAsync('python', [path.join(__dirname, 'stream_activity_review.py'), '--metadata', metadataPath,
+        const approved = await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'stream_activity_review.py'), '--metadata', metadataPath,
             '--note', options.note, ...(options['feedback-authorized'] ? ['--feedback-authorized'] : [])], { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
         console.log(approved.stdout.trim());
         const registered = await workflow.register(path.join(path.dirname(metadataPath), 'UPLOAD_MANIFEST.json'));
         if (options.enqueue) {
-            const preflight = await execFileAsync('python', [path.join(__dirname, 'bilibili_upload_capabilities.py'),
+            const preflight = await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'bilibili_upload_capabilities.py'),
                 '--metadata', metadataPath], { windowsHide: true, shell: false, timeout: 60000, maxBuffer: 1024 * 1024 });
             console.log(`投稿权限预检: ${preflight.stdout.trim()}`);
             const payload = JSON.parse(registered.split('REGISTRY_RESULT:')[1].trim());
@@ -176,7 +177,7 @@ async function main(argv = process.argv.slice(2)) {
             const index = manifest.clips.find(row => path.resolve(row.metadataPath) === metadataPath)?.reviewIndex;
             const id = payload.clipIdsByReviewIndex[String(index)];
             if (!id) throw new Error('Reviewed submission has no registry ID');
-            const queued = await execFileAsync('python', [path.join(__dirname, 'clip_upload_registry.py'), 'enqueue', '--ids', String(id),
+            const queued = await execFileAsync(resolvePythonBin('python'), [path.join(__dirname, 'clip_upload_registry.py'), 'enqueue', '--ids', String(id),
                 '--timeout-seconds', '14400'], { windowsHide: true, shell: false, timeout: 120000, maxBuffer: 1024 * 1024 });
             console.log(queued.stdout.trim());
         }

@@ -6,9 +6,41 @@ const { loadWorkflow } = require('../workflow-runtime');
 const { writeJsonAtomic } = require('./candidate_subtitles');
 const { creativeSettings, speechForCreative, validateMoments, validateCreativePlan, STICKERS, SOUNDS, FILTERS } = require('./creative_plan');
 const { loadCreativeAssets, assetChoices, soundId } = require('./creative_assets');
-const { rotateLaughter } = require('./creative_profile');
+const { rotateLaughter, isLaughter } = require('./creative_profile');
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+
+// Editorial feedback that names a laugh beat is an instruction, not a hint: the sound
+// pass sometimes answers with an empty array, which silently dropped the requested
+// laugh. Resolve the quote to its real cue end and place the laugh there instead.
+const LAUGH_REQUEST = /罐头笑声|笑声/;
+const LAUGH_IDS = ['audience_laugh', 'sitcom_laugh', 'sitcom_laugh_warm', 'sitcom_laugh_chuckle'];
+const cueKey = text => String(text).replace(/[\s，。？！、,.?!…~～—"'“”‘’]/g, '');
+
+function requestedLaugh(speech, moments, note, assets, preferredId) {
+    const noteText = String(note || '');
+    // Editorial notes quote many lines (speed plans, retained dialogue). Only a quote inside
+    // a clause that actually asks for a laugh identifies the operator's named beat.
+    const laughClause = noteText.split(/(?<=[。；;！!\n])/)
+        .find(part => LAUGH_REQUEST.test(part) && /「[^」]+」/.test(part));
+    const quoted = /「([^「」]{2,})」/.exec(laughClause || noteText)?.[1];
+    const id = [String(preferredId || ''), ...LAUGH_IDS].find(candidate => assets[candidate]?.kind === 'sound');
+    if (!quoted || !id) return null;
+    const wanted = cueKey(quoted);
+    const cue = [...(speech || [])].reverse().find(row => cueKey(row.text).includes(wanted));
+    if (!cue) return null;
+    // Moments carry the canonical window; draft effect rows only have momentId, so
+    // resolving the cue's moment against the plan's moments is the reliable lookup.
+    const covering = moments.find(row => cue.start >= row.start - .05 && cue.end <= row.end + .05);
+    const moment = covering || [...moments].filter(row => row.start <= cue.end).sort((a, b) => b.start - a.start)[0];
+    if (!moment) return null;
+    // A named beat can sit far beyond every visual moment (a fast montage keeps only a few
+    // nodes). Carry that fact so sound validation allows the longer, still exact offset.
+    const followCueEnd = covering ? undefined : cue.end;
+    const offset = Math.max(0, cue.end - moment.start + .05);
+    return { momentId: moment.id, id, offsetSeconds: Math.round(offset * 1000) / 1000, levelDb: -8, followCueEnd,
+        reason: `用户点名的笑声：${quoted} 说完后接一次罐头笑声` };
+}
 
 async function runCreativeEnhancement(baseline, context, dependencies) {
     const recovery = require('./creative_source_expansion');
@@ -66,8 +98,35 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
 
 async function runCreativeAttempt(baseline, context, dependencies) {
     const { config, info, parsed, danmaku, source, options, topic, clip, subtitleEvidence, execution } = context;
-    const settings = config.enhancements, creativeOptions = clip.topicEditPlan
-        ? { ...settings.creative, style: 'compact' } : settings.creative;
+    const settings = config.enhancements, creativeOptions = { ...(clip.topicEditPlan
+        ? { ...settings.creative, style: 'compact' } : settings.creative),
+        ...(options.creativeNoMusic === true ? { music: false } : {}) };
+    // Enlarging the chat column is opt-in: a quoted line reads better as a danmaku
+    // flythrough or bubble, so it only turns on when the operator asks for it by name.
+    // Free-text inference was a footgun — the negative phrasing operators actually write
+    // ("不要用 focusInset 放大聊天列") slid past the old negation list and silently
+    // re-enabled the very thing they were rejecting, so only an explicit flag opts in.
+    const editorialNote = String(options.creativeEditorialFeedback || options.note || '');
+    if (/弹幕/.test(editorialNote) && !/不要弹幕|别加弹幕|不用弹幕|不加弹幕/.test(editorialNote)) creativeOptions.danmakuRequired = true;
+    if (options.creativeChatInset === true) creativeOptions.chatInset = true;
+    // Operator overlay switches: every audience comment can be burned by the generic
+    // rolling-danmaku layer instead of curated per-moment cards, and stickers can be
+    // banned outright. Both are enforced on every model draft, not just prompted.
+    const radioDanmakuSettings = options.creativeRadioDanmaku === true || options.creativeRadioDanmaku && typeof options.creativeRadioDanmaku === 'object'
+        ? { enabled: true, mode: 'radio', fps: 30, fontScale: 1, ...(typeof options.creativeRadioDanmaku === 'object' ? options.creativeRadioDanmaku : {}) }
+        : null;
+    if (radioDanmakuSettings) creativeOptions.danmakuRequired = false;
+    const noSticker = options.creativeNoSticker === true;
+    const operatorEffectFilter = draft => {
+        if (!draft || !Array.isArray(draft.effects)) return draft;
+        const effects = draft.effects.map(row => {
+            const next = { ...row };
+            if (noSticker) delete next.sticker;
+            if (radioDanmakuSettings) delete next.danmaku;
+            return next;
+        }).filter(row => row.zoom || row.faceInset || row.focusInset || row.sticker || row.danmaku || row.filter || row.sound);
+        return { ...draft, effects };
+    };
     const limits = creativeSettings(creativeOptions);
     const compact = limits.style === 'compact';
     const allowCoverFaceOverlap = settings.creative?.allowCoverFaceOverlap === true
@@ -167,6 +226,26 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             ({ profile, timeline, duration, speech, audience, renderSrt } = story);
             activeTimeline = timeline;
         }
+        // An explicit rate plan is applied to the reviewed story instead of replacing
+        // it: the story still decides what is kept, the plan only decides how fast the
+        // retained traversal/grinding plays back.
+        if (timeline && Array.isArray(options.creativeSpeedWindows) && options.creativeSpeedWindows.length) {
+            const subtitleCues = topic.parseTopicSrt(baseline.output.srtPath).segments;
+            timeline = timelineTools.applySpeedWindows(timeline, options.creativeSpeedWindows, subtitleCues, baseline.window);
+            activeTimeline = timeline;
+            duration = timeline.duration;
+            speech = timelineTools.mapTimelineCues(originalSpeech, timeline);
+            audience = timelineTools.mapTimelineCues(audience.map(row => ({ ...row, start: row.time, end: row.time + .01 })), timeline)
+                .map(row => ({ time: row.start, text: row.text }));
+            const mappedSubtitle = timelineTools.mapTimelineCues(subtitleCues, timeline, true);
+            fs.writeFileSync(renderSrt, timelineTools.srtText(timelineTools.burnedCues(mappedSubtitle)), 'utf8');
+            const suppressed = timelineTools.hiddenCues(mappedSubtitle);
+            history.push({ stage: 'speed_windows', duration, sourceDuration,
+                windows: timeline.speedWindows || [], spedSavedSeconds: timeline.spedSavedSeconds || 0,
+                badges: timelineTools.speedBadges(timeline),
+                ...(suppressed.length ? { captionsSuppressed: suppressed.map(cue => ({ start: cue.start, end: cue.end, text: cue.text })) } : {}) });
+            logs.push({ stage: 'speed_windows', status: 'applied', count: timeline.speedWindows?.length || 0 });
+        }
         const momentPrompt =
             '找出最值得强调的反应、反差或游戏重点。这里只选时刻，下一步看画面后才能选位置。'
             + '所有时间为片内秒数，必须由邻近原话ID支撑。无明确收益可返回空数组。'
@@ -177,10 +256,18 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         let momentDraft = await request('moments', 'moments', momentPrompt), moments;
         try { moments = validateMoments(momentDraft, speech, duration, limits); }
         catch (error) {
-            history.push({ stage: 'moment_repair', reason: error.message, draft: momentDraft });
-            momentDraft = await request('moments-repair', 'moments', momentPrompt + '\n只修复下述校验失败，仍须使用输入中真实的speechIds：'
-                + error.message + '\n上次输出：' + JSON.stringify(momentDraft));
-            moments = validateMoments(momentDraft, speech, duration, limits);
+            if (!/spacing\/coverage budget/.test(error.message)) {
+                history.push({ stage: 'moment_repair', reason: error.message, draft: momentDraft });
+                momentDraft = await request('moments-repair', 'moments', momentPrompt + '\n只修复下述校验失败，仍须使用输入中真实的speechIds：'
+                    + error.message + '\n上次输出：' + JSON.stringify(momentDraft));
+                moments = validateMoments(momentDraft, speech, duration, limits);
+            } else {
+                // A long retained tail makes overlapping moment proposals likely and a
+                // single repair round-trip may not fix them; moments are suggestions, so
+                // enforce the budget deterministically instead of failing the stage.
+                moments = require('./creative_plan').sanitizeMoments(momentDraft, speech, duration, limits);
+                history.push({ stage: 'moments_sanitized', reason: error.message, kept: moments.map(row => row.id) });
+            }
         }
         history.push({ stage: 'moments', moments });
         activeMoments = moments;
@@ -206,53 +293,90 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             }));
             await sharp({ create: { width: stickerAssets.length * cell, height: 280, channels: 3, background: '#f4ede3' } }).composite(tiles.flat()).jpeg().toFile(assetSheet);
         }
+        // Pre-filter the chat for each node: the model quotes the wrong line when it has to
+        // find it among a few hundred, and a danmaku must be a real quote. Nodes inside an
+        // operator no-danmaku range get no candidates at all, so neither the prompt nor the
+        // filler offers them a card.
+        const noDanmaku = (Array.isArray(options.creativeNoDanmaku) ? options.creativeNoDanmaku : [])
+            .map(([start, end]) => [Number(start) - baseline.window.start, Number(end) - baseline.window.start]);
+        const chatByMoment = Object.fromEntries(moments.map(row => [row.id, radioDanmakuSettings || noDanmaku.some(([from, to]) => row.start < to && row.end > from)
+            ? [] : audience
+            .filter(item => item.time >= row.start - 2.5 && item.time <= row.end + 2.5)
+            .slice(0, 8).map(item => String(item.text).slice(0, 40))]));
         const prompt =
             '图片按节点顺序排列；长图每个带M编号的横行是一处节点，短图是一处节点。每个节点从左到右三帧为开始/中间/结束，按frames顺序。仅当三帧都能确认主体和布局时使用效果，动态关键操作不确定则跳过。'
             + 'zoom是全屏瞬间推近再切回，x/y是单个小帧内的归一化中心，不是整张拼图坐标；主播表情用avatar，游戏细节用detail。不得假定主播固定在某个角落。'
             + '若safeToCrop为false或无法确认安全，必须设zoom=null；仍可保留该节点其他已确认安全的贴图、音效或滤镜。若没有合适效果则删除该节点，不得为通过校验把安全标记改成true。'
             + (compact ? '关键操作正在发生时保护目标和HUD；纯反应、嘴硬或反问时允许切到全屏脸部，不必同时保留游戏全景。' : '勿裁掉战斗目标、HUD或关键动作。')
             + 'sticker的x/y是放大后的屏幕位置，须避开人物脸、重点和下方字幕；贴图只能作为后期情景说明，不当作现场发生的事，无新增台词。'
+            + '没有anchorBox时贴纸x收在0.10–0.90、y收在0.12–0.65；跟着主体走就填anchorBox（主体的真实框），此时x可到0.98、y可到0.85——汗滴贴在头像头顶常常落在0.7以上，必须填anchorBox才能这么低。不要压到眼睛和嘴。'
+            + `素材贴纸的width是画面宽度占比0.08–0.30；汗滴这类漫符用0.10–0.14（太小会像脏点），人物反应插画用0.14–0.20。`
             + (compact ? '' : '杂谈可强调表情；游戏优先保证操作可见。')
             + '罐头笑声默认不用。它是岁己本人说出反常识观点且仍认真确信正确时的特定梗，必须引用原话并确认说话人是岁己；提到小岁不算岁己本人发言。瑞娅等其他主播的自嘲、嘴硬、榜单定语、普通反转都不因此加笑声。符合条件才放句尾，不抢原声；素材听感未获认可时宁可省略。'
+            // 用户点名要笑声时，这属于本次剪辑指令：只加一次，落在真的有停顿的句尾。
+            + (String(options.creativeEditorialFeedback || '').includes('罐头笑声')
+                ? '本次用户明确要求在指定的笑点说完后加一次罐头笑声：只加一处，放在该句最后一句说完之后，后面必须有至少1.2秒的自然空档，可以盖住紧随的反应停顿，不允许压到下一句对白。' : '')
             + (compact ? '本次要密集但有节奏的综艺剪辑，按故事决定画面主体。找路、解谜和操作本身构成笑点时，必须保留游戏主画面，面部反应用faceInset圆形放大窗；纯聊天或无需看操作的反应才用全屏脸部zoom。禁止把所有反应机械变成全屏脸。'
                 + '每个zoom都填写targetBox:{x,y,width,height}标出三帧内确认的脸部或关键物体，坐标相对单个源帧。脸小可用3–5倍，整个脸框要留在裁切区域，字幕稍后独立烧录；动态物体不确定就用贴图/音效。'
-                + '至少让多数选中节拍有表达，交替用表情特写、疑问符号、捂嘴笑/头晕实物贴图、黑白停顿与正常画面。笑声没有数量下限，允许全片零笑声；不得为效果密度凑笑声，也不要用pop/ding替代凑数。'
+                + '至少让多数选中节拍有表达，优先交替用表情特写、逐条弹幕（scroll/bubble）、汗滴贴图与正常画面。打怪、赶路、重复操作这类过程画面不要贴问号/感叹号凑效果，也不要放大聊天列，靠弹幕逐条引用或保留原画面表达；素材里的汗滴贴图只贴在人物尴尬、被拆穿、说不出话的那一刻，位置在人物头部侧上方。用户没有点名就不要用黑白/单色滤镜，情绪靠放大和贴图，不靠调色。笑声没有数量下限，允许全片零笑声；不得为效果密度凑笑声，也不要用pop/ding替代凑数。'
                 + '音效现在先做响度归一化，levelDb是归一化后的相对增益，笑声用-3到0，短提示音用-8到-4。BGM会在对白下方自动铺底。' : '')
+            // 用户点名要放大时，这属于本次剪辑指令：每个选中节点都得有表达，不能整版只做一处。
+            + (/放大|推近/.test(editorialNote) && !/不放大|别放大|不要放大|不放大了|不用放大|只放大/.test(editorialNote)
+                ? '本次用户点名要用放大强调看点：本轮选中的每个节点都要给出自己的表达；放大只用于岁己的表情/头像（faceInset 或 zoom avatar），不允许放大聊天列；弹幕改用下面的 danmaku 逐条呈现。除了纯过程画面，不允许整版只做一处。' : '')
             + '放大默认锚定原主体位置，不把右侧头像搬去左侧挡弹幕；问号/反应贴纸也要围绕同一主体。字幕会自动避开放大区域，原头像在底部时不必为字幕把头像搬到别处。'
             + 'faceInset与zoom二选一。faceInset.sourceBox标出单帧中脸部（眼睛、嘴部和下巴，尽量不含帽子与身体），归一化x/y/width/height；placement填source时程序在原头像处放大，并按实际画幅适配。'
+            + '右下角那串亮白色数字是直播时间戳（x>0.86且y>0.86），不是人物；框到它会被校验直接拒绝。先看人物头发/眼睛，再决定框。'
             + `圆窗上限为画面高度的${limits.faceInsetDiameter || .46}，且不超过画面宽度的一半；完整脸框留圆形边距后仍须达到1.2倍。居中的大头像聊天优先用已确认安全的全屏特写、贴图或滤镜；不要为了保留无关背景强套圆窗，也不能缩小真实脸框来凑倍率。字幕保持原字号，需要保留可读空间。`
             + 'faceInset.x/y是自由摆放时的左上角坐标，直径0.28–0.46且y+diameter<=0.84；原位模式由程序按配置增大并允许圆框出屏，只需完整保留眼睛嘴部下巴，不要强行把整个圆圈塞回画内露出黑色补边。必须clearOfAction=true，避开角色、路线、HUD。'
-            + '弹幕、聊天文字、物体、操作细节可以用focusInset原地放大：target=chat/detail/person/avatar，shape=rectangle或circle，placement=source，sourceBox为真实目标框；rectangle填magnification=1.2–3，circle填diameter=0.28–0.46，clearOfAction=true。不要截断被强调的文字。'
+            + 'focusInset只用于原画面上的物体、操作细节或人物：target=detail/person/avatar，shape=rectangle或circle，placement=source，sourceBox为真实目标框；rectangle填magnification=1.2–3，circle填diameter=0.28–0.46，clearOfAction=true。'
+            + '不要放大聊天/弹幕列：一次框住三条弹幕看不出重点，战斗中还会挡住游戏画面，这会直接被校验拒绝。'
+            + '弹幕改用danmaku逐条引用：{"text":"原话","style":"scroll"或"bubble","y":0.16,"size":1}，text必须逐字来自输入audience里已有的聊天内容，不能改写或自己编。'
+            + 'scroll是弹幕横穿画面（适合吐槽、刷屏、观众反应，一条一次）；bubble是带深色圆角底的气泡停在画面上方（适合一句关键吐槽，位置更稳）。同一节点只讲一条弹幕，不要把三四条堆在一起。'
+            + '观众有相关弹幕时就要用一条：不要因为「不放大弹幕」而整段不引用弹幕——用户要的是逐条滚动/气泡，不是放大聊天列。'
+            + '输入里的 chatByMoment 是每个节点附近真实的观众聊天，从中挑一条逐字复制进 danmaku.text；每个节点都要给一条，没有相关弹幕才省略。'
+            + (limits.danmakuRequired ? '本次明确要求逐条弹幕：每个节点都要给出effect，且凡是 chatByMoment 里还有候选的节点，danmaku 不能为 null，否则校验直接拒绝。'
+                + '同时挑2–3个三帧都能看清脸的节点加faceInset圆窗，让这一版同时有弹幕和表情两类表达，避免被variety拒绝。' : '')
+            + (noDanmaku.length ? `运营指定这些区间（本片秒）不放弹幕卡：${JSON.stringify(noDanmaku.map(([from, to]) => [Math.round(from * 10) / 10, Math.round(to * 10) / 10]))}。落在区间内的节点 chatByMoment 已清空，danmaku 必须为 null，也不要从全局audience里给它引弹幕。` : '')
+            + (radioDanmakuSettings ? '本次全部观众弹幕由通用滚动弹幕层按真实时间轴全量自动呈现（运营指定，与效果计划无关，渲染时会自动叠加）：所有节点的 danmaku 必须为 null，chatByMoment 已全量清空，也不要从 audience 里挑任何弹幕引用。' : '')
+            + (noSticker ? '本次运营要求不放任何贴图效果：所有 sticker 必须为 null，也不要提出汗滴/问号/感叹号等贴纸建议；表达改用放大、圆窗或音效。' : '')
+            + '表情放大只给三帧都能看清眼睛和嘴的节点：看不清脸、背影、镜头拉远时不要用 faceInset，改用 danmaku 或留空；'
+            + '不要把脸框画到路面、尸体、树影或右下角时间戳上——框错了圆窗会放大一片空地，QA 会退回。'
+            + '战斗中（打怪、跑图、找路）不要放大聊天列，但仍可引一条弹幕当观众反应；这类段落把弹幕 y 放在0.10–0.24，避开角色、准心和底部字幕。'
             + '无放大但有反应贴纸时，可用sticker.anchorBox引用当前关联主体，程序会把贴纸靠近它排放，不能遮挡主体本身。'
+            + 'anchorBox要框真人/立绘的脸：有眼睛、嘴和下巴，宽高比接近竖长的脸；右下角时间戳只显示数字、弹幕栏只有文字、血条是横条，都不是人物，框到它们会把贴纸放到空景里。'
             + (profile ? `内容策略=${JSON.stringify(profile)}；不允许笑声/音乐时不要强加。` : '')
             + (settings.creative?.laughAssets?.length ? `可用笑声轮换池=${settings.creative.laughAssets.join(',')}，按反应强弱选择intensity=light/medium/big；程序避免相邻重复并先用未使用的真实片段。` : settings.creative?.laughAsset ? `本批罐头笑声使用 ${settings.creative.laughAsset}。` : '')
             + '罐头笑声须在完整笑话、最后一字和紧接的收尾说完后立刻开始；允许最多0.08秒的尾字重合，不能抢在铺垫、数字或后半句之前。不要把字幕拆分点当句尾。后续问答保留自然停顿，短暂留白比急着接下一句更合适。'
             + (limits.variety && !compact ? '本版需要明确的剪辑表达，不能全部只有1.15倍轻微放大。适合时用1.6–2.2倍大特写与回全景，挑合适的实体贴图/音效/滤镜建立变化。至少两种有依据的效果类型，允许单独音效；不要每处都叠全部效果。黑白用于自嘲/愣住，cold用于疑惑，warm用于轻松强调，vignette用于短暂强调。' : '')
-            + `zoom.scale=1.15..${limits.maxZoom}；sticker.x=0.1..0.9，y=0.12..0.65，width=0.08..0.30（画面宽度占比），motion=static/pop/slide。`
-            + `基础sticker=${JSON.stringify(STICKERS)}；基础sound=${limits.soundEffects ? JSON.stringify(Object.keys(SOUNDS)) : '只能null'}；filter=${limits.filters ? JSON.stringify(Object.keys(FILTERS)) : '只能null'}。`
+            + `zoom.scale=1.15..${limits.maxZoom}；sticker.x=0.1..0.9，y=0.12..0.65（填了anchorBox后x可到0.98、y可到0.85），width=0.08..0.30（画面宽度占比），motion=static/pop/slide。`
+            + `基础sticker=${JSON.stringify(STICKERS)}（仅字形符号）；形象/表情贴纸一律从可用实际素材里选ID，不要用字符拼形状；基础sound=${limits.soundEffects ? JSON.stringify(Object.keys(SOUNDS)) : '只能null'}；filter=${limits.filters ? JSON.stringify(Object.keys(FILTERS)) : '只能null'}。`
             + `可用实际素材=${JSON.stringify(assetChoices(assets))}。${assetSheet ? '最后一张图是贴纸素材索引，不是直播证据。' : ''}`
             + '返回 {"effects":[{"momentId":"M1","frameIds":["M1F0","M1F1","M1F2"],"visualConfirmed":true,"reason":"画面依据",'
             + '"zoom":{"scale":1.8,"x":0.5,"y":0.4,"target":"avatar","safeToCrop":true},'
+            + '"danmaku":{"text":"大姐你走反了","style":"scroll","y":0.18,"size":1},'
             + '"sticker":{"id":"question","x":0.2,"y":0.2,"width":0.2,"motion":"pop","clearOfSubject":true},'
             + '"sound":{"id":"pop","offsetSeconds":0.2,"levelDb":-10},"filter":null}]}。'
             + '若需要保留主画面，将zoom设null，改填"faceInset":{"sourceBox":{"x":0.75,"y":0.82,"width":0.10,"height":0.17},"x":0.74,"y":0.3,"diameter":0.4,"clearOfAction":true}，实际位置必须从画面核对，不照抄示例。'
             + '不需要的效果设null；每处至少一个画面或声音效果；无合适时刻可返回空数组。\n'
-            + JSON.stringify({ profile, resolution: { width: sourceResolution.width, height: sourceResolution.height }, moments, frames: frameMap, speech });
+            + JSON.stringify({ profile, resolution: { width: sourceResolution.width, height: sourceResolution.height }, moments, frames: frameMap, speech,
+                chatByMoment,
+                audience: audience.slice(0, 400).map(row => ({ time: Math.round(row.time * 100) / 100, text: String(row.text).slice(0, 40) })) });
         const visualPages = await contactPages(sourceStrips, moments.map(row => row.id), 'source-page');
         const visuals = [...visualPages, ...(assetSheet ? [assetSheet] : [])];
         const preferredLaugh = draft => rotateLaughter(draft, assets, settings.creative, moments, profile);
-        let raw = preferredLaugh(await request('visual-plan', 'effects', prompt, visuals)), plan;
+        let raw = preferredLaugh(operatorEffectFilter(await request('visual-plan', 'effects', prompt, visuals))), plan;
         const { prepareCreativeDraft, shouldConvertAvatarZoom } = require('./creative_preflight');
         const validateDraft = draft => prepareCreativeDraft(draft, { moments, sourceId, duration, settings: limits, assets,
-            resolution: sourceResolution, subtitleAss, subtitleStyle });
+            resolution: sourceResolution, subtitleAss, subtitleStyle,
+            evidence: { audience: audience.map(row => row.text), speech: speech.map(row => row.text), chatByMoment } });
         for (let attempt = 0; ; attempt++) {
             try { plan = validateDraft(raw); break; }
             catch (error) {
                 if (attempt === 2) throw error;
                 history.push({ stage: 'plan_repair', attempt: attempt + 1, reason: error.message });
-                raw = preferredLaugh(await request(attempt === 0 ? 'visual-plan-repair' : 'visual-plan-repair-2', 'effects', prompt
+                raw = preferredLaugh(operatorEffectFilter(await request(attempt === 0 ? 'visual-plan-repair' : 'visual-plan-repair-2', 'effects', prompt
                     + '\n一次修复列出的所有节点，保留有效节点和完整故事。圆窗尺寸达不到倍率或放不下字幕时，改用三帧已确认安全的全屏zoom，或删除该圆窗、保留该节点其他安全效果；不能裁切时设zoom=null。必要时省略该节点，不要整条放弃。禁止仅为通过校验缩小真实脸框或改安全标记。具体问题：'
-                    + error.message + '\n上次输出：' + JSON.stringify(raw), visuals));
+                    + error.message + '\n上次输出：' + JSON.stringify(raw), visuals)));
             }
         }
         const needsInset = row => shouldConvertAvatarZoom(row, limits, profile, sourceResolution);
@@ -304,9 +428,27 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             && Object.values(assets).some(asset => asset.kind === 'sound')) {
             const soundPlan = await request('sound-plan', 'sounds',
                 '独立复核是否确实需要后期声音，零音效是正常结果。罐头笑声仅用于已确认是岁己本人说出反常识观点且认真确信正确的特定梗，引用具体原话及说话人依据；其他主播的自嘲、嘴硬、榜单定语或操作反转不适用，提到小岁也不算。至多两处，没有符合条件的节点返回空数组，不为视觉方案补音效。'
+                + (String(options.creativeEditorialFeedback || '').includes('罐头笑声')
+                    ? '本次用户点名要在指定那句说完后加一次罐头笑声，这就是该梗适用的场合：按用户点名的位置放一处，落在末字后的自然空档，不压下一句对白。' : '')
                 + '笑声放在完整笑点和末字说完后立刻开始，最多重合尾字0.08秒，不嘲讽真实苦恼。offsetSeconds相对该节点start，可延后到节点end之后1.5秒以内；给笑声留短暂停顿，不以压低对白代替正确落点。'
                 + '只选给出的节点和素材ID，严肃或没有自然落点时返回空数组。返回 {"sounds":[{"momentId":"M1","id":"audience_laugh","offsetSeconds":3.2,"levelDb":-10,"reason":"具体依据"}]}。\n'
                 + JSON.stringify({ speech, duration, moments: plan.effects, assets: assetChoices(assets).filter(row => row.kind === 'sound') }));
+            // The operator can name the laugh beat with a quoted line, and that outranks the
+            // sound pass: resolve the quote to its real cue end, keep exactly one laugh, and
+            // let it replace whatever moment the pass picked for it.
+            if (Array.isArray(soundPlan.sounds) && LAUGH_REQUEST.test(editorialNote)) {
+                const named = requestedLaugh(speech, moments, editorialNote, assets, options.creativeLaughId);
+                if (named) {
+                    const replaced = soundPlan.sounds.filter(row => isLaughter(row.id, assets)).length;
+                    soundPlan.sounds = soundPlan.sounds.filter(row => !isLaughter(row.id, assets)).slice(0, 1);
+                    soundPlan.sounds.push(named);
+                    history.push({ stage: 'requested_laugh_placement', replaced, sound: named });
+                }
+            }
+            if (options.creativeLaughId && !history.some(row => row.stage === 'requested_laugh_placement'
+                && row.sound?.id === options.creativeLaughId)) {
+                throw new Error(`Operator laugh ${options.creativeLaughId} was not applied`);
+            }
             if (!Array.isArray(soundPlan.sounds) || soundPlan.sounds.length > 2
                 || new Set(soundPlan.sounds.map(row => row.momentId)).size !== soundPlan.sounds.length
                 || soundPlan.sounds.some(row => !raw.effects.some(effect => effect.momentId === row.momentId)
@@ -314,7 +456,8 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             history.push({ stage: 'sound_plan', soundPlan });
             raw.effects = raw.effects.map(effect => {
                 const sound = soundPlan.sounds.find(row => row.momentId === effect.momentId);
-                return sound ? { ...effect, sound: { id: sound.id, offsetSeconds: sound.offsetSeconds, levelDb: sound.levelDb } } : effect;
+                return sound ? { ...effect, sound: { id: sound.id, offsetSeconds: sound.offsetSeconds, levelDb: sound.levelDb,
+                    ...(sound.followCueEnd !== undefined ? { followCueEnd: sound.followCueEnd } : {}) } } : effect;
             });
             raw = preferredLaugh(raw);
             plan = validateCreativePlan(raw, moments, sourceId, duration, limits, assets);
@@ -355,9 +498,42 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             plan = validateCreativePlan(raw, moments, sourceId, duration, limits, assets);
             history.push({ stage: 'retained_faces', origin: previousFaces ? 'approved_source_boxes' : 'model', response });
         }
+        // A laugh the operator named by quoting its line outranks both the visual pass and
+        // the sound pass: left alone they attach it to a neighbouring moment and start it
+        // seconds before the line it is supposed to follow. One laugh, on the real cue end.
+        if (LAUGH_REQUEST.test(editorialNote)) {
+            const named = requestedLaugh(speech, moments, editorialNote, assets, options.creativeLaughId);
+            if (named) {
+                const laughs = raw.effects.filter(row => row.sound && isLaughter(soundId(row.sound), assets));
+                const settled = laughs.length === 1 && laughs[0].momentId === named.momentId
+                    && laughs[0].sound.offsetSeconds === named.offsetSeconds;
+                if (!settled && raw.effects.some(row => row.momentId === named.momentId)) {
+                    // Clear the earlier laugh from its row, but keep the row itself: prepareCreativeDraft
+                    // rebuilds effects from moments, so deleting it would silently drop the named laugh.
+                    raw.effects = raw.effects
+                        .map(row => row.sound && isLaughter(soundId(row.sound), assets) ? { ...row, sound: null } : row)
+                        .map(row => row.momentId === named.momentId
+                            ? { ...row, sound: { id: named.id, offsetSeconds: named.offsetSeconds, levelDb: named.levelDb,
+                                ...(named.followCueEnd !== undefined ? { followCueEnd: named.followCueEnd } : {}) } } : row);
+                    history.push({ stage: 'requested_laugh_placement', replaced: laughs.length, sound: named });
+                }
+            }
+            if (options.creativeLaughId && !raw.effects.some(row => soundId(row.sound) === options.creativeLaughId)) {
+                throw new Error(`Operator laugh ${options.creativeLaughId} was not applied`);
+            }
+        }
         // Retained faces and late sound decisions pass the same preflight as the initial draft.
         plan = validateDraft(raw);
-        if (timeline) { plan.timeline = timeline; if (profile.music === 'playful') plan.music = { id: 'playful_plucks', levelDb: -27 }; }
+        if (timeline) {
+            plan.timeline = timeline;
+            // The source already carries a game/stream mix; an added bed is an option,
+            // not a requirement. Record the choice so the disclosure stays truthful.
+            if (profile.music === 'playful' && limits.music === false) {
+                profile = { ...profile, music: 'none' };
+                history.push({ stage: 'bgm_opt_out', reason: 'BGM disabled for this revision; the original audio mix is kept unchanged' });
+            }
+            if (profile.music === 'playful') plan.music = { id: 'playful_plucks', levelDb: -27 };
+        }
         if (options.creativeSoundLevelOverrides) {
             for (const override of options.creativeSoundLevelOverrides) {
                 const effect = plan.effects.find(row => row.id === override.momentId && row.sound);
@@ -369,7 +545,13 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         plan.editorialProfile = profile;
         if (options.creativeContextQuestion) plan.contextQuestion = options.creativeContextQuestion;
         const reaction = loadWorkflow('clipping/enhancement');
-        if (compact && typeof reaction.planLaughterTiming === 'function') {
+        if (compact && timeline?.speedWindows?.length) {
+            // Reaction holds shift later speech; that compiled mapping has no rate
+            // model, so an accelerated timeline keeps laughter placement by cue end
+            // time instead of inserting silence.
+            history.push({ stage: 'laughter_timing_skipped', reason: 'accelerated_timeline' });
+        }
+        if (compact && typeof reaction.planLaughterTiming === 'function' && !timeline?.speedWindows?.length) {
             const timed = reaction.planLaughterTiming(plan, speech, assets, profile);
             if (timed.changes.length) {
                 plan = timed.plan;
@@ -378,7 +560,8 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                     timeline = plan.timeline; activeTimeline = timeline; duration = plan.duration;
                     speech = timelineTools.mapTimelineCues(originalSpeech, timeline);
                     const subtitleCues = topic.parseTopicSrt(baseline.output.srtPath).segments;
-                    fs.writeFileSync(renderSrt, timelineTools.srtText(timelineTools.mapTimelineCues(subtitleCues, timeline)), 'utf8');
+                    fs.writeFileSync(renderSrt, timelineTools.srtText(timelineTools.burnedCues(
+                        timelineTools.mapTimelineCues(subtitleCues, timeline, true))), 'utf8');
                     for (const moment of moments) {
                         const adjusted = plan.effects.find(row => row.id === moment.id);
                         moment.start = adjusted?.start ?? reaction.shiftReactionTime(moment.start, timed.insertions);
@@ -405,7 +588,8 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 forceAudioAudit: Boolean(baseline.candidateBundle),
                 render: checkedPlan => withMedia(mediaProfile => topic.cutClipMedia(source, baseline.window, renderSrt, mediaPath,
                     { ...mediaConfig(mediaProfile), creativePlan: checkedPlan, creativeSettings: limits, creativeAssets: assets,
-                        burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false })),
+                        burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false,
+                        ...(radioDanmakuSettings ? { radioDanmaku: radioDanmakuSettings, xmlPath: options.creativeDanmakuXmlPath } : {}) })),
                 inspect: rendered => withMedia(async mediaProfile => {
                     if (!rendered.burnedSubtitles || rendered.creativeEffectsApplied !== plan.effects.length) throw new Error('Creative render did not apply the approved plan');
                     const mc = mediaConfig(mediaProfile);
@@ -418,11 +602,29 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 }),
                 audit: checkedPlan => withMedia(async mediaProfile => {
                     const files = ['audio-original.pcm', 'audio-rendered.pcm'].map(file => path.join(scratch, file));
+                    // Output-time spans played through atempo: the strict per-sample gate
+                    // there is noise, so the audit swaps it for an energy-level check.
+                    const spedSpans = [];
+                    if (timeline) {
+                        const pieces = timeline.holds?.length ? reaction.reactionPieces(timeline) : timeline.keep.map(s => ({ ...s, hold: 0 }));
+                        let cursor = 0;
+                        for (const piece of pieces) {
+                            const seconds = timelineTools.pieceSeconds(piece);
+                            if (timelineTools.speedOf(piece) > 1) spedSpans.push({ start: cursor, end: cursor + seconds });
+                            cursor += seconds;
+                        }
+                    }
                     try {
                         for (const [index, input] of [baseline.output.mediaPath, mediaPath].entries()) await topic.runFfmpeg(
                             ['-v', 'error', '-y', '-i', input, ...(index === 0 && timeline ? ['-filter_complex', timelineTools.audioTimelineFilter(timeline), '-map', '[baseaudio]'] : ['-map', '0:a:0']),
                                 '-vn', '-ar', '16000', '-ac', '2', '-f', 'f32le', files[index]], mediaConfig(mediaProfile));
-                        return require('./creative_audio_audit').analyzeCreativeAudio(fs.readFileSync(files[0]), fs.readFileSync(files[1]), checkedPlan, assets);
+                        const result = require('./creative_audio_audit').analyzeCreativeAudio(fs.readFileSync(files[0]), fs.readFileSync(files[1]), checkedPlan, assets, 16000, spedSpans);
+                        // A failed comparison is only diagnosable with both tracks on disk; the PCM is
+                        // deleted on success so a passing render leaves no multi-megabyte residue.
+                        if (result.status !== 'passed') files.forEach((file, index) => {
+                            if (fs.existsSync(file)) fs.copyFileSync(file, path.join(scratch, `audio-failed-${index ? 'rendered' : 'expected'}.pcm`));
+                        });
+                        return result;
                     } finally { for (const file of files) if (fs.existsSync(file)) fs.unlinkSync(file); }
                 })
             });
@@ -473,6 +675,22 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             }
             const before = await artifactDigests(current);
             const comparisonLabels = qaWindows.map(row => row.id);
+            // 加速段单独出一页证据：审核要核对倍率角标，也要看加速段里有没有夹着该读的对白，
+            // 只抽效果节点的帧会漏掉这些段落。
+            for (const [index, window] of (timeline?.speedWindows || []).entries()) {
+                const outStart = window.outputStart, outEnd = outStart + window.outputDuration;
+                if (!(outEnd - outStart > .3)) continue;
+                const times = [outStart + .1, (outStart + outEnd) / 2, outEnd - .1];
+                const spedStrip = await strips(await capture(mediaPath, times, `${qaPrefix}-speed${index + 1}`), `${qaPrefix}-speed-strip-${index + 1}`);
+                const spedSource = await strips(await capture(baseline.output.mediaPath,
+                    times.map(time => timelineTools.sourceTimeForOutput(time, timeline)), `${qaPrefix}-speed-source${index + 1}`), `${qaPrefix}-speed-source-strip-${index + 1}`);
+                const file = path.join(scratch, `comparison-${visualAttempt ? 'final-' : ''}speed-${index + 1}.jpg`);
+                await require('sharp')({ create: { width: 1920, height: stripHeight * 2, channels: 3, background: '#16161b' } })
+                    .composite([{ input: spedSource[0], left: 0, top: 0 }, { input: spedStrip[0], left: 0, top: stripHeight }])
+                    .jpeg().toFile(file);
+                comparisons.push(file);
+                comparisonLabels.push(`SPD${index + 1}`);
+            }
             if (plan.contextQuestion) {
                 comparisons.push(...await strips(await capture(mediaPath, [.2, plan.contextQuestion.end / 2, plan.contextQuestion.end - .15], `${qaPrefix}-context`), `${qaPrefix}-context-strip`));
                 comparisonLabels.push('CTX');
@@ -489,17 +707,26 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             writeJsonAtomic(path.join(scratch, `${qaPrefix}-input.json`), qaInput);
             let qa = await request(visualAttempt === 0 ? 'qa' : 'qa-final', 'approved',
                 '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
-                + '检查放大是否准确、贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
+                + (radioDanmakuSettings ? '' : '检查弹幕呈现：引用的聊天原话是否逐条可读、是否只讲一条重点、有没有一次堆三四条；弹幕是否避开人物脸和底部字幕。')
+                + (radioDanmakuSettings ? '画面上半透明横向滚动的弹幕文字是运营要求的通用弹幕层：全部真实观众弹幕按真实时间轴自动叠加，不属于 plan.effects，渲染时由通用工具生成，加速段内弹幕随倍速压缩滚动也是设计行为。不要把它当作计划外效果、弹幕卡或遮挡问题驳回，也不要检查它的逐条可读性或要求它出现在计划里；弹幕层半透明盖住画面局部属正常。' : '弹幕只在有真实观众聊天可引用的节点出现，某节点附近没有候选时省略属正常，不要因为没有弹幕或没有笑声判不通过——效果的取舍由程序按证据核对，你只判画面呈现。')
+                + '放大只应出现在人物表情/头像上；若仍出现放大的聊天列，或战斗中聊天列被放大挡住游戏，一律算错。'
+                + '检查贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
+                + '贴纸必须贴着它要说明的人物或物体：飘在无关空景里、离人物头部有明显距离，都算错位，请指出并建议移除或改贴到人物头部侧上方。'
                 + '若有contextQuestion，CTX行是片头前情提要三帧；核对标为观众弹幕、与证据一致、可读且不挡主体和对白字幕，问答衔接完整。'
                 + '本轮只审画面和文字。音效技术校验由程序解码实际音轨后完成，audioQa提供原声相关性、长度、峰值及音效能量证据；听感另留人工复核。'
                 + 'timeline.holds是说完话后的后期短暂画面停顿，音轨对应段为静音后叠加笑声，不删字、不循环对白。按新的成片时间核对字幕和问答，不能把声明的短暂停顿误判为原录播卡顿。'
+                + 'timeline.speedWindows列出原片中被加速的区间、倍速和对应成片时间：这些段画面与原声同步加快，不是丢帧或音画不同步。'
+                + '加速区间是运营在 speed-plan 里逐段指定并已确认的编辑决定，本轮不要重新裁定这段该不该加速——画面里有交战、跑图或重复动作都属于运营要的节奏。'
+                + '只核对：加速段在画面上有倍率与时长角标可辨认、没有把对白截断续不上、没有吞掉笑点或收束。2.5倍以上的段落原字幕已按设计撤下，不要据此判字幕缺失。'
+                + '标为SPD1、SPD2…的对比页就是这些加速段（上排原片、下排成片，从段首到段尾三帧），专门用来看角标与段内画面；不要因为效果节点没覆盖加速段就说无法核实。'
                 + '不要要求静帧证明淡入淡出、侧链、音轨或听感，也不要因此将视觉restraint判失败；只在画面/语义不确定时拒绝。'
                 + 'appliedVisualRepairs是实际执行的可选效果撤销记录。plan.effects的现有字段才是本轮生效方案，reason保留原设计依据，可能描述已撤销的效果。'
                 + '不要因已明确撤销的效果未出现而判计划不符；仍须根据当前真实成片独立评估主体可辨识、内容完整及整体表达收益，若确实不足请说明实际缺陷。'
                 + (limits.variety ? '同时核对impact：是否有可感知且合乎情景的剪辑表达，仅几次轻微推近不算合格。贴纸是后期插图，不能当成主播实体或现场观众。' : '')
+                + (noSticker && radioDanmakuSettings ? '本次效果类型由运营明确收窄（无贴图、无弹幕卡，弹幕交给通用弹幕层），放大/圆窗/音效的组合就是运营要的表达，不要因类型数量少判 impact 不足。' : '')
                 + '返回 {"approved":true,"needsSourceExpansion":false,"checks":{"meaning":true,"focus":true,"subtitles":true,"restraint":true,"impact":true},"issues":[]}。若内容问题需要素材窗外的必要原话，approved=false、needsSourceExpansion=true，并在issues指出实际缺句，程序会扩窗重切。\n'
                 + (compact ? '按editorialProfile核对节奏、完整性和语气；不是每种素材都要喜剧效果。放大应在原头像、弹幕或关键点附近，不能搬到无关位置挡弹幕。关联贴图靠近主体但不挡脸/文字/操作。字幕可换行及移到主体旁边，不能盖住嘴部或裁出屏幕；保持原字号。圆形特写边框允许自然出屏，不能仅因圆圈不完整拒绝；关键眼睛/嘴/下巴仍须可见且无人工黑色补边。全屏细节放大时小圆窗mode=retain是保持原像素大小的人脸，不要求它产生放大效果。人物眼睛嘴部完整，文字放大不截断原话，教学步骤/连续表演不能被剪坏。' : '')
-                + '封面实际文字以copy.coverText为准；若图中文字与该字段不一致，请明确报告逐字差异，不要根据猜读提出不存在的文案。'
+                + '封面实际文字以copy.coverText为准；只核对程序压在封面上的标题大字是否与该字段逐字一致。封面底图取自直播画面，画面内原有的聊天、弹幕、礼物、广告、时间戳、字幕条等界面文字不是封面文案，不得据此判定subtitles失败，也不要转述或转写它们。需要报告差异时只引用图中实际可读的封面标题大字，不要根据猜读提出不存在的文案。'
                 + (allowCoverFaceOverlap ? '用户已明确接受本次封面文字遮挡人脸：仅此封面遮脸不算focus或restraint失败，也不要将其列入issues。正文成片的人脸、操作和字幕遮挡，以及封面文字准确性和可读性仍须正常检查。' : '')
                 + JSON.stringify(qaInput),
             [...comparisonPages, current.output.coverPath]);
@@ -546,4 +773,4 @@ async function runCreativeAttempt(baseline, context, dependencies) {
     }
 }
 
-module.exports = { runCreativeEnhancement };
+module.exports = { runCreativeEnhancement, requestedLaugh };

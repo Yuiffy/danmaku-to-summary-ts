@@ -76,6 +76,8 @@ export function manualCommand(body: any): OperatorCommand {
   if (!['small_sui', 'old_sui'].includes(body.profile)) throw new AdminError('请选择小岁或老岁片配置');
   args.push('add', '--media', text(body, 'mediaPath'), '--srt', text(body, 'srtPath'), '--start', String(start), '--end', String(end),
     '--title', text(body, 'title', 200), '--description', text(body, 'description', 10000), '--cover-text', text(body, 'coverText', 300), '--profile', body.profile);
+  // 附加内容标签(逗号分隔,可选):游戏名/情绪等,与队列基础标签合并
+  if (body.tagsExtra !== undefined && body.tagsExtra !== '') args.push('--tags-extra', text(body, 'tagsExtra', 200, false));
   return { executable: 'node', args, action, target: body.title };
 }
 export function bundleCommand(id: string, body: any, category: 'activity' | 'game', metadataPath: string): OperatorCommand {

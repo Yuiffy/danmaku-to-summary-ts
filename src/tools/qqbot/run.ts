@@ -9,6 +9,7 @@ import { QQState, QQStateStore, validateQQState } from '../../services/qqbot/QQS
 import { QQWorker } from '../../services/qqbot/QQWorker';
 import { createQQAnswerer } from '../../services/qqbot/QQAgent';
 import { createQQKnowledge } from '../../services/qqbot/QQKnowledge';
+import { createPublicSearchFactory } from '../../services/live-vote/questions/PublicSearchRuntime';
 import { loadQQSdk } from '../../services/qqbot/QQSdk';
 import { QQRecords } from '../../services/qqbot/QQRecords';
 import { readQQSecrets } from '../../services/qqbot/QQSecrets';
@@ -61,8 +62,9 @@ export async function runQQBot(args: string[]): Promise<void> {
   // Only QQ's dedicated section/file: global secret/env layers must not replace this key.
   if (provider.keyName !== 'qq鹿饼用' || typeof provider.baseUrl !== 'string' || !provider.baseUrl.trim()) throw new Error('Dedicated QQ provider required');
   const settings = questionProviderSettings({ ai: { providers: { daiYu: { apiKey: provider.apiKey, baseUrl: provider.baseUrl } } } });
-  const knowledge = config.knowledge ? createQQKnowledge(
-    await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)), config.knowledge) : undefined;
+  const runtime = config.knowledge ? await readQuestionRuntime(path.resolve(root, config.knowledge.runtimeConfigPath)) : undefined;
+  const knowledge = config.knowledge && runtime ? createQQKnowledge(runtime, config.knowledge,
+    createPublicSearchFactory(runtime.questions.providerConfigPath, settings.proxy)) : undefined;
   const { QQBot } = await loadQQSdk();
   const characters = config.images?.enabled ? qqImageCharacters(root, config.images) : [];
   if (config.images?.enabled) validateQQImageConfig({ ...config.images, characters });

@@ -14,6 +14,7 @@ export type QQTextAnswer = string | { text: string; tokens: number };
 export interface QQLogEvent {
   event: string; scope?: string; requestId?: string; failure?: QQDiagnostic; agent?: QQAgentTrace;
   queuedMs?: number; elapsedMs?: number; route?: 'image' | 'text';
+  retryAttempt?: number;
   imageInput?: QQImageInputDiagnostic;
   imageSourceCount?: number;
   imageSourceDiagnosticsVersion?: 1;

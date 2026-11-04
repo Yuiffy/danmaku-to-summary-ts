@@ -1,12 +1,15 @@
 import fetch from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { questionProviderSettings } from '../../live-vote/questions/DaiyuQuestionClient';
-import { COMMENT_TOOL_LIMITS, CommentEvent, CommentPlatformBlocked, LIMITS } from './CommentPolicy';
+import { COMMENT_TOOL_LIMITS, CommentEvent, CommentPlatformBlocked, LIMITS, unsafeComment } from './CommentPolicy';
 import { CommentContext, CommentVideo, CommentVisualTarget, safeEvidenceText, videoExcerpts, visualCommentQuestion } from './CommentContext';
 import { createProjectReader } from './CommentProjects';
 import { COMMENT_IMAGE_ALLOWANCE, CommentVisual } from './CommentVisual';
+import { QuestionReadSession } from '../../live-vote/questions/QuestionReadTools';
+import { boundedReadEvidence } from '../../live-vote/questions/ReadToolEvidence';
 
 export interface CommentAgentSources {
+  questions?: QuestionReadSession;
   projects?: ReturnType<typeof createProjectReader>;
   video?(signal: AbortSignal): Promise<CommentVideo>;
   visual?(signal: AbortSignal, target?: CommentVisualTarget): Promise<CommentVisual | undefined>;
@@ -27,6 +30,9 @@ export const COMMENT_TOOL_SYSTEM = '本次有只读工具，你根据问题和�
 /** A fixed current-video target and a public source catalogue. The model never receives paths or credentials. */
 function definitions(sources: CommentAgentSources) {
   return [
+    ...(sources.questions?.tools || []).map(definition => ({ type: 'function', function: {
+      name: definition.name, description: definition.description, parameters: definition.parameters
+    } })),
     ...(sources.video ? [{ type: 'function', function: { name: 'read_current_video',
       description: '读取本次被艾特视频的标题、作者简介与可用字幕；无字幕或问题涉及画面时尝试附带抽样预览图。泛指回应、点评、找笑点也用此工具，focus写内容疑问或视觉目标；仅当前视频P1，无原音或全片转写。',
       parameters: { type: 'object', additionalProperties: false, properties: { focus: { type: 'string', maxLength: 100 } }, required: ['focus'] } } }] : []),
@@ -49,7 +55,7 @@ export async function runCommentModel(settings: ReturnType<typeof questionProvid
   const requestBytes = (body: unknown) => Buffer.byteLength(JSON.stringify(body, (key, value) =>
     key === 'url' && typeof value === 'string' && value.startsWith('data:image/') ? '<image>' : value), 'utf8') +
       (JSON.stringify(body).includes('data:image/') ? COMMENT_IMAGE_ALLOWANCE : 0);
-  for (let turn = 0; turn < maxTurns; turn++) {
+  try { for (let turn = 0; turn < maxTurns; turn++) {
     signal.throwIfAborted();
     const body = { model: 'gpt-6-luna', messages, max_tokens: tools.length ? COMMENT_TOOL_LIMITS.outputTokens : LIMITS.outputTokens,
       ...(tools.length ? { tools, parallel_tool_calls: false, tool_choice: turn === maxTurns - 1 ? 'none' : 'auto' } : {}) };
@@ -82,15 +88,20 @@ export async function runCommentModel(settings: ReturnType<typeof questionProvid
     let output: unknown, preview: CommentVisual | undefined, previewAttempted = false;
     try {
       const args = JSON.parse(call.function.arguments), operation = JSON.stringify([call.function.name, args]);
-      if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== 1 || operations.has(operation)) {
+      if (!args || typeof args !== 'object' || Array.isArray(args) || operations.has(operation)) {
         throw new Error('Invalid or repeated comment tool');
       }
       operations.add(operation);
-      if (call.function.name === 'read_project') {
+      const shared = sources?.questions?.tools.find(tool => tool.name === call.function.name);
+      if (shared) {
+        const result = boundedReadEvidence(await shared.execute(args), 6000, unsafeComment);
+        output = { data: result.data, truncated: result.truncated };
+      } else if (call.function.name === 'read_project') {
+        if (Object.keys(args).join(',') !== 'sourceIds') throw new Error('Invalid project arguments');
         const projects = await sources!.projects!.read(args.sourceIds, signal);
         output = { projects, unavailable: !projects.length };
       } else {
-        if (typeof args.focus !== 'string' || args.focus.length > 100 || !Object.hasOwn(args, 'focus')) throw new Error('Invalid video focus');
+        if (typeof args.focus !== 'string' || args.focus.length > 100 || Object.keys(args).join(',') !== 'focus') throw new Error('Invalid video focus');
         const read = await sources!.video!(signal), excerpts = videoExcerpts(read.transcript?.cues || [], args.focus, 1400, true);
         const value: NonNullable<CommentContext['video']> = { title: safeEvidenceText(read.title, 120),
           description: read.description.split(/\r?\n/u).map(line => safeEvidenceText(line, 400)).filter(Boolean).join(' ').slice(0, 400),
@@ -113,9 +124,9 @@ export async function runCommentModel(settings: ReturnType<typeof questionProvid
         }
         if (!excerpts.length) value.content = 'unavailable';
       }
-      if (Buffer.byteLength(JSON.stringify(output), 'utf8') > 6000) throw new Error('Oversized comment evidence');
+      if (Buffer.byteLength(JSON.stringify(output), 'utf8') > 6200) throw new Error('Oversized comment evidence');
       if (call.function.name === 'read_current_video') video = (output as { video: CommentContext['video'] }).video;
-      else projectsRead ||= !!(output as { projects: unknown[] }).projects.length;
+      else if (call.function.name === 'read_project') projectsRead ||= !!(output as { projects: unknown[] }).projects.length;
       sources?.report?.({ event: 'comment_agent_tool', key: event?.key, name: call.function.name, status: 'ok',
         ...(call.function.name === 'read_current_video' ? { subtitles: video?.content === 'subtitles', preview: !!preview } : {}) });
     } catch (error) {
@@ -135,4 +146,5 @@ export async function runCommentModel(settings: ReturnType<typeof questionProvid
     }
   }
   throw new Error('Comment tool turn limit');
+  } finally { await sources?.questions?.close(); }
 }

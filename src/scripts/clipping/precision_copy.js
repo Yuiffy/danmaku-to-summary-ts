@@ -2,6 +2,7 @@
 const { loadWorkflow } = require('../workflow-runtime');
 const { soundId } = require('./creative_assets');
 const { SOUNDS } = require('./creative_plan');
+const { CAPTION_BLACKOUT_RATE } = require('./creative_timeline');
 
 const LAUGHTER = new Set(['audience_laugh', 'sitcom_laugh', 'sitcom_laugh_chuckle', 'sitcom_laugh_warm', 'sitcom_laugh_applause']);
 const FILTER_LABELS = { monochrome: '黑白滤镜', cold: '冷色滤镜', warm: '暖色滤镜', vignette: '暗角滤镜' };
@@ -49,6 +50,14 @@ function precisionDetail(metadata, assets = {}) {
         '以下时间为本视频进度；音乐、笑声、音效和贴图如有列出，均为后期添加。'];
     const removed = plan.timeline?.removedSeconds || 0;
     if (removed > 0) lines.push(`节奏剪辑：删减 ${round(removed)} 秒，成片 ${round(plan.duration)} 秒。`);
+    const spedWindows = plan.timeline?.speedWindows || [];
+    if (spedWindows.length) {
+        const rates = [...new Set(spedWindows.map(row => `${Number.isInteger(row.rate) ? row.rate : round(row.rate)}×`))].join('/');
+        const captionsOff = spedWindows.some(row => Number(row.rate) >= CAPTION_BLACKOUT_RATE);
+        lines.push(`加速：${rates} 播放 ${round(plan.timeline.spedSavedSeconds || 0)} 秒走路/刷怪等过程性画面，原声同步加速且保调`
+            + (captionsOff ? '；加速段原字幕按设计不上屏，画面角标标注倍率与时长。' : '，字幕完整保留。'));
+        for (const row of spedWindows) add(row.outputStart, row.outputStart + row.outputDuration, `${rates} 加速（原片过程性画面）`);
+    }
     if (plan.timeline?.addedSeconds) lines.push(`笑点后添加短暂画面停顿 ${round(plan.timeline.addedSeconds)} 秒，原对白保留。`);
     lines.push(...rows.sort((a, b) => a.start - b.start).map(row => row.text));
     return lines.join('\n');

@@ -186,6 +186,42 @@ test('keyword topic precision accepts a manual-cut candidate without an own-stre
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('keyword topic precision honors feedback acceptance recorded on the rendered human review', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-feedback-review-'));
+    const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
+    const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
+    const output = { metadataPath, mediaPath: path.join(dir, 'ordinary.mp4'), srtPath: path.join(dir, 'ordinary.srt'),
+        coverPath: path.join(dir, 'ordinary.jpg'), burnedSubtitles: true };
+    const sourceCues = [{ start: 101, end: 103, text: '歌曲引入' }];
+    fs.writeFileSync(source.mediaPath, 'source video'); fs.writeFileSync(source.srtPath, 'source evidence');
+    for (const file of [output.mediaPath, output.srtPath, output.coverPath]) fs.writeFileSync(file, 'ordinary artifact');
+    const snapshot = require('./source_snapshot').sourceSnapshot({ source, output });
+    const original: any = { mode: 'topic_candidate_manual_cut', publicationKind: 'keyword_topic', roomId: 'room',
+        uploadReady: true, source, output, window: { index: 'E1-1', start: 100, end: 160, duration: 60 },
+        copy: { title: '歌曲引入与岁己前辈', description: '完整话题', coverText: '岁己前辈？' },
+        ownStreamHumanReview: { version: 1, status: 'approved', authority: 'human', acceptanceMode: 'feedback',
+            audioVisualReviewed: false },
+        renderedSubtitles: { version: 1, sourceSha256: buildSubtitleEvidence(sourceCues).sourceSha256,
+            sourceSnapshot: snapshot, window: { start: 100, end: 160 }, review: { note: '重渲以取得独立最终审核' } } };
+    fs.writeFileSync(metadataPath, JSON.stringify(original));
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 4101: { metadataPath, reviewIndex: 1, status: 'review' } } }));
+    const enhance = jest.fn(async baseline => {
+        const mediaPath = path.join(path.dirname(baseline.output.metadataPath), 'edited.mp4');
+        fs.writeFileSync(mediaPath, 'edited video');
+        return { ...baseline, output: { ...baseline.output, mediaPath }, creativeResult: { status: 'edited' },
+            creativePlan: { effects: [{ id: 'M1' }] }, qaResult: { status: 'passed' } };
+    });
+    const dependencies: any = { enhance, rootConfig: { ownStreamClips: { enhancements: { enabled: true,
+        roomIds: ['live-room-id'], workflow: 'creative' } } }, topic: { getClipTopicsConfig: require('../topic_clipper').getClipTopicsConfig,
+        parseTopicSrt: file => ({ segments: file === source.srtPath ? sourceCues : [{ start: 1, end: 3, text: '歌曲引入' }] }),
+        parseDanmakuXml: async () => [] } };
+    try {
+        const result = await renderPrecisionRevision({ id: 4101, registryPath, note: '反馈记录在成片审核上' }, dependencies);
+        expect(result.status).toBe('pending_review');
+        expect(enhance).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('keyword topic precision accepts a feedback-reviewed rebuilt baseline for local editing', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-feedback-'));
     const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');

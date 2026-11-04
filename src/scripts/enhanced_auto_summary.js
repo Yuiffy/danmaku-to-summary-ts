@@ -491,6 +491,13 @@ async function acquireWhisperLock(taskId = null, options = {}) {
             }
             // ── GPU 负载检测：获取到锁后，检查 GPU 是否繁忙 ──
             const config = configLoader.getConfig();
+            if (config.asr?.device_handoff?.enabled === true
+                    && String(config.asr?.default_backend || 'paraformer') === 'paraformer') {
+                // Paraformer 设备接力策略在 python 侧自行降档（超低占用/CPU 后台），
+                // legacy 整卡忙碌门禁会把桌面图形占用误判为计算繁忙而无限等待。
+                console.log('🤝 设备接力策略已启用：跳过 legacy GPU 忙碌等待，由 python 档位策略自行降档');
+                return;
+            }
             const gpuCheckIntervalSec = config.whisper?.gpuDetection?.checkIntervalSeconds ?? 30;
             const gpuCheckIntervalMs = gpuCheckIntervalSec * 1000;
             let shouldRetryLock = false;

@@ -81,4 +81,6 @@ test('structured transport errors are recognized', () => {
   expect(transientActivityFailure({ code: 'ECONNRESET' })).toBe(true);
   expect(transientActivityFailure({ type: 'request-timeout' })).toBe(true);
   expect(transientActivityFailure({ attempts: [{ httpStatus: 403 }], message: 'network timeout' })).toBe(false);
+  expect(transientActivityFailure({ outcomeUnknown: true, message: 'Earlier HTTP 503; request aborted' })).toBe(false);
+  expect(transientActivityFailure({ attempts: [{ httpStatus: 503 }, { outcomeUnknown: true }], type: 'request-timeout' })).toBe(false);
 });

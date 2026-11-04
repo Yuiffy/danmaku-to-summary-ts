@@ -18,6 +18,46 @@ test('DaiYu GPT never receives raw audio or silently uses a native audio provide
     expect(fetch).not.toHaveBeenCalled();
 });
 
+test('pro media fallback preserves every original image and exact provider endpoint', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pro-media-'));
+    const file = path.join(directory, 'frame.jpg');
+    fs.writeFileSync(file, 'original-frame');
+    fetch.mockReset();
+    const root = { ai: { text: {
+        daiYu: { apiKey: 'daiyu-fixture', baseUrl: 'http://localhost:8080/v1' },
+        zai: { apiKey: 'zai-fixture', baseUrl: 'https://example.invalid/api/paas/v4' },
+        deepSeek: { apiKey: 'deepseek-fixture', baseUrl: 'https://example.invalid/v1' }
+    } } };
+    try {
+        fetch.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) })
+            .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) })
+            .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
+                choices: [{ finish_reason: 'stop', message: { content: '{"decision":"uncertain"}' } }], usage: {} }) });
+        const result = await v.requestMediaVerification('Inspect source evidence.', [{ path: file, mimeType: 'image/jpeg' }], root,
+            { modelProfile: 'pro', timeoutMs: 5000 });
+        expect(fetch.mock.calls.map(call => call[0])).toEqual(['http://localhost:8080/v1/chat/completions',
+            'https://example.invalid/api/paas/v4/chat/completions', 'https://example.invalid/v1/chat/completions']);
+        expect(fetch.mock.calls.map(call => JSON.parse(call[1].body).model)).toEqual(['gpt-6.1-sol', 'glm-5.3', 'deepseek-flash']);
+        for (const call of fetch.mock.calls) expect(JSON.parse(call[1].body).messages[0].content[1].image_url.url)
+            .toBe(`data:image/jpeg;base64,${Buffer.from('original-frame').toString('base64')}`);
+        expect(result.meta).toMatchObject({ provider: 'deepSeek', model: 'deepseek-flash', modelProfile: 'pro', fallback: true });
+        expect(result.meta.attempts).toHaveLength(3);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); fetch.mockReset(); }
+});
+
+test('pro media refuses raw audio and stops after an aborted request', async () => {
+    fetch.mockReset();
+    await expect(v.requestMediaVerification('Review', [{ mimeType: 'audio/mpeg', path: 'unread.mp3' }], {},
+        { modelProfile: 'pro' })).rejects.toThrow('do not accept raw audio');
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRejectedValueOnce(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+    await expect(v.requestMediaVerification('Review', [], { ai: { text: {
+        daiYu: { apiKey: 'fixture', baseUrl: 'http://localhost:8080' }
+    } } }, { modelProfile: 'pro', timeoutMs: 5000 })).rejects.toMatchObject({ outcomeUnknown: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockReset();
+});
+
 test('a daiYu verifier without its endpoint never sends its key to the tuZi default URL', async () => {
     fetch.mockClear();
     await expect(v.requestMediaVerification('Review', [],

@@ -32,6 +32,21 @@ test('explicit keyword precision may use the shared creative runner without an o
     } finally { creative.mockRestore(); }
 });
 
+test('a replayed keyword candidate without publicationKind still reaches the creative runner', async () => {
+    const creative = jest.spyOn(require('./creative_runner'), 'runCreativeEnhancement').mockResolvedValue({
+        creativeResult: { status: 'edited' }
+    });
+    try {
+        const metadata: any = { mode: 'topic_candidate_manual_cut', precisionExperiment: { selected: true } };
+        const result = await runEnhancements(metadata, {
+            config: { enhancements: { enabled: true, workflow: 'creative', roomIds: ['live-room'] } },
+            info: { roomId: 'streamer-uid' }, options: { allowKeywordTopicPrecision: true }
+        });
+        expect(creative).toHaveBeenCalledTimes(1);
+        expect(result.creativeResult.status).toBe('edited');
+    } finally { creative.mockRestore(); }
+});
+
 test('all eligible creative clips are selected without another model request while unresolved copy and attribution remain blocked', async () => {
     const generate = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu');
     const clips = [

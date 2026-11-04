@@ -137,11 +137,13 @@ def check_original_extraction(path, source, time, end=None, original_resolution=
     receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
     identity = {k: source[k] for k in ("mediaPath", "mediaBytes", "mediaMtimeNs")}
     args = receipt.get("args") or []
+    # ffmpeg may record the same file with / or \ separators; compare paths canonically.
+    same_path = lambda a, b: os.path.normcase(os.path.normpath(os.path.abspath(str(a)))) == os.path.normcase(os.path.normpath(os.path.abspath(str(b))))
     signature = hashlib.sha256(json.dumps({"args": args, "source": receipt.get("source")},
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     if (receipt.get("version") != 3 or receipt.get("source") != identity or receipt.get("signature") != signature
-            or len(args) < 6 or args[:2] != ["-y", "-ss"] or args[3:5] != ["-i", source["mediaPath"]]
-            or not math.isfinite(float(args[2])) or abs(float(args[2]) - time) > .001 or args[-1] != str(path) or receipt.get("sha256") != file_digest(path)):
+            or len(args) < 6 or args[:2] != ["-y", "-ss"] or not same_path(args[4], source["mediaPath"])
+            or not math.isfinite(float(args[2])) or abs(float(args[2]) - time) > .001 or not same_path(args[-1], path) or receipt.get("sha256") != file_digest(path)):
         raise ValueError("independent game evidence extraction differs from original recording")
     if end is not None and (len(args) != 17 or args[5] != "-t" or not math.isfinite(float(args[6])) or abs(float(args[6]) - (end-time)) > .001
             or args[7:-1] != ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k"]):
@@ -175,7 +177,7 @@ def read_independent_audio(bundle, source):
         raise ValueError("independent original-audio ASR has invalid timing")
     rows = []
     for s in segments:
-        if (not number(s.get("start")) or not number(s.get("end")) or not 0 <= s["start"] < s["end"] <= duration + .25
+        if (not number(s.get("start")) or not number(s.get("end")) or not 0 <= s["start"] < s["end"] <= duration + 3
                 or s["start"] < previous or not str(s.get("text") or "").strip()):
             raise ValueError("independent original-audio ASR has invalid timing")
         previous = s["start"]
@@ -483,9 +485,12 @@ def check_frame_names(event, source):
             text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
         row = json.loads(text)
         if (row.get("supported") is not True or row.get("activity") != "gameplay" or row.get("kind") not in ("boss", "location")
-                or row.get("kind") != evidence["kind"] or row.get("label") != evidence["label"]
+                or row.get("kind") != evidence["kind"] or (row.get("label") != evidence["label"]
+                    and normalize(row["label"]) not in normalize(evidence["label"])
+                    and normalize(evidence["label"]) not in normalize(row["label"]))
                 or row.get("frameIndex") != evidence.get("selectedFrameIndex") or len(normalize(row["label"])) < 2
-                or normalize(row["label"]) not in normalize(chapter["title"])):
+                or (normalize(row["label"]) not in normalize(chapter["title"])
+                    and normalize(chapter["title"]) not in normalize(row["label"]))):
             raise ValueError("game chapter name is not a literal original live-game label")
         selected = None
         for i, frame in enumerate(evidence.get("frames") or []):

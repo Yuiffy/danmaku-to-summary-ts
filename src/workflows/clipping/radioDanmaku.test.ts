@@ -62,3 +62,22 @@ test('edited comments follow retained spans and reaction holds without leaking c
   expect(creative.comments.map(c => c.time)).toEqual([.5, 2.8]);
   expect(creative.window.duration).toBe(3.8);
 });
+
+test('sped creative timelines compress comment times and scroll rates, and comments across a removed gap survive', () => {
+  const comments = [10.5, 11, 12, 14, 21.9].map(time => ({ time, text: String(time), color: 1 }));
+  // keep [0,1] at 1x, removed (1,3), [3,5] at 8x → output = 1 + 2/8 = 1.25s
+  const sped = projectComments(comments, window, undefined, { version: 1, sourceDuration: 12, duration: 1.25,
+    keep: [{ start: 0, end: 1 }, { start: 3, end: 5, speed: 8 }] });
+  expect(sped.comments.map(c => c.time)).toEqual([.5, 1, 1.125]);
+  expect(sped.window.duration).toBe(1.25);
+  // 1x comments keep the plain 8s scroll; sped comments scroll at the sped rate.
+  expect(sped.comments.map(c => c.scrollSeconds ?? 8)).toEqual([8, 8, 1]);
+  const built = buildRadioAss(sped.comments, sped.window, { width: 1920, height: 1080 },
+    { enabled: true, mode: 'radio', fontScale: 1, fps: 30 });
+  expect(built.ass).toContain('0:00:00.50,0:00:08.50');
+  expect(built.ass).toContain('0:00:01.13,0:00:02.13');
+  // A comment landing exactly on a removed-span boundary stays in the piece that ends there.
+  const gap = projectComments([{ time: 11, text: 'edge', color: 1 }], window, undefined,
+    { version: 1, sourceDuration: 12, duration: 1.125, keep: [{ start: 0, end: 1 }, { start: 3, end: 5, speed: 8 }] });
+  expect(gap.comments.map(c => c.time)).toEqual([1]);
+});

@@ -131,7 +131,9 @@ Return ONLY JSON {"reason":"specific pixel and transition evidence","frames":[{"
         return { version: 1, spokenEnd, scanEnd, sampleSeconds: SAMPLE_SECONDS, resolutionSeconds: RESOLUTION_SECONDS,
             samples: ordered.map((s, i) => ({ ...s, index: i + 1 })),
             frames: ordered.map((s, i) => ({ ...observations.get(s.time), index: i + 1 })), reason: reasons.join('; '),
-            provider: settings.provider, model: settings.model, apiMode: settings.apiMode, attempts, contextReviews };
+            provider: attempts.findLast(attempt => attempt.status === 'success')?.provider || settings.provider,
+            model: attempts.findLast(attempt => attempt.status === 'success')?.model || settings.model,
+            apiMode: settings.apiMode, attempts, contextReviews };
     };
     let review = snapshot();
     closingBoundary(review);

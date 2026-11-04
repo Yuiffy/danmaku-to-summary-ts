@@ -1,7 +1,7 @@
 const { runFfmpeg, probeVideoPacketsWithHashes, resolveFfprobePath, findMatchingPacketTime, probeRoughCutSourceStart, probeRoughCutTimeOrigin } = require('./clipping/media_runtime');
 const { buildSubtitleBurnVideoArgs, buildSubtitleBurnInputArgs, isNvencSubtitleEncoder } = require('./clipping/subtitle_encoding');
 const { normalizeCoverText, buildGroundingReviewLine } = require('./clipping/selection_result');
-const { getVideoResolution, probeMediaDuration } = require('./clipping/video_probe');
+const { getVideoResolution, getVideoFrameRate, probeMediaDuration } = require('./clipping/video_probe');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
 const { isTopicEditorialEnabled, buildTopicEditorialGroups, buildTopicClipWindow } = require('./clipping/topic_editorial');
 const { planTopicEventGroup, generateTopicEventCopy } = require('./clipping/topic_editorial_runner');
@@ -11,6 +11,7 @@ const { ensureCandidateDraft } = require('./clipping/candidate_subtitles');
 const { ensureCandidatePreview, reusablePreview, previewReviewLines } = require('./clipping/candidate_preview');
 const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
 const { buildTopicDedupeFailures, isPendingTopicResult } = require('./clipping/topic_failure_details');
+const { resolvePythonBin } = require('./clipping/python_bin');
 const {
     findKeywordMatches,
     clamp,
@@ -32,6 +33,7 @@ const {
 const fs = require('fs');
 const path = require('path');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const { deriveContentTags } = require('./content_tags');
 const childProcess = require('child_process');
 const xml2js = require('xml2js');
 const {
@@ -624,11 +626,18 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     }
 
     const configuredTags = Array.isArray(config.tags) ? config.tags : null;
+    // 内容自动标签:游戏名(来自直播标题《》) + 情绪标签(白名单,依据片内文本/触发关键词)
+    const contentTagList = deriveContentTags({
+        streamTitle: info.streamTitle,
+        matchedKeywords: window.matchedKeywords,
+        text: sampleText
+    });
     const tags = Array.from(new Set([
         'AI切片',
         ...(configuredTags || [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']),
         ...(Array.isArray(config.extraTags) ? config.extraTags : []),
-        ...(Array.isArray(extraTagList) ? extraTagList : [])
+        ...(Array.isArray(extraTagList) ? extraTagList : []),
+        ...contentTagList
     ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
 
     const processed = postProcessAiClipMetadata({ title, tags }, config);
@@ -691,6 +700,14 @@ function selectCoverPreferredTime(danmaku = [], window = {}, reactionKeywords = 
 }
 
 /**
+ * 封面脚本依赖 Pillow，某些环境里 PATH 上的 python 并不是装了依赖的那个。
+ * 允许用 CLIP_PYTHON_PATH / PYTHON_PATH 显式指定解释器。
+ */
+function resolveCoverPython() {
+    return resolvePythonBin('python');
+}
+
+/**
  * 为切片生成封面图:优先从无字幕原始录播的切片区间多帧选优。
  */
 async function generateClipCover(videoPath, title, outputDir, info = {}) {
@@ -714,7 +731,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     resourceConfig = { ...resourceConfig, ...(await waitForCpuAvailability(coverStage, resourceConfig)).resourceOverrides };
 
     return new Promise((resolve, reject) => {
-        const args = ['python', scriptPath, coverSourcePath,
+        const args = [resolveCoverPython(), scriptPath, coverSourcePath,
             '--title', title,
             '--output', coverPath,
             '--position', info.textPosition === 'bottom' ? 'bottom' : 'center',
@@ -740,7 +757,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
             args.push('--subtitle', subtitle);
         }
 
-        // args[0] is 'python', rest are script + args
+        // args[0] is the python binary, rest are script + args
         const child = spawn(args[0], args.slice(1), {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
@@ -886,6 +903,11 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     if (config.burnSubtitles !== false) {
         // 获取视频分辨率,动态计算字幕样式
         const videoRes = await getVideoResolution(source.mediaPath, resolveFfprobePath(ffmpegPath), Number(window.start));
+        // Concatenating pieces at different playback rates needs one constant rate,
+        // otherwise the joined stream stays variable frame rate.
+        if (creative && config.creativePlan.timeline?.keep?.some(span => Number(span.speed) > 1)) {
+            videoRes.frameRate = await getVideoFrameRate(source.mediaPath, resolveFfprobePath(ffmpegPath));
+        }
         const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height, config);
         const parsedOutput = path.parse(outputPath);
         burnAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.burn.ass`);
@@ -897,7 +919,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             creative.assertRenderPlan(config.creativePlan, window.duration, config.creativeSettings, config.creativeAssets);
             require('./clipping/creative_layout').writeLayoutSubtitles(burnAssPath, config.creativePlan, subtitleStyle);
             stickerPath = path.join(parsedOutput.dir, `${parsedOutput.name}.effects.ass`);
-            fs.writeFileSync(stickerPath, creative.stickerAss(config.creativePlan, videoRes.width, videoRes.height), 'utf8');
+            fs.writeFileSync(stickerPath, creative.stickerAss(config.creativePlan, videoRes.width, videoRes.height, subtitleStyle.fontName), 'utf8');
         }
         if (config.radioDanmaku?.enabled === true) {
             radioAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.danmaku.ass`);
@@ -1389,7 +1411,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     args.push('--include-pending'); // Reserving a review ID never grants upload permission.
     let result;
     try {
-        result = require('child_process').spawnSync('python', args, {
+        result = require('child_process').spawnSync(resolvePythonBin('python'), args, {
             cwd: path.dirname(path.dirname(__dirname)),
             env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
             encoding: 'utf8',

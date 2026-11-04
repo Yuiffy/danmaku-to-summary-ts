@@ -14,6 +14,19 @@ test.each([[1920, 1080, .78, .8], [1920, 1080, .05, .05], [1080, 1080, .8, .75],
     expect(row.faceInset.placement).toBe('source');
 });
 
+test('a reaction sticker follows its own subject box even when the same node also enlarges the chat column', () => {
+    const plan = anchorSpatialPlan({ effects: [{ start: 1, end: 4,
+        focusInset: { target: 'chat', shape: 'rectangle', placement: 'source', sourceBox: { x: .01, y: .12, width: .16, height: .16 }, magnification: 1.5, clearOfAction: true },
+        sticker: { id: 'irasutoya_ase', x: .3, y: .2, width: .12, motion: 'static', clearOfSubject: true,
+            anchorBox: { x: .86, y: .78, width: .12, height: .2 } } }] }, { width: 1920, height: 1080 }, { focusPlacement: 'source' },
+        { irasutoya_ase: { kind: 'sticker' } });
+    const sticker = plan.effects[0].sticker;
+    // 汗滴贴在右下角头像上方，而不是被弹幕放大框拉到左上角。
+    expect(sticker.x).toBeGreaterThan(.8);
+    expect(sticker.y).toBeLessThan(.78);
+    expect(sticker.width).toBeGreaterThanOrEqual(.08);
+});
+
 test('chat and object details can be enlarged at their source location with a rectangular frame', () => {
     for (const target of ['chat', 'detail']) {
         const inset = validateFocusInset({ target, shape: 'rectangle', placement: 'source', sourceBox: { x: .05, y: .25, width: .2, height: .08 }, magnification: 1.8, clearOfAction: true });

@@ -6,6 +6,23 @@ const { requestSelectionText, validSelectionResponse } = require('./selection_re
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
 describe('selection usage accounting', () => {
+  test('changed default flash routes invalidate cached selections without changing the prompt', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-profile-'));
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: 'valid', meta: {} });
+    const profiles = require('../workflow-runtime').loadWorkflow('text/profiles');
+    const root = { ai: { text: { provider: 'daiYu', defaultProfile: 'flash', daiYu: { model: 'gpt-6-luna' },
+      profiles: structuredClone(profiles.DEFAULT_TEXT_PROFILES) } } };
+    const request = () => requestSelectionText('Same source.', { primaryModel: 'gpt-6-luna' }, {}, root,
+      { selectionCacheDirectory: directory }, 'detail-profile-v1', {}, () => true);
+    try {
+      await request(); await request();
+      expect(generate).toHaveBeenCalledTimes(1);
+      root.ai.text.profiles.flash.routes[1].model = 'glm-5.3';
+      await request();
+      expect(generate).toHaveBeenCalledTimes(2);
+    } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test('configured stage routing preserves competition frame attachments', async () => {
     const enhancement = require('./enhancement_runner');
     const stage = jest.spyOn(enhancement, 'requestStage').mockResolvedValue({ text: '{"clips":[]}', meta: {} });

@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { reactionOutputTime, ReactionTimeline } from './reactionTiming';
+import { reactionOutputTime, reactionPieces, ReactionTimeline } from './reactionTiming';
 
 export interface RadioSettings {
   enabled?: boolean;
@@ -11,12 +11,43 @@ export interface RadioSettings {
 }
 interface Window { start: number; duration: number }
 interface Resolution { width: number; height: number }
-export interface Comment { time: number; text: string; color: number }
-interface Span { start: number; end: number }
+export interface Comment { time: number; text: string; color: number; scrollSeconds?: number }
+interface Span { start: number; end: number; speed?: number }
+
+const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Project comments onto a creative timeline whose keep spans may carry playback rates.
+ * A comment inside a sped span keeps its content but scrolls at the sped rate, so the
+ * overlay reads consistently with the accelerated picture instead of piling up. */
+export function projectSpedComments(comments: Comment[], window: Window, timeline: ReactionTimeline) {
+  const speedOf = (span: Span) => Number(span.speed) > 1 ? Number(span.speed) : 1;
+  const pieces = reactionPieces(timeline).map(piece => ({
+    ...piece, speed: speedOf(timeline.keep.find(span =>
+      piece.start >= span.start - .001 && piece.end <= span.end + .001) || piece)
+  }));
+  const duration = round(pieces.reduce((n, piece) => n + (piece.end - piece.start) / piece.speed + piece.hold, 0));
+  const rows: Comment[] = [];
+  let offset = 0;
+  pieces.forEach((piece, index) => {
+    for (const comment of comments) {
+      const rel = comment.time - window.start;
+      if (rel < piece.start - .001 || rel > piece.end + .001) continue;
+      const atEnd = Math.abs(rel - piece.end) <= .001;
+      // A boundary comment belongs to the piece that ends there only when a contiguous
+      // piece follows; across a removed gap or at the tail it stays in this piece.
+      if (atEnd && index !== pieces.length - 1 && pieces[index + 1].start <= piece.end + .001) continue;
+      rows.push({ ...comment, scrollSeconds: round(8 / piece.speed),
+        time: round(offset + (Math.min(rel, piece.end) - piece.start) / piece.speed + (atEnd ? piece.hold : 0)) });
+    }
+    offset += (piece.end - piece.start) / piece.speed + piece.hold;
+  });
+  return { comments: rows, window: { start: 0, duration } };
+}
 
 /** Project only comments that begin in retained source spans, including inserted reaction holds. */
 export function projectComments(comments: Comment[], window: Window, editKeep?: Span[], timeline?: ReactionTimeline) {
   if (timeline) {
+    if (timeline.keep.some(span => Number(span.speed) > 1)) return projectSpedComments(comments, window, timeline);
     const rows = comments.filter(c => timeline.keep.some(s => c.time - window.start >= s.start && c.time - window.start < s.end));
     return { comments: rows.map(c => ({ ...c, time: reactionOutputTime(c.time - window.start, timeline) })),
       window: { start: 0, duration: timeline.duration } };
@@ -80,7 +111,9 @@ export function buildRadioAss(comments: Comment[], window: Window, resolution: R
   const selected = comments.filter(c => c.time >= window.start && c.time < window.start + window.duration);
   const events = selected.map(comment => {
     const start = comment.time - window.start;
-    const end = start + 8; // Let the video boundary clip motion; never accelerate late comments.
+    // Comments projected onto a sped span carry a compressed lifetime; unsped ones
+    // scroll for 8 seconds and let the video boundary clip the motion.
+    const end = start + (Number(comment.scrollSeconds) > 0 ? Number(comment.scrollSeconds) : 8);
     const text = displayText(comment.text);
     const textWidth = Math.ceil(Array.from(text).reduce((sum, char) => sum + (/\p{Script=Latin}|[\x20-\x7e]/u.test(char) ? .6 : 1), 0) * fontSize);
     // Only share a lane after the previous tail cleared the entrance and cannot be caught.

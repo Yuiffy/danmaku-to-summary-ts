@@ -48,6 +48,12 @@ const AISchema = Joi.object({
         }).unknown(true)
     ).default({}),
     text: Joi.object({
+        defaultProfile: Joi.string().valid('flash', 'pro'),
+        profiles: Joi.object().pattern(Joi.string().valid('flash', 'pro'), Joi.object({
+            routes: Joi.array().min(1).items(Joi.object({ provider: Joi.string().valid('daiYu', 'zai', 'deepSeek', 'tuZi').required(),
+                model: Joi.string().pattern(/^[a-zA-Z0-9._-]+$/u).required(),
+                apiMode: Joi.string().valid('responses', 'chatCompletions').required() })).required()
+        })),
         retry: TextRetrySchema.optional(),
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('daiYu'),
@@ -172,6 +178,7 @@ const ConfigSchema = Joi.object({
         enabled: Joi.boolean(), roomIds: Joi.array().items(Joi.string()).min(1).unique(), includeKeywordTopics: Joi.boolean(),
         minScore: Joi.number().integer().min(0).max(100), maxStandalone: Joi.number().integer().min(1).max(5),
         maxCandidates: Joi.number().integer().min(1).max(100), maxSearchResults: Joi.number().integer().min(1).max(5),
+        maxSearchQueries: Joi.number().integer().min(1).max(6),
         supportActions: Joi.array().items(Joi.string().valid('like', 'favorite', 'repost')).unique(), favoriteFolderId: Joi.string().pattern(/^[1-9]\d*$/u),
         maxSupportPerDay: Joi.number().integer().min(0).max(20), supportIntervalSeconds: Joi.number().integer().min(30).max(86400)
     }),
@@ -285,6 +292,7 @@ const ConfigSchema = Joi.object({
             maxEvidenceChars: Joi.number().integer().min(1).default(80000)
         }).default(),
         review: Joi.object({
+            modelProfile: Joi.string().valid('flash', 'pro'),
             enabled: Joi.boolean().default(false),
             mode: Joi.string().valid('shadow', 'preflight').default('shadow'),
             strategy: Joi.string().valid('single', 'staged', 'audited').default('single'),
@@ -335,7 +343,8 @@ const ConfigSchema = Joi.object({
         chunkSeconds: Joi.number().positive().default(1800), contextSeconds: Joi.number().positive().default(180),
         maxEvidenceChars: Joi.number().integer().positive().default(90000),
         ai: Joi.object({ model: Joi.string(), boundaryModel: Joi.string(), timeoutMs: Joi.number().integer().positive(), maxTokens: Joi.number().integer().positive() }),
-        verification: Joi.object({ enabled: Joi.boolean(), provider: Joi.string().valid('tuZi', 'gemini', 'daiYu'), apiMode: Joi.string().valid('gemini_native', 'openai_chat'), model: Joi.string(),
+        verification: Joi.object({ enabled: Joi.boolean(), modelProfile: Joi.string().valid('flash', 'pro'),
+            provider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai', 'deepSeek'), apiMode: Joi.string().valid('gemini_native', 'openai_chat'), model: Joi.string(),
             evidenceMethod: Joi.string().valid('native_audio', 'independent_local_asr'),
             localAsr: Joi.object({ sensevoiceModel: Joi.string(), whisperModel: Joi.string(), device: Joi.string().valid('cuda', 'cpu'), chunkSeconds: Joi.number().integer().min(2).max(16) }), contextSeconds: Joi.number().min(30).max(600),
             maxAudioSeconds: Joi.number().min(60).max(1800), timeoutMs: Joi.number().integer().positive(),
@@ -362,7 +371,8 @@ const ConfigSchema = Joi.object({
         maxPartsPerSubmission: Joi.number().integer().min(1).max(100),
         requireOriginalStreamCopy: Joi.boolean().strict().default(false),
         autoUpload: Joi.boolean().default(false), authorizationNote: Joi.string().allow(''),
-        ai: Joi.object({ model: Joi.string(), boundaryEvidenceMethod: Joi.string().valid('native_audio', 'independent_local_asr'),
+        ai: Joi.object({ model: Joi.string(), frameModelProfile: Joi.string().valid('flash', 'pro'),
+            boundaryModelProfile: Joi.string().valid('flash', 'pro'), boundaryEvidenceMethod: Joi.string().valid('native_audio', 'independent_local_asr'),
             boundaryModel: Joi.string(), boundaryProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai'),
             boundaryApiMode: Joi.string().valid('gemini_native', 'openai_chat'), frameModel: Joi.string(), frameProvider: Joi.string().valid('tuZi', 'gemini', 'daiYu', 'zai'),
             frameApiMode: Joi.string().valid('gemini_native', 'openai_chat'), timeoutMs: Joi.number().integer().positive(), maxTokens: Joi.number().integer().positive() }),

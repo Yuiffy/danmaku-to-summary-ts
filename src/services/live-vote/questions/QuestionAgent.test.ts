@@ -429,7 +429,10 @@ it('pins daiYu/gpt-6-luna, keeps credentials outside context, prevents redirects
   const body = JSON.parse(options.body);
   expect(body).toMatchObject({ model: 'gpt-6-luna', tool_choice: 'required', parallel_tool_calls: false, max_tokens: 2048 });
   expect(options.body).not.toContain('provider-secret');
-  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent', 'read_recording_calendar', 'read_recording_openings', 'list_recordings', 'read_recordings', 'aggregate_evidence']);
+  expect(body.tools.map((item: any) => item.function.name)).toEqual(['search_recordings', 'read_context', 'read_recent', 'read_live_overview', 'read_recording_calendar', 'read_recording_openings', 'list_recordings', 'read_recordings', 'aggregate_evidence',
+    'lookup_stock_quotes', 'search_web', 'read_web_page', 'search_stocks', 'get_stock_quotes', 'search_places', 'get_weather', 'search_encyclopedia']);
+  await complete({ ...input, toolChoice: 'none', phase: 'review' }, new AbortController().signal);
+  expect(JSON.parse(transport.mock.calls[1][1].body).response_format).toEqual({ type: 'json_object' });
   transport.mockRejectedValue(new Error('provider-secret raw private response'));
   await expect(complete(input, new AbortController().signal)).rejects.toThrow(/^daiYu question request failed$/u);
   expect(() => questionProviderSettings({ ai: { text: { daiYu: { apiKey: 'x', baseUrl: 'http://external.example/v1' } } } })).toThrow('HTTPS');

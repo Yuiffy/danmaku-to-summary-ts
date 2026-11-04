@@ -32,14 +32,18 @@ test('own facade preserves all candidates, prioritizes model scores, and creates
     } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('topic facade leaves unresolved preflight drafts available and avoids all peer IO for them', async () => {
+test('topic facade checks unresolved preflight drafts when the source window is complete', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'peer-topic-runtime-'));
     try {
         const sourceSrt = path.join(root, 'source.srt'); await fs.writeFile(sourceSrt, 'evidence');
         const clips = [{ window: { start: 0, end: 10 }, preflight: { status: 'needs_review' } }], api = apiFixture();
+        const request = jest.fn(async phase => JSON.stringify(phase.startsWith('assess')
+            ? { worthPublishing: true, score: 95, reason: '完整事件', queries: ['具体事件'] } : {}));
         const result = await curateClipWindows(clips, { kind: 'topic', config: { clipCuration: { enabled: true, includeKeywordTopics: true } },
-            info: { roomId: '2' }, sourceSrt, sourceMedia: 'source.mp4', outputRoot: root, statePath: path.join(root, 'support.json'), segments: [] }, jest.fn(), api);
-        expect(result).toEqual(clips); expect(api.accountId).not.toHaveBeenCalled(); expect(api.search).not.toHaveBeenCalled();
+            info: { roomId: '2' }, sourceSrt, sourceMedia: 'source.mp4', outputRoot: root, statePath: path.join(root, 'support.json'),
+            segments: [{ start: 0, end: 5, text: '完整的源台词' }] }, request, api);
+        expect(result[0].curation).toMatchObject({ status: 'original', sourceWindow: { start: 0, end: 10 } });
+        expect(api.accountId).toHaveBeenCalled(); expect(api.search).toHaveBeenCalled();
     } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

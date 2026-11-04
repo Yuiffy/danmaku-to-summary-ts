@@ -43,8 +43,11 @@ function isPreflightEnabled(config) {
     return config.review?.enabled === true && config.review.mode === 'preflight';
 }
 
-function preflightRequestOptions(config) {
-    return { primaryModel: config.review.model || config.aiModel, exactModel: true,
+function preflightRequestOptions(config, root = {}) {
+    const modelProfile = config.review.modelProfile;
+    const routes = modelProfile ? require('../workflow-runtime').loadWorkflow('text/profiles').resolveTextProfile(root, modelProfile) : null;
+    return { primaryModel: routes?.[0].model || config.review.model || config.aiModel, exactModel: true,
+        ...(modelProfile ? { modelProfile, modelProfileRoutes: routes } : {}),
         reasoningEffort: config.review.reasoningEffort || 'max', apiMode: 'responses', strictResponses: true,
         allowProviderFallback: false, fallbackModelsEnabled: false, transientMaxAttempts: 1,
         daiYuTransientMaxAttempts: config.review.transientMaxAttempts ?? DEFAULT_CLIP_TOPICS_CONFIG.review.transientMaxAttempts,
@@ -53,6 +56,8 @@ function preflightRequestOptions(config) {
 }
 
 function requestMatches(result, settings) {
+    if (settings.modelProfile) return result.meta?.modelProfile === settings.modelProfile
+        && require('../workflow-runtime').loadWorkflow('text/profiles').matchesTextProfile(result, settings.modelProfileRoutes, settings.reasoningEffort);
     const actual = result.meta?.attempts?.at(-1);
     // Providers may resolve the requested model alias to a newer model. Keep the
     // returned name in request diagnostics, without rejecting that response.
@@ -126,7 +131,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             input = { ...buildInput(group), audioChecks };
         }
     }
-    const settings = preflightRequestOptions(config);
+    const settings = preflightRequestOptions(config, rootConfig);
     const record = { groupId: input.groupId, strategy, model: settings.primaryModel,
         reasoningEffort: settings.reasoningEffort, sourceSha256: evidence.sourceSha256, responses: [], errors: [],
         ...(contextBudget ? { contextBudget } : {}),
@@ -138,7 +143,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         if (options.retainedContext && !contextBudget) throw new Error('Preflight source exceeds request budget');
         const visualSettings = { ...settings, ...(competitionEvidence?.images.length ? { images: competitionEvidence.images } : {}) };
         const requestSettings = phase === 'audit' ? { ...visualSettings,
-            primaryModel: config.review.auditModel || settings.primaryModel,
+            ...(!settings.modelProfile ? { primaryModel: config.review.auditModel || settings.primaryModel } : {}),
             reasoningEffort: config.review.auditReasoningEffort || settings.reasoningEffort } : visualSettings;
         const prepared = lockedClip ? new Map(lockedClip.subtitleSegments.map(segment => [segment.index, segment])) : null;
         const cues = prepared ? evidence.cues.map(cue => {
@@ -172,6 +177,8 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             });
         record.responses.push({ phase, clipId: lockedClip?.id || null, text: result.text,
             cacheKey: result.meta?.selectionCache?.key || null, model: result.meta?.model || requestSettings.primaryModel });
+        if (settings.modelProfile) Object.assign(record, { requestedModel: settings.primaryModel,
+            model: result.meta?.model || settings.primaryModel, provider: result.meta?.provider });
         if (!requestMatches(result, requestSettings)) {
             throw new Error('Preflight model, protocol or reasoning setting changed');
         }
@@ -267,8 +274,8 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             });
         }
         if (phase === 'audit') {
-            normalized.qualityAudit.model = requestSettings.primaryModel;
-            normalized.clips.forEach(clip => { clip.qualityAudit.model = requestSettings.primaryModel; });
+            normalized.qualityAudit.model = result.meta?.model || requestSettings.primaryModel;
+            normalized.clips.forEach(clip => { clip.qualityAudit.model = result.meta?.model || requestSettings.primaryModel; });
         }
         return normalized;
     };
@@ -329,7 +336,7 @@ function preflightSelections(plan, group, config) {
         const clip = ending?.withPreflightEndingHold(original, group.cues || [], group.end, config.maxClipSeconds, plan.clips[index + 1]?.start) || original;
         return { start: clip.start, end: clip.end, sliceIndex: index + 1,
         aiTitle: clip.copy?.title || null, aiDescription: clip.copy?.description || null, aiCoverText: clip.copy?.coverText || null,
-        aiModel: config.review.model || config.aiModel, subtitleSegments: clip.subtitleSegments,
+        aiModel: plan.record.model || config.review.model || config.aiModel, subtitleSegments: clip.subtitleSegments,
         editorial: { status: clip.status === 'ready' ? 'planned' : 'pending_preflight', event: clip.event,
             reason: clip.reason, score: clip.score, sourceKind: clip.sourceKind, extensionReason: clip.extensionReason,
             copyStatus: clip.copy ? 'prepared' : 'unavailable', copyGrounding: clip.grounding || null,

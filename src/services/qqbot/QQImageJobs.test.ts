@@ -77,7 +77,20 @@ test('an uncertain delivery survives restart and another mention cannot resend',
   expect(f.io.generate).toHaveBeenCalledTimes(1); await recovered.close();
 });
 
-test('provider failure does not retry, and successful notice receipt releases a new explicit attempt', async () => {
+test('retryable upstream HTTP failure is retried once and emits the safe provider message', async () => {
+  const f = fixture(); await f.jobs.open(); const first = f.request('original');
+  const result = await f.artifact(first);
+  f.io.generate.mockReset()
+    .mockRejectedValueOnce(qqFailure('image_http', 'http_error', { httpStatus: 502, upstreamMessage: 'Upstream request failed' }))
+    .mockResolvedValueOnce(result);
+  await f.jobs.enqueue(first, command); await f.jobs.idle();
+  expect(f.io.generate).toHaveBeenCalledTimes(2);
+  expect(f.io.report).toHaveBeenCalledWith({ event: 'qq_image_job_retry', requestId: first.key, scope: 'group', retryAttempt: 2,
+    failure: expect.objectContaining({ httpStatus: 502, upstreamMessage: 'Upstream request failed' }) });
+  expect((await f.jobs.pending(f.request('pickup')))!.image).toBeDefined(); await f.jobs.close();
+});
+
+test('non-retryable provider failure remains single-shot, and successful notice receipt releases a new explicit attempt', async () => {
   const f = fixture(); await f.jobs.open(); await f.jobs.enqueue(f.request('original'), command);
   f.fail(new Error('private provider detail')); await f.jobs.idle();
   const next = f.request('failure-notice'); expect((await f.jobs.pending(next))!.text).toContain('生成失败');

@@ -117,6 +117,30 @@ API 的 `-352` 按接口告警，不会冒充某个房间独有的问题。API �
   or supplemental reply when it fits, and already-published historical summaries
   are not reposted or moved.
 
+## Text model profiles
+
+Text model tiers are configured separately under `ai.text.profiles`; `defaultProfile`
+is `flash`. Flash uses daiYu `gpt-6-luna` → zai `glm-5.3-flash` → deepSeek
+`deepseek-flash` → tuZi `gpt-6-luna`. Pro uses daiYu `gpt-6.1-sol` → zai
+`glm-5.3` → deepSeek `deepseek-flash`, with no appended luna/tuZi route.
+An explicit profile takes precedence over legacy `daiYu.fallbackChain` and
+`fallbackProvider`. Legacy configurations without `defaultProfile` retain their
+existing behavior. Profile routes contain no credentials; each adapter uses its
+own provider settings. Unknown/pending outcomes and exhausted shared deadlines
+stop the chain. Fixed-model Agents and strict experiment/enhancement stages stay
+pinned unless they explicitly select a profile; QQ keeps its dedicated account.
+
+`clipTopics.review.modelProfile`, `streamGameClips.ai.frameModelProfile` and
+`streamActivityClips.verification.modelProfile` select `pro` in the maintained
+configs. Preflight accepts only the configured provider/model/protocol and
+continues all existing evidence checks. Media profiles use Chat Completions
+with the same original images and local-ASR text at every attempt; raw audio is
+rejected. A provider rejecting images fails normally rather than receiving a
+text-only substitute. Effective routes are bound into cache signatures, and
+diagnostics retain actual models, providers and all attempts. Configuration and
+source edits still require the normal tested workflow activation before a
+running pinned worker can use the new compiled policy.
+
 ## Goodnight Image Model Policy
 
 New image requests outside Sui's room draw one equally weighted variant through

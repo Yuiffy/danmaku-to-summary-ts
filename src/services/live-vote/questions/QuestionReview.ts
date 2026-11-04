@@ -2,6 +2,8 @@ import { NO_EVIDENCE, QuestionAnswer, QuestionClue, unsafeQuestionText } from '.
 import { QuestionEvidence } from './RecordingEvidence';
 import { isQuestionToolName, QuestionToolName } from './QuestionTools';
 import { PLAYFUL_ROAST_PROMPT } from './QuestionConversation';
+import { PUBLIC_QUERY_GUIDANCE } from './PublicSearchTools';
+import { StockQuote } from './StockSearch';
 
 export type EvidenceReview =
   | { action: 'answer'; rankedEvidenceIds: string[]; certainty: 'supported' | 'uncertain'; answer: string; shortAnswer: string; evidenceIds: string[] }
@@ -12,6 +14,9 @@ export type EvidenceReview =
 
 /** Rank and decide in the same model pass, so an easy question still takes two requests. */
 export const REVIEW_PROMPT = `现在对已返回的候选进行语义重排，再决定下一步。关键词命中次数不是答案可信度。
+${PUBLIC_QUERY_GUIDANCE}
+短答shortAnswer至多40个字符（英文、数字、空格、标点均计数）。多项行情的短答可以概括整体方向，但完整answer必须逐项保留代码、价格、涨跌幅、币种/点和参考/延迟性质；应用会从已引用的结构化报价为弹幕压成一条代码与涨跌幅汇总，不能只留下“涨跌不一”。
+公开查询可用tool动作继续search_stocks/get_stock_quotes/search_places/get_weather/search_encyclopedia。public-search必须按工具数据作答并引用真实evidenceId，不要求有直播记录；不得用来证明主播经历。行情完整回答保留证券代码、币种、上游报价时间和延迟/参考性质，短答也保留币种及参考性质；天气保留所选地点、当地时间、单位和预报性质。查询时间不是报价/天气发生时间。无工具结果不能报行情或天气数字。百科仅搜索摘录，不能当最新新闻；工具不可用时修正参数或换工具，不能说查无结果。
 工具返回error表示操作失败，不能当成空结果或insufficient；按expectedArguments修正参数或换只读工具继续查询。date只接受年份、年月、单日或null，日期区间需浏览月份后筛选日期；不要把区间字符串塞入date。
 如果原始需求只是祝福、温情话、安慰、鼓励或打招呼，即使先前多余地搜索过、没有命中，也应直接返回general JSON回答，不需要引用，不编造直播事实。涉及事实、统计或基于历史的混合请求不能general。
 需要浏览、读取或计算时用tool动作选择应用提供的只读工具。多天开场/OP统计优先read_recording_openings按日期范围批量读开场字幕和时间点，目录nextOffset可继续调用该工具，字幕nextCueOffset则用read_recordings在相同时间范围续读；不能因歌词、断线续录或真实开播起点未核实就丢弃其他已核实的录制偏移样本。list_recordings可按日期/资料来源浏览、读开头或抽样，read_recordings按ID批量续读或读任意时间段。aggregate_evidence对已返回时间偏移做算术，不生成新事实。多场比较和统计必须读取多个独立样本，保留样本数与覆盖范围；一条自述不是统计。sessionId相同和part分段不能重复当成多场。
@@ -48,7 +53,7 @@ gift-catalog是按礼物所属月整理的档案，date是依据发布日期、c
 {"rankedEvidenceIds":[],"action":"tool","tool":{"name":"list_recordings","arguments":{"collection":"highlights","kind":"all","date":null,"offset":0,"limit":5,"preview":"sample","cuesPerRecording":8}}}
 {"action":"general","answer":"愿你今晚被温柔以待，累了就好好休息。","shortAnswer":"愿你今晚被温柔以待。"}
 {"rankedEvidenceIds":["ev2"],"action":"tool","tool":{"name":"read_recordings","arguments":{"recordingIds":["ev2"],"startSeconds":0,"endSeconds":null,"offset":0,"limitPerRecording":20}}}
-answer的evidenceIds必须选自本次rankedEvidenceIds，最多3个，包含支撑答案或冲突的证据；不能选无关ID。
+answer的evidenceIds必须选自本次rankedEvidenceIds，最多5个，包含支撑答案或冲突的证据；多证券行情每项引用对应报价，不能选无关ID。最多300字。
 answer和shortAnswer只写问题的结论，不复述证据所在录像的日期、时间戳或ID；这些元数据由应用按引用ID另行附上。问题本身问事件日期时才回答有依据的事件日期，不得混用邻近候选的日期。
 可直接确认才用肯定语气；只有观众猜测时，完整答案与短答案都要明确“观众猜测/未确认”。
 certainty只能为supported或uncertain：直接回答问题的证据、明确前后状态支持的推定区间用supported；区间回答的完整答案和短答都保留“据记录/推定”等措辞及年份、日期边界，不把区间改成确切一天。仅有猜测、未确认、当时不知道或否认曾说明时用uncertain，不能假装问题已得到确定答案。
@@ -57,7 +62,7 @@ certainty只能为supported或uncertain：直接回答问题的证据、明确�
 搜索的context和扩展context内每条都有自己的ID；引用真正包含答案/改口的那条ID，不能用相邻旧说法的ID替代。
 合理补查后仍没有可靠依据时insufficient，不能编造。`;
 
-export function parseEvidenceReview(content: string | null, evidence: QuestionEvidence): EvidenceReview | undefined {
+export function parseEvidenceReview(content: string | null, evidence: Pick<QuestionEvidence, 'citation'>): EvidenceReview | undefined {
   if (!content || content.length > 5000) return undefined;
   try {
     const value = JSON.parse(content);
@@ -79,7 +84,7 @@ export function parseEvidenceReview(content: string | null, evidence: QuestionEv
       if (!['supported', 'uncertain'].includes(value.certainty) ||
           typeof value.answer !== 'string' || !value.answer.trim() || Array.from(value.answer).length > 300 || unsafeQuestionText(value.answer) ||
           typeof value.shortAnswer !== 'string' || !value.shortAnswer.trim() || Array.from(value.shortAnswer).length > 40 || unsafeQuestionText(value.shortAnswer) ||
-          !Array.isArray(value.evidenceIds) || !value.evidenceIds.length || value.evidenceIds.length > 3 ||
+          !Array.isArray(value.evidenceIds) || !value.evidenceIds.length || value.evidenceIds.length > 5 ||
           new Set(value.evidenceIds).size !== value.evidenceIds.length || value.evidenceIds.some((id: unknown) => !rank.includes(id))) return undefined;
     }
     return value as EvidenceReview;
@@ -87,7 +92,7 @@ export function parseEvidenceReview(content: string | null, evidence: QuestionEv
 }
 
 /** Fixed diagnostic codes only; raw model text and evidence never enter service logs. */
-export function reviewValidationIssue(content: string | null, evidence: QuestionEvidence): string {
+export function reviewValidationIssue(content: string | null, evidence: Pick<QuestionEvidence, 'citation'>): string {
   if (!content || content.length > 5000) return 'missing_or_oversize';
   try {
     const value = JSON.parse(content);
@@ -102,11 +107,16 @@ export function reviewValidationIssue(content: string | null, evidence: Question
   } catch { return 'invalid_json'; }
 }
 
-export function reviewedAnswer(review: EvidenceReview, evidence: QuestionEvidence): QuestionAnswer {
+export function reviewedAnswer(review: EvidenceReview, evidence: Pick<QuestionEvidence, 'citation' | 'clue'> & {
+  quote?: (id: string) => StockQuote | undefined;
+}): QuestionAnswer {
   if (review.action !== 'answer') return { answer: NO_EVIDENCE };
+  const publicQuotes = review.evidenceIds.map(id => evidence.quote?.(id)).filter((quote): quote is StockQuote => quote !== undefined);
   return {
+    ...(review.evidenceIds.every(id => evidence.citation(id)?.kind === 'public-search') ? { basis: 'public' as const } : {}),
     answer: review.answer, shortAnswer: review.shortAnswer,
     source: evidence.citation(review.evidenceIds[0]),
-    clues: review.evidenceIds.map(id => evidence.clue(id)).filter((clue): clue is QuestionClue => clue !== undefined)
+    clues: review.evidenceIds.map(id => evidence.clue(id)).filter((clue): clue is QuestionClue => clue !== undefined),
+    ...(publicQuotes.length ? { publicQuotes } : {})
   };
 }

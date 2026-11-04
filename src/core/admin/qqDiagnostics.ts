@@ -20,6 +20,8 @@ export interface QQDiagnostic {
   elapsedMs?: number; turn?: number; httpStatus?: number; requestId?: string; outputChars?: number;
   requestBytes?: number; budgetBefore?: number; charge?: number; budgetLimit?: number;
   finishReason?: string; errorName?: string; systemCode?: string; fingerprint?: string;
+  /** A short allow-listed provider message; never store arbitrary upstream bodies. */
+  upstreamMessage?: 'Upstream request failed' | 'Our servers are currently overloaded. Please try again later.';
   validation?: 'not_string' | 'empty' | 'too_long' | 'control_or_mention' | 'unsafe_content';
   frames?: string[];
 }
@@ -30,11 +32,13 @@ export interface QQModelCall {
 }
 const numbers = ['elapsedMs', 'turn', 'httpStatus', 'requestBytes', 'budgetBefore', 'charge', 'budgetLimit', 'outputChars'] as const;
 const strings = ['requestId', 'finishReason', 'errorName', 'systemCode', 'fingerprint'] as const;
+const upstreamMessages = ['Upstream request failed', 'Our servers are currently overloaded. Please try again later.'] as const;
 const safeNumber = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= Number.MAX_SAFE_INTEGER;
 const safeTag = (value: unknown) => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,100}$/u.test(value);
 export function validQQDiagnostic(value: QQDiagnostic): boolean {
   return !!value && QQ_FAILURE_STAGES.includes(value.stage) && Object.hasOwn(QQ_FAILURE_CODES, value.code) && safeNumber(value.at) &&
     numbers.every(key => value[key] === undefined || safeNumber(value[key])) && strings.every(key => value[key] === undefined || safeTag(value[key])) &&
+    (value.upstreamMessage === undefined || upstreamMessages.includes(value.upstreamMessage)) &&
     (value.validation === undefined || ['not_string', 'empty', 'too_long', 'control_or_mention', 'unsafe_content'].includes(value.validation)) &&
     (value.frames === undefined || Array.isArray(value.frames) && value.frames.length <= 6 &&
       value.frames.every(frame => typeof frame === 'string' && /^[\w.-]{1,80}\.[cm]?[jt]s:\d{1,7}:\d{1,6}$/u.test(frame)));
@@ -44,6 +48,7 @@ export function projectQQDiagnostic(value: QQDiagnostic): QQDiagnostic {
   const result: QQDiagnostic = { stage: value.stage, code: value.code, at: value.at };
   for (const key of numbers) if (value[key] !== undefined) result[key] = value[key];
   for (const key of strings) if (value[key] !== undefined) result[key] = value[key];
+  if (value.upstreamMessage !== undefined) result.upstreamMessage = value.upstreamMessage;
   if (value.validation !== undefined) result.validation = value.validation;
   if (value.frames !== undefined) result.frames = [...value.frames];
   return result;

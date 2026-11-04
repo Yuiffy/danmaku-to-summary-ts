@@ -1088,6 +1088,15 @@ the group. Local aborts are not retried while the upstream outcome may be unknow
 This does not change the configured model, reasoning effort, evidence validation,
 or approval gate, and retry-only changes do not invalidate successful model caches.
 
+Maintained configs select `clipTopics.review.modelProfile: "pro"`: daiYu
+`gpt-6.1-sol` → zai `glm-5.3` → deepSeek `deepseek-flash`. Explicit profiles
+override the legacy fixed review model and fallback prohibition. Only a successful
+attempt matching the configured provider, model and protocol passes the route
+check; all source, boundary, attribution and quality checks still apply. DaiYu
+uses Responses with the configured reasoning effort; GLM/DeepSeek use Chat
+Completions. Cache signatures include resolved routes and provider settings;
+attempt diagnostics and quality audit models identify the actual successful model.
+
 Recovery callers can pass `planningGroupIds: ['E9']` to `generateTopicClips` to
 retry only a failed group using the same complete source evidence. Unknown or
 empty selectors fail before AI requests. Use a separate `clipTopics.outputDirName`

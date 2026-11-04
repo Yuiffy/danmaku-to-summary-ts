@@ -1,11 +1,15 @@
 import { QuestionSource } from './QuestionPolicy';
+import { PUBLIC_TOOL_NAMES } from './PublicSearchTools';
 
-export const QUESTION_TOOL_NAMES = ['search_recordings', 'read_context', 'read_recent', 'read_recording_openings', 'read_recording_calendar', 'list_recordings', 'read_recordings', 'aggregate_evidence'] as const;
+export const QUESTION_TOOL_NAMES = ['read_live_overview', 'search_recordings', 'read_context', 'read_recent', 'read_recording_openings', 'read_recording_calendar', 'list_recordings', 'read_recordings', 'aggregate_evidence', ...PUBLIC_TOOL_NAMES] as const;
 export type QuestionToolName = typeof QUESTION_TOOL_NAMES[number];
 export function isQuestionToolName(name: unknown): name is QuestionToolName {
   return typeof name === 'string' && (QUESTION_TOOL_NAMES as readonly string[]).includes(name);
 }
 export const BROWSE_TOOLS = [
+  { type: 'function', function: { name: 'read_live_overview', strict: true,
+    description: '读取选定主播最新可用或指定日的直播概述、晚安、漫画叙事。date=null取最新；区分概述日期和最新已见录制日期。只支持概括，不证明原话、说话者或完整历史；细节及历史事件继续查原录播。',
+    parameters: { type: 'object', additionalProperties: false, properties: { date: { type: ['string', 'null'] } }, required: ['date'] } } },
   { type: 'function', function: { name: 'read_recording_calendar', strict: true,
     description: '按日期批量查看字幕与弹幕录制资料分布，用于核对轮休、开播节奏。fromDate/toDate含首尾最多31天，返回每天星期与去重录制数、可精读ID；不读取全文。dayBoundaryHour定义一天起点0至12点，夜播可取6将凌晨续录归入前一天；这是观察口径，不证明真实开播日。无资料不等于未开播/休息，未来日期尚未发生。结合常识规律和近期原文锚点推算，区分观众说法与主播安排。',
     parameters: { type: 'object', additionalProperties: false, properties: {
@@ -50,7 +54,7 @@ export function aggregateEvidence(args: unknown, citation: (id: string) => Quest
   const kinds = new Set<string>();
   for (const id of input.evidenceIds) {
     const source = typeof id === 'string' ? citation(id) : undefined;
-    const match = source && source.kind !== 'gift-catalog' && /^(\d{2,}):(\d{2}):(\d{2})$/u.exec(source.time);
+    const match = source && !['gift-catalog', 'public-search', 'live-overview'].includes(source.kind) && /^(\d{2,}):(\d{2}):(\d{2})$/u.exec(source.time);
     if (!source || !match) throw new Error('Unknown timed evidence');
     kinds.add(source.kind);
     const key = input.groupBy === 'room' ? source.roomId || 'current' : input.groupBy === 'date' ? source.date || 'unknown' : 'all';

@@ -34,9 +34,34 @@ test('confirmed other-author coverage is saved before support and frees a place 
         ? JSON.stringify({ ...assessment, queries: [prompt.includes('"id":"2"') ? '岁己 另一个完整故事' : assessment.queries[0]] })
         : JSON.stringify(comparison));
     io.support.mockImplementation(async () => { expect(saved.at(-1)[0].status).toBe('covered'); return { status: 'confirmed' }; });
-    const results = await curateCandidates([candidate, { ...candidate, id: '2' }, { ...candidate, id: '3' }], { maxStandalone: 1 }, io);
+    const results = await curateCandidates([candidate, { ...candidate, id: '2', title: '另一个完整故事', cues: candidate.cues.map(cue => ({ ...cue, text: `另一个${cue.text}` })) }, { ...candidate, id: '3', title: '第三个完整故事', cues: candidate.cues.map(cue => ({ ...cue, text: `第三个${cue.text}` })) }], { maxStandalone: 1 }, io);
     expect(results.map(row => row.status)).toEqual(['covered', 'original', 'budget']);
     expect(io.support).toHaveBeenCalledTimes(1);
+});
+
+test('deterministic title and source-cue searches retain an unverified Bilibili hit for Web review', async () => {
+    const io = adapters();
+    io.request.mockImplementation(async phase => JSON.stringify(phase.startsWith('assess')
+        ? { ...assessment, queries: ['完全无关的模型词'] }
+        : comparison));
+    io.search.mockImplementation(async query => query.includes(candidate.title) || query.includes('小时候我坐车总是晕车')
+        ? [{ ...peer, title: '抢着发链接，最后才发现要中文版' }] : []);
+    io.read.mockResolvedValue({ ...peer, complete: false, cues: [] });
+    const [result] = await curateCandidates([candidate], {}, io);
+    expect(result.status).toBe('needs_review');
+    expect(result.matches).toEqual([expect.objectContaining({ bvid: peer.bvid, status: 'subtitle_unavailable',
+        url: `https://www.bilibili.com/video/${peer.bvid}/` })]);
+    expect(result.searches?.some(search => search.query.includes(candidate.title))).toBe(true);
+    expect(io.support).not.toHaveBeenCalled();
+});
+
+test('a later platform failure preserves earlier search evidence for review', async () => {
+    const io = adapters(); let calls = 0;
+    io.search.mockImplementation(async () => { calls += 1; if (calls === 1) return [{ ...peer, complete: false, cues: [] }]; throw new Error('blocked'); });
+    const [result] = await curateCandidates([candidate], {}, io);
+    expect(result.status).toBe('needs_review');
+    expect(result.matches?.[0]).toMatchObject({ bvid: peer.bvid, status: 'subtitle_unavailable' });
+    expect(result.searches?.length).toBe(1);
 });
 test('different event with identical title is eligible; our own search hit never triggers interaction', async () => {
     const io = adapters();

@@ -26,7 +26,7 @@
 
 复核协议 9 将收尾原话和最终视频结束点分别保存。原音确定最后收尾原话后，逐张检查其后每两秒的原画面，保留无声的退出确认、标题/加载画面和游戏图层淡出；发现延后退出时，将最后游戏画面到纯聊天画面的过渡细化到 0.25 秒。仍有游戏、画面不明或没有足够后续证据时保持待核。验收重新计算结束点并校验所有收尾原帧的摘要，不能用“收尾说完”替代真正退出。已投稿包继续复用，不因协议升级另投。
 
-游戏文字检测默认使用 `streamGameClips.ai.provider=daiYu`，不受全局文字 provider 的覆盖；该默认路线的严格检测失败会保留错误，不自动切到付费 provider。章节、专名、文案及收尾画面核验也默认使用 `daiYu` 的 `openai_chat`，可通过 `frameProvider/frameApiMode/frameModel` 显式配置。模型默认取所选 provider 的文字模型，其次使用游戏模型；生产配置明确指定 `gpt-6.1-sol`。缺少 daiYu 凭据或地址时停止并保留失败，不把它的请求发往 tuZi。缓存分别绑定服务、模型、协议、原媒体身份和证据窗口。
+游戏文字检测默认使用 `streamGameClips.ai.provider=daiYu`，不受全局文字 provider 的覆盖；该默认路线的严格检测失败会保留错误。章节、专名、文案及开场/收尾画面核验通过 `ai.frameModelProfile: "pro"` 使用共享路线：带鱼 `gpt-6.1-sol` → 智谱 `glm-5.3` → DeepSeek `deepseek-flash`，媒体请求统一用 `openai_chat`。各站使用自己的凭据，保留所有原帧和本地独立转写，不追加 luna 或 tuZi。未配置 profile 时仍兼容 `frameProvider/frameApiMode/frameModel` 的固定路线。缓存绑定已解析的整条路线、原媒体身份和证据窗口；失败或结果不确定仍保留待核。
 
 `ai.boundaryEvidenceMethod` 默认是 `independent_local_asr`：协议 10 / 复核 v4 先从原录播提取起止音频，单独运行本地 Paraformer，不向听写提供源 SRT、检测结论或改词规则，再用独立转写与原帧交给上述画面 provider 判断启动和收尾。图片模型只收到转写和图片，不能宣称听过原音。开/看/卡等开局动词歧义另取原音短段重听；未解决的歧义保留待核。程序将同一原话分别绑定到新听写与源 SRT 的唯一连续句，两个边界时间相差超过三秒会拒绝。音频、提取参数、源媒体身份、听写与出处文件都有摘要，投稿验收重新读取这些证据及所有章节/收尾原帧。需要其他原生音频服务时，须显式选择 `native_audio` 并配置 `boundaryProvider/boundaryApiMode/boundaryModel`；不会因本地 ASR 失败自动启用 tuZi。v3 的非原生音频诊断仍不能投稿，不能只改方法字段来升级旧诊断。
 

@@ -581,6 +581,10 @@ export interface ImageGenerationConfig {
     statusCodes?: number[]; retryConnectionErrors?: boolean;
   }
   export interface TextAIConfig {
+    defaultProfile?: 'flash' | 'pro';
+    profiles?: Partial<Record<'flash' | 'pro', { routes: Array<{
+      provider: 'daiYu' | 'zai' | 'deepSeek' | 'tuZi'; model: string; apiMode: 'responses' | 'chatCompletions';
+    }> }>>;
     retry?: TextRetryConfig;
   enabled: boolean;
   provider: 'gemini' | 'openai' | 'claude' | 'daiYu' | 'tuZi' | 'zai';
@@ -803,6 +807,7 @@ export interface ClipTopicsConfig {
     maxEvidenceChars?: number;
   };
   review?: {
+    modelProfile?: 'flash' | 'pro';
     enabled?: boolean;
     mode?: 'shadow' | 'preflight';
     strategy?: 'single' | 'staged' | 'audited';
@@ -955,7 +960,7 @@ export interface StreamActivityClipsConfig {
   contextSeconds?: number;
   maxEvidenceChars?: number;
   ai?: { model?: string; boundaryModel?: string; timeoutMs?: number; maxTokens?: number };
-  verification?: { enabled?: boolean; provider?: 'tuZi' | 'gemini'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; contextSeconds?: number; maxAudioSeconds?: number; timeoutMs?: number;
+  verification?: { enabled?: boolean; modelProfile?: 'flash' | 'pro'; provider?: 'tuZi' | 'gemini' | 'daiYu' | 'zai' | 'deepSeek'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; contextSeconds?: number; maxAudioSeconds?: number; timeoutMs?: number;
     boundaryContextSeconds?: number; batchMaxEvents?: number; batchMaxAudioSeconds?: number; maxBatchRequests?: number; boundaryTimeoutMs?: number;
     preludeReviewVersion?: 3;
     nativeListening?: { version: 1; protocolVersion?: 2 | 3; model: string } };
@@ -986,6 +991,7 @@ export interface StreamGameClipsConfig {
   ai?: { model?: string; boundaryEvidenceMethod?: 'native_audio' | 'independent_local_asr';
     boundaryModel?: string; boundaryProvider?: 'tuZi' | 'gemini' | 'daiYu';
     boundaryApiMode?: 'gemini_native' | 'openai_chat'; frameModel?: string; frameProvider?: 'tuZi' | 'gemini' | 'daiYu';
+    frameModelProfile?: 'flash' | 'pro'; boundaryModelProfile?: 'flash' | 'pro';
     frameApiMode?: 'gemini_native' | 'openai_chat'; timeoutMs?: number; maxTokens?: number };
   visual?: { provider?: 'tuZi' | 'gemini' | 'daiYu'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string;
     sampleSeconds?: number; aiSampleSeconds?: number; aiOtherSampleSeconds?: number; aiBoundaryPaddingSeconds?: number;

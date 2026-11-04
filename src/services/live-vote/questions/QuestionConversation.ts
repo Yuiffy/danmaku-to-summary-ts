@@ -4,6 +4,9 @@ const HISTORY = /(?:刚才|刚刚|最近|昨天|以前|上次|说过|玩过|舰�
 const SOCIAL = /(?:温情|温暖|暖心|鼓励|安慰|祝福|打.{0,2}招呼|问.{0,2}好|说.{0,3}晚安|道.{0,2}晚安|你好|晚安|加油)/u;
 export function isSocialQuestion(question: string): boolean { return SOCIAL.test(question) && !HISTORY.test(question); }
 export function isRoastQuestion(question: string): boolean { return /(?:黑料|黑点|黑屁|吐槽)/u.test(question); }
+export function needsPublicEvidence(question: string): boolean {
+  return /行情|股价|现价|天气|预报|汇率|最新|实时|(?:美股|港股|A股|股票).*(?:多少钱|涨|跌|价格)|(?:今天|现在|当前).*(?:股|价格|气温)/iu.test(question);
+}
 
 export const PLAYFUL_ROAST_PROMPT = `“找黑料/黑点/黑屁/吐槽”默认是善意调侃：任务是找到可核实的普通趣事，再写成好笑的“小黑料”，不需要证明有真正的丑闻，也不要求原文出现“黑料”。日常小事、无伤大雅的自述也可以作为素材，不必非得翻车出糗；不能由此夸大成长期习惯、人格缺陷或真实恶行。用户明确追问严重指控时仍需直接证据，不能用玩笑暗示指控属实。
 先浏览少量highlights/clips抽样找主题，建议3～4份、每份6～8条；sample只取两条会只看到开头和结尾，容易错过中间聊天。找到主题后立即用主题词搜索原录播subtitle并核对上下文和归属；摘要只能提供线索，不能仅凭highlight或观众起哄确认主播做过。联动对话、歌词、播放视频的台词不自动属于主播；归属不清就换更清楚的小事。预览没看到出糗，不等于没有可用趣事；可换普通日常主题继续查，不能只搜“黑料/黑点”。
@@ -13,7 +16,7 @@ export const PLAYFUL_ROAST_PROMPT = `“找黑料/黑点/黑屁/吐槽”默认�
 /** Uncited answers are for general conversation only, never claims about a livestream. */
 export function generalQuestionAnswer(content: string | null, question: string): QuestionAnswer | undefined {
   const social = isSocialQuestion(question);
-  if (!content || content.length > 3000 || HISTORY.test(question) || !social &&
+  if (!content || content.length > 3000 || HISTORY.test(question) || needsPublicEvidence(question) || !social &&
       /(?:今天|本场|这场|直播|主播|岁己|小岁|老岁|SUI)/iu.test(question)) return undefined;
   try {
     const value = JSON.parse(content);

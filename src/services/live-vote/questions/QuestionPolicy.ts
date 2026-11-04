@@ -2,6 +2,7 @@ import * as path from 'path';
 import { EmbeddingConfig } from './EmbeddingClient';
 import { DanmakuAttribution } from './DanmakuEvidence';
 import { RecordingFtsConfig } from './RecordingFtsIndex';
+import { StockQuote } from './StockSearch';
 
 export interface LiveQuestionConfig {
   enabled: boolean;
@@ -30,23 +31,28 @@ export interface QuestionRequest {
 }
 
 export interface QuestionSource extends DanmakuAttribution {
-  kind: 'subtitle' | 'danmaku' | 'gift-catalog' | 'highlight' | 'clip-subtitle';
+  kind: 'subtitle' | 'danmaku' | 'gift-catalog' | 'highlight' | 'clip-subtitle' | 'public-search' | 'live-overview';
   date: string | null;
   time: string;
   roomId?: string;
   roomName?: string;
   catalogMonth?: string;
+  provider?: string;
+  title?: string;
+  retrievedAt?: string;
 }
 export interface QuestionClue extends QuestionSource {
   excerpt: string;
 }
 
 export interface QuestionAnswer {
-  basis?: 'general';
+  basis?: 'general' | 'public';
   answer: string;
   shortAnswer?: string;
   source?: QuestionSource;
   clues?: QuestionClue[];
+  /** Structured public quotes let the danmaku channel retain concrete values. */
+  publicQuotes?: StockQuote[];
 }
 
 export type QuestionAnswerer = (request: QuestionRequest, signal: AbortSignal) => Promise<QuestionAnswer>;
@@ -64,6 +70,7 @@ export const QUESTION_LIMITS = {
 } as const;
 
 export const NO_EVIDENCE = '没在录像字幕和弹幕中找到可靠依据。';
+export const NO_PUBLIC_EVIDENCE = '本次公开资料查询未找到足够依据，可换个关键词或补充具体对象。';
 
 export function validateQuestionConfig(config: LiveQuestionConfig): void {
   if (!config || typeof config.enabled !== 'boolean') throw new Error('questions.enabled must be boolean');
@@ -164,6 +171,34 @@ export function formatQuestionAnswer(result: QuestionAnswer, maxChars: number): 
   return chars.length > maxChars ? chars.slice(0, maxChars - 1).join('') + '…' : chars.join('');
 }
 
+function quoteTicker(quote: StockQuote): string {
+  if (quote.symbol === 'usINX') return '标普';
+  return quote.symbol.replace(/^(?:us|hk|sh|sz|bj)/u, '') || quote.name;
+}
+
+function quoteNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)));
+}
+
+function quotePercent(value: number | null, decimals = 1): string {
+  if (value == null) return '?%';
+  const rounded = Number(value.toFixed(decimals));
+  return `${rounded > 0 ? '+' : ''}${rounded}%`;
+}
+
+/** Format structured public quotes as bounded, concrete danmaku rows. */
+export function formatQuestionAnswerParts(result: QuestionAnswer, maxChars: number): string[] {
+  const quotes = result?.publicQuotes?.slice(0, 5) || [];
+  if (!quotes.length) return [formatQuestionAnswer(result, maxChars)];
+  const prefix = '鹿饼答：';
+  const labels = quotes.map(quoteTicker);
+  const detailed = (decimals: number) => quotes.map((quote, index) => `${labels[index]}${quotePercent(quote.changePercent, decimals)}`).join(' ');
+  const candidates = [`参考 ${detailed(1)}`, `参考 ${detailed(0)}`, detailed(1), detailed(0),
+    quotes.map((quote, index) => `${labels[index].slice(0, 1)}${quotePercent(quote.changePercent)}`).join('')];
+  const selected = candidates.find(candidate => Array.from(prefix + candidate).length <= maxChars);
+  return [Array.from(prefix + (selected || candidates.at(-1)!)).slice(0, maxChars).join('')];
+}
+
 export function formatQuestionRecord(record: QuestionRecord): string {
   const lines = [
     `直播问答（房间${record.request.roomId}）`,
@@ -172,16 +207,20 @@ export function formatQuestionRecord(record: QuestionRecord): string {
     record.result.basis === 'general' ? '一般回答，不涉及直播事实。' : '线索：'
   ];
   const clues = record.result.clues || (record.result.source ? [{ ...record.result.source, excerpt: '' }] : []);
-  for (const [index, clue] of clues.slice(0, 3).entries()) {
+  for (const [index, clue] of clues.slice(0, 5).entries()) {
     const text = publicQuestionText(clue.excerpt, 300);
+    if (clue.kind === 'public-search') {
+      lines.push(`${index + 1}. 公开资料 ${publicQuestionText(clue.provider || '', 60)} ${publicQuestionText(clue.title || '', 100)}（查询时间${clue.date || '不详'} ${clue.time}，北京时间；非数据发生时间）${text ? `：${text}` : ''}`);
+      continue;
+    }
     const room = clue.roomId ? `${publicQuestionText(clue.roomName || clue.roomId, 60)}（${clue.roomId}） ` : '';
-    const kind = clue.kind === 'gift-catalog' ? `舰礼档案（所属月${clue.catalogMonth || '不详'}）` : clue.kind === 'subtitle' ? '录像字幕' : clue.kind === 'highlight' ? '精选摘要（粗略线索）' : clue.kind === 'clip-subtitle' ? '切片字幕（切片内时间）' : clue.messageType === 'superchat' ? '观众SC' : '观众弹幕';
+    const kind = clue.kind === 'live-overview' ? '直播概述（生成资料，非原话）' : clue.kind === 'gift-catalog' ? `舰礼档案（所属月${clue.catalogMonth || '不详'}）` : clue.kind === 'subtitle' ? '录像字幕' : clue.kind === 'highlight' ? '精选摘要（粗略线索）' : clue.kind === 'clip-subtitle' ? '切片字幕（切片内时间）' : clue.messageType === 'superchat' ? '观众SC' : '观众弹幕';
     const sender = publicQuestionText(clue.senderName || '', 80);
     const uid = clue.senderUid && /^[1-9]\d*$/u.test(clue.senderUid) ? clue.senderUid : '';
     const sentAt = clue.sentAt && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$/u.test(clue.sentAt) ? clue.sentAt.slice(0, 19).replace('T', ' ') : '';
     const details = [sender && `发送者${sender}`, uid && `UID ${uid}`, sentAt && `${clue.sentAtBasis === 'recording_start' ? '按录制起点推算' : '发送时间'}${sentAt}（北京时间）`].filter(Boolean).join('；');
     lines.push(`${index + 1}. ${room}${clue.date || '日期不详'} ${clue.time} ${kind}${details ? `（${details}）` : ''}${text ? `：${text}` : ''}`);
   }
-  if (!clues.length && record.result.basis !== 'general') lines.push('在已检索的直播记录中没有找到可靠依据。');
+  if (!clues.length && record.result.basis !== 'general') lines.push(record.result.basis === 'public' ? '本次公开查询没有可引用结果。' : '在已检索的直播记录中没有找到可靠依据。');
   return lines.join('\n');
 }

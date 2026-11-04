@@ -54,6 +54,7 @@ export const workflowEntries: Record<string, string> = {
   'clipping/quantityEvidence': 'workflows/clipping/quantityEvidence.js',
   'ai/usage': 'workflows/ai/usage.js',
   'text/response': 'workflows/text/response.js',
+  'text/profiles': 'workflows/text/profiles.js',
   'text/requests': 'workflows/text/requests.js',
   'summary/diagnostics': 'workflows/summary/diagnostics.js',
   'config/layers': 'core/config/ConfigLayers.js'

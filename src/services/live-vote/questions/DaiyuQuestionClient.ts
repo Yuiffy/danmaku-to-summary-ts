@@ -7,6 +7,7 @@ import { QuestionCorpus } from './QuestionCorpus';
 import { createRemoteEmbedder } from './EmbeddingClient';
 import { createLocalEmbedder } from './LocalEmbedding';
 import { getProjectRoot } from '../../../core/config/ProjectPaths';
+import { createPublicSearchFactory, PublicSearchFactory } from './PublicSearchRuntime';
 
 interface DaiyuSettings { apiKey: string; url: string; proxy?: string }
 function object(value: unknown): ConfigObject {
@@ -46,6 +47,7 @@ export function createDaiyuQuestionCompletion(settings: DaiyuSettings, transport
         body: JSON.stringify({
           model: 'gpt-6-luna', messages: request.messages,
           tools: QUESTION_TOOLS,
+          ...(request.phase === 'review' ? { response_format: { type: 'json_object' } } : {}),
           tool_choice: request.toolChoice, parallel_tool_calls: false, max_tokens: 2048
         })
       });
@@ -67,7 +69,12 @@ export function createLiveQuestionAnswerer(config?: LiveQuestionConfig, botUid?:
   validateQuestionConfig(config);
   if (!config.enabled) return undefined;
   let settings: DaiyuSettings;
-  try { settings = questionProviderSettings(loadConfigLayers({ configPath: config.providerConfigPath })); }
+  let publicSearch: PublicSearchFactory;
+  try {
+    const providerConfig = loadConfigLayers({ configPath: config.providerConfigPath });
+    settings = questionProviderSettings(providerConfig);
+    publicSearch = createPublicSearchFactory(config.providerConfigPath, settings.proxy);
+  }
   catch { throw new Error('Unable to load daiYu question provider configuration'); }
   const complete = createDaiyuQuestionCompletion(settings);
   return async (request, signal) => {
@@ -82,7 +89,7 @@ export function createLiveQuestionAnswerer(config?: LiveQuestionConfig, botUid?:
         if (step.phase === 'model') { modelMs += step.elapsedMs; modelTurns++; }
         else toolMs += step.elapsedMs;
         console.info('[question step]', JSON.stringify({ roomId: request.roomId, askedAt: request.askedAt, ...step }));
-      });
+      }, publicSearch(signal));
       status = result.answer === NO_EVIDENCE ? 'no-evidence' : 'answered';
       return result;
     } catch (error) {

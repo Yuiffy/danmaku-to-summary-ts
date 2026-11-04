@@ -14,6 +14,7 @@ const { acquireCandidateLock } = require('./render_topic_candidate');
 const { sourceSnapshot, fileDigest, RENDERED_CLIP_MODES, sourceEvidenceHash, readRenderedSourceEvidence } = require('./review_rendered_clip');
 
 const { adapter, checkedDraft, revisionEvidence } = require('./clipping/rendered_revision_evidence');
+const { resolvePythonBin } = require('./clipping/python_bin');
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const pending = metadata => Boolean(metadata.rebuildRequired);
@@ -348,7 +349,7 @@ async function renderRevision(metadataPath, options, config = require('./config-
             rendered: { window: { start: updated.window.start, end: updated.window.end },
                 video: fileDigest(updated.output.mediaPath), subtitles: fileDigest(updated.output.srtPath) } };
         writeJsonAtomic(staging, updated);
-        const audit = childProcess.spawnSync('python', [path.join(__dirname, 'audit_bilibili_clip.py'),
+        const audit = childProcess.spawnSync(resolvePythonBin('python'), [path.join(__dirname, 'audit_bilibili_clip.py'),
             '--video', updated.output.mediaPath, '--srt', updated.output.srtPath, '--metadata', staging,
             '--cover', updated.output.coverPath, '--strict-warnings'],
         { encoding: 'utf8', windowsHide: true, timeout: 120000 });

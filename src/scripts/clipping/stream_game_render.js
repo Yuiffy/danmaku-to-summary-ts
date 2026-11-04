@@ -15,13 +15,14 @@ const { repairUnsupportedChapters } = require('./stream_game_editorial');
 const { buildParts, sha, includedRanges, mergeEvents } = require('./stream_game_plan');
 const { selectFocus, cleanLabel } = require('./stream_game_focus');
 const { loadAudience } = require('./stream_game_audience');
+const { resolvePythonBin } = require('./python_bin');
 const execFileAsync = promisify(execFile);
 const scripts = path.resolve(__dirname, '..');
 
 async function accountCapabilities(options, directory) {
     if (options.capabilities) return options.capabilities;
     const state = path.join(directory, 'temp', 'upload-capabilities.json');
-    const result = await execFileAsync('python', [path.join(scripts, 'bilibili_upload_capabilities.py'), '--state', state],
+    const result = await execFileAsync(resolvePythonBin('python'), [path.join(scripts, 'bilibili_upload_capabilities.py'), '--state', state],
         { windowsHide: true, shell: false, timeout: 120000, maxBuffer: 1024 * 1024 });
     return JSON.parse(result.stdout.trim());
 }
@@ -54,7 +55,7 @@ function singleParts(events, config, capabilities) {
 
 async function registerBundles(bundles, manifestPath, plan, options, config) {
     if (options.registerUpload === false || !bundles.length) return;
-    const result = await execFileAsync('python', [path.join(scripts, 'clip_upload_registry.py'), 'import-json', '--manifest', manifestPath, '--include-pending'],
+    const result = await execFileAsync(resolvePythonBin('python'), [path.join(scripts, 'clip_upload_registry.py'), 'import-json', '--manifest', manifestPath, '--include-pending'],
         { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
     const registered = JSON.parse(result.stdout.split('REGISTRY_RESULT:')[1].trim());
     const ids = Object.values(registered.clipIdsByReviewIndex);
@@ -62,7 +63,7 @@ async function registerBundles(bundles, manifestPath, plan, options, config) {
         .filter(([index]) => !['uploaded', 'queued', 'uploading'].includes(registered.clipStatusByReviewIndex[index])).map(([, id]) => id);
     if (options.enqueue || config.autoUpload) {
         if (bundles.some(row => !row.uploadReady)) throw new Error('Game upload cannot be queued before content review');
-        if (pendingIds.length) await execFileAsync('python', [path.join(scripts, 'clip_upload_registry.py'), 'enqueue', '--ids', pendingIds.join(','), '--timeout-seconds', '14400',
+        if (pendingIds.length) await execFileAsync(resolvePythonBin('python'), [path.join(scripts, 'clip_upload_registry.py'), 'enqueue', '--ids', pendingIds.join(','), '--timeout-seconds', '14400',
             '--batch-size', '1', '--note', options.authorizationNote || config.authorizationNote],
         { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
     }
@@ -213,7 +214,16 @@ async function renderGames(plan, options, config, files) {
             ...excluded.map(e => ({ start: e.start, end: e.end }))];
     }
     const uncertain = plan.events.filter(e => e.verification?.decision === 'uncertain' && !absorbed(e));
-    if (uncertain.length) throw new Error(`Game media review unresolved: ${uncertain.map(e => e.verification.reason).join('; ')}`);
+    // A short ambiguous island (mostly chat where offscreen play cannot be fully ruled out)
+    // is dropped with a note instead of wedging the whole recording; only a large
+    // unverified stretch still fails the export.
+    const droppedIslands = uncertain.filter(e => e.end - e.start <= 600);
+    for (const event of droppedIslands) {
+        event.verification.decision = 'exclude';
+        event.verification.exclusionNote = '复核无法完全排除画面外游戏/闲聊歧义，短片段按保守剔除处理，不阻塞整场导出';
+    }
+    const blocking = uncertain.filter(e => e.end - e.start > 600);
+    if (blocking.length) throw new Error(`Game media review unresolved: ${blocking.map(e => e.verification.reason).join('; ')}`);
     if (!accepted.length) return { status: 'no_verified_gameplay', planPath: files.plan };
     // A frame-read name is literal OCR and can swap one glyph (斧老大 → 斧光大). Chat and
     // subtitles spell it correctly over and over, so settle the spelling before the parts,
@@ -294,7 +304,7 @@ async function renderGames(plan, options, config, files) {
                 writeJsonAtomic(metadataPath, row);
                 const note = options.authorizationNote || config.authorizationNote;
                 if (note) {
-                    await execFileAsync('python', [path.join(scripts, 'stream_game_review.py'), '--metadata', metadataPath,
+                    await execFileAsync(resolvePythonBin('python'), [path.join(scripts, 'stream_game_review.py'), '--metadata', metadataPath,
                         '--authorization-note', note, ...(config.autoUpload ? ['--automatic'] : [])],
                     { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 1024 * 1024 });
                     Object.assign(row, JSON.parse(fs.readFileSync(metadataPath, 'utf8')));
