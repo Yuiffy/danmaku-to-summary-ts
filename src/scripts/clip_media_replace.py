@@ -9,22 +9,59 @@ import uuid
 from pathlib import Path
 
 
-def validate_replacement_revision(metadata, clip_id):
-    if metadata.get('uploadId') != clip_id or metadata.get('ownStreamHumanReview'):
+def validate_replacement_revision(metadata, clip_id, previous=None):
+    feedback = metadata.get('ownStreamHumanReview') or {}
+    if (metadata.get('uploadId') != clip_id
+            or feedback and (feedback.get('acceptanceMode') != 'feedback' or feedback.get('clipId') != clip_id)):
         raise ValueError('A same-ID independently reviewed revision is required')
     if metadata.get('renderedTimingRepair'):
         return
     revision = metadata.get('renderedSubtitles') or {}
     output = metadata.get('output') or {}
+    window_revision = (previous and previous.get('uploadId') == clip_id
+        and any(previous.get('window', {}).get(key) != metadata.get('window', {}).get(key) for key in ('start', 'end'))
+        and previous.get('output', {}).get('mediaPath') != output.get('mediaPath')
+        and revision.get('sourceSnapshot') == previous.get('renderedSubtitles', {}).get('sourceSnapshot')
+        and revision.get('sourceSha256') == previous.get('renderedSubtitles', {}).get('sourceSha256')
+        and revision.get('window') == {key: metadata.get('window', {}).get(key) for key in ('start', 'end')})
     if (metadata.get('rebuildRequired') or revision.get('clipId') != clip_id
-            or not isinstance(revision.get('revision'), int) or revision['revision'] < 1
+            or not isinstance(revision.get('revision'), int) or revision['revision'] < (0 if window_revision else 1)
             or revision.get('renderedRevision') != revision['revision']
-            or not revision.get('edits') or not revision.get('sha256')
+            or not (revision.get('edits') or window_revision) or not revision.get('sha256')
             or revision.get('renderedSha256') != revision['sha256']):
         raise ValueError('A completed same-ID subtitle revision is required')
+    if window_revision and (not revision.get('sourceSnapshot') or not revision.get('sourceSha256')):
+        raise ValueError('Window replacement requires unchanged original source evidence')
     for file in (revision.get('path'), output.get('srtPath')):
         if not file or hashlib.sha256(Path(file).read_bytes()).hexdigest() != revision['sha256']:
             raise ValueError('Rendered subtitle revision changed; rebuild before replacement')
+
+
+def previous_uploaded_metadata(clip, metadata_path):
+    """Use immutable revision history matching the actual published media receipt."""
+    published = (clip.get('uploadState') or {}).get('mediaPath')
+    root = metadata_path.parent / 'subtitle_revisions' / str(clip['id']) / 'history'
+    for file in root.glob('*.json'):
+        raw = file.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != file.stem:
+            continue
+        previous = json.loads(raw)
+        if previous.get('output', {}).get('mediaPath') == published:
+            return previous
+    return None
+
+
+def validate_replacement_review(metadata):
+    try:
+        from .clip_qa import validate_metadata_qa
+        from .clip_auto_publication import validate_publication_review
+    except ImportError:
+        from clip_qa import validate_metadata_qa
+        from clip_auto_publication import validate_publication_review
+    if (metadata.get('ownStreamHumanReview') or {}).get('acceptanceMode') == 'feedback':
+        validate_metadata_qa(metadata)
+    else:
+        validate_publication_review(metadata)
 
 
 def edit_payload(detail, uploaded, cover, metadata):
@@ -120,7 +157,7 @@ async def replace_existing(clip, metadata, directory, auth_path):
     if metadata.get('type') == 'social_post_video':
         validate_social_post_review(metadata)
     else:
-        validate_publication_review(metadata)
+        validate_replacement_review(metadata)
     payload = edit_payload(current, uploaded, cover, metadata)
     editor = VideoEditor(bvid, payload, credential=credential)
     write('EDIT.json', copy.deepcopy(payload))  # Before _submit adds CSRF; never persist credentials.
@@ -164,8 +201,8 @@ def run(args, api):
             else:
                 validate_social_post_revision(original, metadata)
         else:
-            validate_replacement_revision(metadata, args.id)
-            validate_publication_review(metadata)
+            validate_replacement_revision(metadata, args.id, previous_uploaded_metadata(clip, Path(clip['metadataPath'])))
+            validate_replacement_review(metadata)
         if not args.note.strip():
             raise ValueError('A substantive replacement note is required')
         previous = clip.get('mediaReplacement') or {}

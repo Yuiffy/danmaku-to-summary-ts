@@ -15,11 +15,14 @@ export class AdminFeedbackSession {
   private queued = false;
   private songEvidencePath?: string;
   private boundaryAttempts = 0;
+  private sourceReads: string[] = [];
+  private readonly originalStart: number;
   constructor(readonly id: string, readonly note: string, revision: string,
     private readonly edits: Record<string, unknown>, private readonly clips: AdminClipStore,
     private readonly run: CommandRunner, private readonly output: (text: string) => void,
     private readonly update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
     private readonly assertEditable: () => void, readonly directFeedback = false) { this.expected = revision;
+        this.originalStart = this.clips.detail(this.id).source.start;
         try {
             const fs = require('fs'), path = require('path');
             const logDir = path.join(String((this.clips as unknown as { root: string }).root), 'data/runtime/admin');
@@ -50,7 +53,20 @@ export class AdminFeedbackSession {
       ...(detail.category === 'activity' ? { activities: this.clips.feedbackDetail(this.id).evidence.activities } : {}),
       reviewed: this.reviewed, ready: this.ready() };
   }
-  context(): ReturnType<AdminClipStore['feedbackDetail']> { this.validate(); return this.clips.feedbackDetail(this.id); }
+  context(): ReturnType<AdminClipStore['feedbackDetail']> {
+    this.validate();
+    const detail = this.clips.feedbackDetail(this.id);
+    if (this.sourceReads.length) detail.source.subtitles = [...this.sourceReads, detail.source.subtitles].join('\n\n');
+    return detail;
+  }
+  readSourceContext(start: number, end: number): string {
+    this.validate();
+    if (this.clips.detail(this.id).category !== 'clip') throw new AdminError('活动包请使用对应活动上下文');
+    const text = this.clips.feedbackSourceSubtitles(this.id, start, end);
+    if (this.sourceReads.join('').length + text.length > 100000) throw new AdminError('本次原片上下文已达读取上限');
+    this.sourceReads.push(text);
+    return text;
+  }
   async repairBoundaries(reviewPrelude = false, reviewAudio = false): Promise<Record<string, unknown>> {
     this.validate();
     const detail = this.clips.feedbackDetail(this.id);
@@ -119,8 +135,8 @@ export class AdminFeedbackSession {
   async revise(raw: unknown, humanReview = false): Promise<Record<string, unknown>> {
     this.validate();
     if (++this.attempts > 3) throw new AdminError('本次已完成三轮修改复核，仍未解决的问题已保存');
-    const initial = this.clips.feedbackDetail(this.id);
-    const plan: FeedbackPlan = { ...parseFeedbackPlan(JSON.stringify(raw), initial, this.note), ...this.edits };
+    const initial = this.context();
+    const plan: FeedbackPlan = { ...parseFeedbackPlan(JSON.stringify(raw), initial, this.note, this.originalStart), ...this.edits };
     if (plan.blockedReason) throw new AdminError(plan.blockedReason);
     const missing = missingFeedbackFields(plan, initial, this.directFeedback);
     if (!humanReview && missing.length) throw new AdminError(`修改计划缺少：${missing.join('；')}`);

@@ -13,8 +13,8 @@ const schema = (properties: Record<string, unknown> = {}, required: string[] = [
 const tool = (name: string, description: string, parameters = schema()) => ({ type: 'function' as const, function: { name, description, parameters } });
 export const FEEDBACK_TOOLS = [
   tool('inspect_clip', '读取此切片当前标题、修改状态和真实审核问题。'),
-  tool('read_source_context', '读取此切片或指定歌曲附近原字幕；用 query 筛选线索，保留原编号和绝对时间。', schema({
-    activityId: { type: 'string' }, query: { type: 'string', maxLength: 100 } })),
+  tool('read_source_context', '读取原字幕。普通切片默认仅前后 3 分钟；找不到用户指定的起因/收尾时，必须用 start/end 读取更早或更晚的原录播绝对秒数，每次最多 900 秒，再据已读原文改窗。query 只筛选返回线索。', schema({
+    activityId: { type: 'string' }, query: { type: 'string', maxLength: 100 }, start: { type: 'number' }, end: { type: 'number' } })),
   tool('identify_song_names', '结合本活动附近报幕、弹幕点歌和实际歌词，搜索歌曲目录并交叉核对多句歌词。只识别作品，不批准演唱者或边界。', schema({ activityId: { type: 'string' } })),
   tool('repair_activity_boundaries', '独立复核待核活动的原音和画面并重新制作，保留原 ID 和预算。歌曲混入试听/播放时使用 reviewPrelude；已因听写无法区分播放/现场演唱而待核，可同时 reviewAudio 请求已配置 Gemini 补听实际原音。每次反馈最多一次；修复后仍需 revise_and_review 完整复核。', schema({ reviewPrelude: { type: 'boolean' }, reviewAudio: { type: 'boolean' } })),
   tool('revise_and_review', '执行完整修改计划，然后制作并独立复核当前成片。返回真实状态和问题，需据此继续修改。不得把自己推理当成人工核听或审核。', schema({ plan: schema({
@@ -71,7 +71,9 @@ export function createFeedbackAgent(complete: FeedbackCompletion): FeedbackAgent
           if (args.query !== undefined && (typeof args.query !== 'string' || args.query.length > 100)) throw new AdminError('检索词无效');
           const event = args.activityId && detail.evidence.activities?.find((row: any) => row.id === args.activityId);
           if (args.activityId && !event) throw new AdminError('活动 ID 不属于本次切片');
-          const rows = detail.category === 'activity' ? detail.evidence.titleContext || [] : subtitleRows(detail.source.subtitles);
+          const ranged = args.start !== undefined || args.end !== undefined;
+          const rows = ranged ? subtitleRows(session.readSourceContext(args.start, args.end))
+            : detail.category === 'activity' ? detail.evidence.titleContext || [] : subtitleRows(detail.source.subtitles);
           const selected = rows.filter((row: any) => (!event || row.end >= event.start - 300 && row.at <= event.end + 60)
             && (!args.query || row.text.includes(args.query)));
           result = { rows: selected.slice(0, 250), total: selected.length, truncated: selected.length > 250 };

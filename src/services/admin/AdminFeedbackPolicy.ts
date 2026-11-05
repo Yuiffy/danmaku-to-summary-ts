@@ -105,7 +105,7 @@ existingActivityTitles 是已保存的名称修订及原文引用，不是整包
       existingActivityTitles: detail.evidence.existingActivityTitles, titleContext: detail.evidence.titleContext } })}`;
 }
 
-export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string): FeedbackPlan {
+export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string, originalStart = detail.source.start): FeedbackPlan {
   let value: any;
   try { value = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')); }
   catch { throw new AdminError('修改计划不是有效 JSON；意见已保存，未入队'); }
@@ -139,9 +139,13 @@ export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string)
   }
   if (value.sourceKind !== undefined && !['live_speech', 'recount', 'playback', 'audience'].includes(value.sourceKind)) throw new AdminError('修改计划的内容归属无效');
   if (value.start !== undefined || value.end !== undefined) {
-    const rows = subtitleRows(detail.source.subtitles);
+    const rows = subtitleRows(detail.source.subtitles).sort((a, b) => a.at - b.at);
     if (!rows.length || !Number.isFinite(value.start) || !Number.isFinite(value.end) || value.start < rows[0].at
       || value.end > rows[rows.length - 1].end || value.end <= value.start) throw new AdminError('修改边界超出已提供的原片证据');
+  }
+  if (detail.category === 'clip' && /往前切|向前扩|提前开始|更早开始/u.test(note)
+    && !((value.start ?? detail.source.start) < originalStart)) {
+    throw new AdminError('用户要求从更早处开始，必须读取对应原片上下文并实际提前起点；不能沿用原起点投稿');
   }
   const confirmed = confirmedNameCorrections(detail, note);
   if (value.corrections !== undefined) {

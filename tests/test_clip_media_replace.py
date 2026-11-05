@@ -6,10 +6,49 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from src.scripts.clip_media_replace import edit_payload, unchanged_archive, record_replacement, validate_replacement_revision
+from src.scripts.clip_media_replace import (edit_payload, unchanged_archive, record_replacement,
+    validate_replacement_revision, previous_uploaded_metadata, validate_replacement_review)
 
 
 class SubtitleReplacementRevisionTests(unittest.TestCase):
+    def test_window_replacement_requires_published_history_unchanged_source_and_rendered_current_srt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'clip.srt'; file.write_bytes(b'earlier complete story')
+            digest = hashlib.sha256(file.read_bytes()).hexdigest()
+            snapshot = {'mediaPath': 'source.flv', 'srtSha256': 'source-srt'}
+            metadata = {'uploadId': 7, 'window': {'start': 10, 'end': 90},
+                'output': {'srtPath': str(file), 'mediaPath': 'new.mp4'},
+                'ownStreamHumanReview': {'acceptanceMode': 'feedback', 'clipId': 7},
+                'renderedSubtitles': {'clipId': 7, 'revision': 0, 'renderedRevision': 0, 'edits': [],
+                    'sha256': digest, 'renderedSha256': digest, 'path': str(file),
+                    'sourceSnapshot': snapshot, 'sourceSha256': 'source', 'window': {'start': 10, 'end': 90}}}
+            previous = {'uploadId': 7, 'window': {'start': 60, 'end': 100}, 'output': {'mediaPath': 'old.mp4'},
+                'renderedSubtitles': {'sourceSnapshot': snapshot, 'sourceSha256': 'source'}}
+            validate_replacement_revision(metadata, 7, previous)
+            for change in (None, {**previous, 'uploadId': 8}, {**previous, 'window': metadata['window']},
+                           {**previous, 'renderedSubtitles': {'sourceSnapshot': snapshot, 'sourceSha256': 'changed'}}):
+                with self.assertRaises(ValueError):
+                    validate_replacement_revision(metadata, 7, change)
+            history = Path(temporary) / 'subtitle_revisions/7/history'; history.mkdir(parents=True)
+            raw = json.dumps(previous).encode()
+            saved = history / (hashlib.sha256(raw).hexdigest() + '.json'); saved.write_bytes(raw)
+            clip = {'id': 7, 'uploadState': {'mediaPath': 'old.mp4'}}
+            self.assertEqual(previous_uploaded_metadata(clip, Path(temporary) / 'metadata.json'), previous)
+            saved.write_bytes(raw + b' ')
+            self.assertIsNone(previous_uploaded_metadata(clip, Path(temporary) / 'metadata.json'))
+            file.write_bytes(b'changed after rendering')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                validate_replacement_revision(metadata, 7, previous)
+
+    def test_feedback_replacement_keeps_existing_bound_qa_instead_of_claiming_automatic_review(self):
+        metadata = {'ownStreamHumanReview': {'acceptanceMode': 'feedback'}}
+        with (patch('src.scripts.clip_qa.validate_metadata_qa', side_effect=ValueError('source changed')) as qa,
+              patch('src.scripts.clip_auto_publication.validate_publication_review') as automatic):
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                validate_replacement_review(metadata)
+            qa.assert_called_once_with(metadata)
+            automatic.assert_not_called()
+
     def test_waiting_batch_releases_published_id_but_running_and_forced_jobs_keep_ownership(self):
         from src.scripts.clip_candidate_queue import active_ids
         job = {'status': 'retry_wait', 'clipIds': [7, 8]}

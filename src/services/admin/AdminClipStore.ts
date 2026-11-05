@@ -191,6 +191,15 @@ export class AdminClipStore {
     }
     return detail;
   }
+  feedbackSourceSubtitles(id: string, start: number, end: number): string {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > 900) {
+      throw new AdminError('原片上下文需指定有效起止秒数，每次最多 15 分钟');
+    }
+    const clip = this.record(id), metadata = this.metadata(clip);
+    const file = this.checkedPath(metadata.source?.srtPath || clip.sourceSrtPath);
+    if (!file || path.extname(file).toLowerCase() !== '.srt') throw new AdminError('原片字幕不可用');
+    return sourceWindowSubtitles(readText(file), start, end);
+  }
   feedbackTitleInput(id: string, items: unknown[]): string {
     const data = { items }, file = path.join(this.root, 'data/runtime/admin/feedback-inputs', `${id}-${digest(JSON.stringify(data))}.json`);
     atomicJson(file, data); return file;

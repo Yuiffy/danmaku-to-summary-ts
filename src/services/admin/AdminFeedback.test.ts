@@ -119,6 +119,40 @@ it('returns the persisted boundary recovery failure to the editor after a failed
 const agentCall = (name: string, args: unknown = {}) => ({ content: null, tool_calls: [{ id: `call_${name}`,
   type: 'function', function: { name, arguments: JSON.stringify(args) } } as FeedbackToolCall] });
 
+it('reads an earlier same-recording window outside default context before applying earlier-start feedback', async () => {
+  let turn = 0;
+  const complete: FeedbackCompletion = jest.fn(async messages => {
+    if (turn++ === 0) return agentCall('inspect_clip');
+    if (turn === 2) return agentCall('read_source_context', { start: 10, end: 30, query: '弟子' });
+    if (turn === 3) {
+      expect(messages[messages.length - 1].content).toContain('吓破胆的弟子');
+      return agentCall('revise_and_review', { plan: { start: 10, end: 402 } });
+    }
+    return agentCall('enqueue_submission');
+  });
+  const f = fixture({}, complete, true), metadata = readJson(f.metadataPath);
+  fs.writeFileSync(f.srt, '1\n00:00:10,000 --> 00:00:12,000\n吓破胆的弟子\n\n2\n00:06:40,000 --> 00:06:42,000\n取得护腕\n');
+  metadata.source = { srtPath: f.srt }; metadata.window = { start: 400, end: 402 };
+  atomicJson(f.metadataPath, metadata);
+  expect(f.clips.feedbackDetail('3354').source.subtitles).not.toContain('吓破胆的弟子');
+  f.feedback.submit('3354', f.input('往前切，从寻找吓破胆的弟子开始')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['--start', '10', '--end', '402']));
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'enqueue']);
+  expect(() => f.clips.feedbackSourceSubtitles('3354', 0, 901)).toThrow('15 分钟');
+  expect(() => f.clips.feedbackSourceSubtitles('3354', -1, 10)).toThrow('有效');
+});
+
+it('does not publish earlier-start feedback when the plan retains the original start', async () => {
+  const f = fixture({ start: 400, end: 401 }, undefined, true), metadata = readJson(f.metadataPath);
+  fs.writeFileSync(f.srt, '1\n00:06:40,000 --> 00:06:42,000\n取得护腕\n');
+  metadata.source = { srtPath: f.srt }; metadata.window = { start: 400, end: 402 };
+  atomicJson(f.metadataPath, metadata);
+  f.feedback.submit('3354', f.input('往前切，从寻找弟子开始')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed' });
+  expect(f.run).not.toHaveBeenCalled();
+});
+
 it('continues after provider failure following a completed modification without repeating the modification or enqueue', async () => {
   const response = (name: string, args = {}) => ({ ok: true, json: async () => ({ status: 'completed', output: [
     { type: 'function_call', call_id: `call_${name}`, name, arguments: JSON.stringify(args) }
