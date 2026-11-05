@@ -390,4 +390,9 @@ Read [references/auto-selection.md](references/auto-selection.md) for the staged
 - Keep source attribution correct: SRT is streamer speech, XML is viewer reaction.
 - Verify the actual MP4 duration, subtitle first/last timestamps, and that subtitles are burned into the video.
 - Make public descriptions factual and concise; keep internal selection reasons out of the description.
+- Descriptions carry a clickable `@岁己SUI` mention plus the livestream room link and no
+  space.bilibili.com homepage link (the mention already leads there). `bilibili_upload.py`
+  appends `@岁己SUI  直播间：https://live.bilibili.com/<roomId>` automatically at upload
+  time and converts the mention into a desc_v2 type-2 node; do not hand-write the line,
+  and keep hand-written copies mention-free only when the room link is already present.
 - Use the user's requested naming convention. Do not silently turn an old clip into `【小岁】`, and do not silently upload an unapproved task.

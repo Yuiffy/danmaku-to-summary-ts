@@ -46,6 +46,36 @@ MENTION_UIDS = {
     '岁己SUI': 1954091502,
 }
 
+# Livestream room -> mention name. Used to append the "@昵称  直播间" line to
+# automatic clip descriptions at upload time. Per user policy (2026-11-05):
+# descriptions carry the clickable @mention + room link, and no
+# space.bilibili.com homepage link (the mention already leads there).
+MENTION_ROOM_IDS = {
+    '25788785': '岁己SUI',
+}
+
+
+def append_mention_and_room_line(
+    desc: str,
+    *,
+    room_id: Optional[str] = None,
+    streamer_name: Optional[str] = None,
+) -> str:
+    """Ensure an automatic clip desc ends with "@昵称  直播间：<room url>".
+
+    Idempotent: descriptions that already mention the streamer or already link
+    the room (e.g. hand-reviewed manual-clip copies) are returned unchanged.
+    """
+    name = str(streamer_name or '').strip()
+    if name not in MENTION_UIDS:
+        name = MENTION_ROOM_IDS.get(str(room_id or '').strip(), '')
+    room = str(room_id or '').strip()
+    if not name or not room:
+        return desc
+    if f'@{name}' in desc or f'live.bilibili.com/{room}' in desc:
+        return desc
+    return desc.rstrip() + f'\n@{name}  直播间：https://live.bilibili.com/{room}'
+
 
 def normalize_mention_spaces(desc: str, mention_uids=None) -> str:
     """Ensure every @昵称 in desc is followed by exactly two spaces."""
@@ -691,6 +721,10 @@ async def upload_video(
     print(f'[INFO] 标题: {title}')
     print(f'[INFO] 分区: {tid}')
     print(f"[INFO] 标签: {', '.join(tags)}")
+
+    # Automatic clips carry the clickable @mention + livestream room link
+    # (no homepage link); already-present mentions/links are left untouched.
+    desc = append_mention_and_room_line(desc, room_id=room_id, streamer_name=streamer_name)
 
     # Render "@昵称" mentions as clickable desc_v2 nodes (see MENTION_UIDS).
     desc = normalize_mention_spaces(desc)
