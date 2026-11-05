@@ -42,34 +42,111 @@ ROOM_ID_PATTERN = re.compile(r'(?:录制-|[\\/])(\d{5,})[-_]')
 # and the plain desc must contain "@昵称" followed by TWO spaces, because the
 # server flattens a type-2 node as "@昵称 " (one space) and rejects mismatched
 # descriptions with 21010 描述信息不合法.
-MENTION_UIDS = {
-    '岁己SUI': 1954091502,
+MENTION_SEED = {
+    # Verified manually (2026-11-05); consulted before any API call so the
+    # first uploads after a fresh checkout never depend on network weather.
+    '25788785': {'name': '岁己SUI', 'uid': 1954091502},
+    '1741667419': {'name': '十六萤Izayoi', 'uid': 1149064559},
 }
 
-# Livestream room -> mention name. Used to append the "@昵称  直播间" line to
-# automatic clip descriptions at upload time. Per user policy (2026-11-05):
-# descriptions carry the clickable @mention + room link, and no
-# space.bilibili.com homepage link (the mention already leads there).
-MENTION_ROOM_IDS = {
-    '25788785': '岁己SUI',
-}
+# Optional static overrides (room_id -> {'name', 'uid'}); wins over cache/API.
+MENTION_OVERRIDES: dict = {}
+
+MENTION_CACHE_PATH = os.path.join('data', 'runtime', 'bilibili_room_mentions.json')
+
+# Backward-compatible name -> uid view of the seed table; used as the default
+# mention map when a caller doesn't pass a resolved room mention.
+MENTION_UIDS = {entry['name']: entry['uid'] for entry in MENTION_SEED.values()}
 
 
-def append_mention_and_room_line(
-    desc: str,
-    *,
-    room_id: Optional[str] = None,
-    streamer_name: Optional[str] = None,
-) -> str:
+def datetime_now_iso() -> str:
+    return time.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+
+def _http_get_json(url: str, timeout: float = 6.0):
+    """GET JSON with a browser UA; returns None on any failure (never raises)."""
+    try:
+        import urllib.request
+        request = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': 'https://www.bilibili.com/',
+        })
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except Exception as error:
+        print(f'[WARN] mention resolve request failed: {error}')
+        return None
+
+
+def _fetch_room_mention(room_id: str) -> Optional[dict]:
+    """Resolve a live room to its streamer {'name', 'uid'} via Bilibili APIs."""
+    info = _http_get_json(
+        f'https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}')
+    uid = ((info or {}).get('data') or {}).get('uid')
+    if not uid:
+        return None
+    card = _http_get_json(f'https://api.bilibili.com/x/web-interface/card?mid={uid}')
+    name = (((card or {}).get('data') or {}).get('card') or {}).get('name')
+    if not name:
+        return None
+    return {'name': str(name), 'uid': int(uid)}
+
+
+def _load_mention_cache() -> dict:
+    try:
+        with open(MENTION_CACHE_PATH, encoding='utf-8') as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_mention_cache(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(MENTION_CACHE_PATH), exist_ok=True)
+        with open(MENTION_CACHE_PATH, 'w', encoding='utf-8') as handle:
+            json.dump(cache, handle, ensure_ascii=False, indent=1)
+    except Exception as error:
+        print(f'[WARN] mention cache write failed: {error}')
+
+
+def resolve_room_mention(room_id) -> Optional[dict]:
+    """Return {'name', 'uid'} for a livestream room, or None.
+
+    Resolution order: static overrides -> persistent cache
+    (data/runtime/bilibili_room_mentions.json) -> seed table -> live API
+    (result cached). Failures return None and never break the upload.
+    """
+    room = str(room_id or '').strip()
+    if not room:
+        return None
+    override = MENTION_OVERRIDES.get(room)
+    if override:
+        return override
+    cache = _load_mention_cache()
+    if isinstance(cache.get(room), dict) and cache[room].get('name') and cache[room].get('uid'):
+        return cache[room]
+    seed = MENTION_SEED.get(room)
+    if seed:
+        return seed
+    mention = _fetch_room_mention(room)
+    if mention:
+        mention['resolvedAt'] = datetime_now_iso()
+        cache[room] = mention
+        _save_mention_cache(cache)
+    return mention
+
+
+def append_mention_and_room_line(desc: str, *, room_id=None, mention=None) -> str:
     """Ensure an automatic clip desc ends with "@昵称  直播间：<room url>".
 
     Idempotent: descriptions that already mention the streamer or already link
     the room (e.g. hand-reviewed manual-clip copies) are returned unchanged.
     """
-    name = str(streamer_name or '').strip()
-    if name not in MENTION_UIDS:
-        name = MENTION_ROOM_IDS.get(str(room_id or '').strip(), '')
     room = str(room_id or '').strip()
+    if mention is None and room:
+        mention = resolve_room_mention(room)
+    name = str((mention or {}).get('name') or '').strip()
     if not name or not room:
         return desc
     if f'@{name}' in desc or f'live.bilibili.com/{room}' in desc:
@@ -724,11 +801,15 @@ async def upload_video(
 
     # Automatic clips carry the clickable @mention + livestream room link
     # (no homepage link); already-present mentions/links are left untouched.
-    desc = append_mention_and_room_line(desc, room_id=room_id, streamer_name=streamer_name)
+    # The mention (room owner name + uid) is resolved automatically, cached in
+    # data/runtime/bilibili_room_mentions.json, and never blocks an upload.
+    mention = resolve_room_mention(room_id) if room_id else None
+    desc = append_mention_and_room_line(desc, room_id=room_id, mention=mention)
+    mention_uids = {mention['name']: mention['uid']} if mention else None
 
-    # Render "@昵称" mentions as clickable desc_v2 nodes (see MENTION_UIDS).
-    desc = normalize_mention_spaces(desc)
-    desc_v2_nodes = build_desc_v2_mentions(desc)
+    # Render "@昵称" mentions as clickable desc_v2 nodes (see MENTION_SEED).
+    desc = normalize_mention_spaces(desc, mention_uids)
+    desc_v2_nodes = build_desc_v2_mentions(desc, mention_uids)
     if desc_v2_nodes:
         print(f'[INFO] 简介 @ 提及: {len([n for n in desc_v2_nodes if n["type"] == 2])} 个已转 desc_v2')
 
