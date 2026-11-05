@@ -10,7 +10,7 @@ export { createPeerApi } from './peerCoverageApi';
 export { coverageDigest, coverageSettings } from './peerCoverage';
 export async function runPeerCuration(input: {
     candidates: CoverageCandidate[]; settings: CoverageSettings; cookie: string;
-    evidencePath: string; statePath: string; support: boolean;
+    evidencePath: string; statePath: string; support: boolean; skipEditorialAssessment?: boolean;
 }, request: (phase: string, prompt: string) => Promise<string>, api: PeerApi = createPeerApi(input.cookie)): Promise<CoverageDecision[]> {
     const save = (decisions: CoverageDecision[]) => writeCoverageJson(input.evidencePath, { version: 1,
         checkedAt: new Date().toISOString(), scope: 'bounded_platform_subtitle_comparison',
@@ -32,7 +32,7 @@ export async function runPeerCuration(input: {
         },
         support: video => input.support ? supportPeer(video, input.settings, api, input.statePath)
             : Promise.resolve({ status: 'disabled', reason: '仅规划或只读核查，没有执行互动' })
-    });
+    }, { skipEditorialAssessment: input.skipEditorialAssessment });
 }
 
 /** Source-CLI facade: both producers supply parsed original speech and the existing stage-request adapter. */

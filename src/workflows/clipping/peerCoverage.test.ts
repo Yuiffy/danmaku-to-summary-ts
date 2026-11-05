@@ -89,6 +89,16 @@ test('zero worthwhile candidates is valid and performs no platform reads or writ
     expect((await curateCandidates([candidate], {}, io))[0].status).toBe('rejected');
     expect(io.search).not.toHaveBeenCalled(); expect(io.support).not.toHaveBeenCalled();
 });
+test('manual coverage can skip editorial rejection and still use deterministic source searches', async () => {
+    const io = adapters();
+    io.request.mockImplementation(async phase => phase.startsWith('compare') ? JSON.stringify(comparison) : JSON.stringify({
+        worthPublishing: false, score: 8, reason: '普通自动筛选会跳过', queries: []
+    }));
+    const [result] = await curateCandidates([candidate], {}, io, { skipEditorialAssessment: true });
+    expect(result.status).toBe('covered');
+    expect(io.request.mock.calls.some(([phase]) => String(phase).startsWith('assess'))).toBe(false);
+    expect(io.search).toHaveBeenCalled();
+});
 test('a failed like/favorite never converts confirmed coverage back into a duplicate upload', async () => {
     const io = adapters(); io.support.mockRejectedValue(new Error('timeout'));
     expect((await curateCandidates([candidate], {}, io))[0]).toMatchObject({ status: 'covered', support: { status: 'unavailable' } });

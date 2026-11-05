@@ -12,7 +12,7 @@ const { PROTOCOL_VERSION } = require('./stream_game_verification');
 const execFileAsync = promisify(execFile);
 
 describe('game cuts preserve original media and publication identity', () => {
-  test('newly exposed chapter rejections are repaired once each before unresolved boundaries stop rendering', async () => {
+  test('newly exposed chapter rejections are repaired once each before short unresolved boundaries are excluded', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'game-chapter-repair-'));
     try {
       const mediaPath = path.join(dir, 'source.flv'), srtPath = path.join(dir, 'source.srt'), framePath = path.join(dir, 'frame.jpg');
@@ -33,7 +33,7 @@ describe('game cuts preserve original media and publication identity', () => {
         capabilities: { collectionAllowed: true, externalSubtitlesAllowed: true } };
       const plan = { source: sourceSnapshot({ source: options }), events: [event], status: 'planned' };
       await expect(renderGames(plan, options, getGameConfig({}), { directory: dir, plan: path.join(dir, 'PLAN.json') }))
-        .rejects.toThrow(/Boundary is still unresolved/);
+        .resolves.toMatchObject({ status: 'no_verified_gameplay' });
       expect(verify).toHaveBeenCalledTimes(3);
       expect(editorialRequest).toHaveBeenCalledTimes(2);
       expect(event.chapters.every((chapter: any) => chapter.editorialRevision?.policyVersion === 2)).toBe(true);
@@ -55,7 +55,7 @@ describe('game cuts preserve original media and publication identity', () => {
         capabilities: { collectionAllowed: true, externalSubtitlesAllowed: true } };
       const files = { directory: dir, plan: path.join(dir, 'PLAN.json') }, config = getGameConfig({});
       const plan = { source, events: [event], status: 'planned' };
-      await expect(renderGames(plan, options, config, files)).rejects.toThrow(/Revised draft still requires original evidence/);
+      await expect(renderGames(plan, options, config, files)).resolves.toMatchObject({ status: 'no_verified_gameplay' });
       expect(verify).toHaveBeenCalledTimes(1);
       expect(JSON.parse(fs.readFileSync(files.plan, 'utf8')).events[0].verification.decision).toBe('uncertain');
       verify.mockClear();

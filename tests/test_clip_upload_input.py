@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import sys
@@ -26,8 +27,12 @@ class QueuedUploadInputTests(unittest.TestCase):
             self.addCleanup(patched.stop)
         self.manifest = self.root / "UPLOAD_MANIFEST.json"
         self.metadata = self.root / "original.json"
-        self.metadata.write_text(json.dumps({"copy": {"title": "原场次切片"},
-            "output": {"mediaPath": str(self.root / "original.mp4")}}), encoding="utf-8")
+        self.source_media = self.root / "source.mp4"
+        self.source_srt = self.root / "source.srt"
+        self.source_media.write_bytes(b"source media")
+        self.source_srt.write_text("source subtitles", encoding="utf-8")
+        self._write_reviewed_metadata(self.metadata, "原场次切片", "candidate-4002", 10, 20,
+                                      self.root / "original.mp4")
         # A later stream reuses index 1 and drops the old high candidate index.
         self.manifest.write_text(json.dumps({"clips": [{"reviewIndex": 1, "metadata": {
             "mode": "own_stream_fun_review", "uploadReady": True,
@@ -39,12 +44,41 @@ class QueuedUploadInputTests(unittest.TestCase):
                 "statePath": str(self.root / "upload_state.json"), "source": "原场次", "title": "原场次切片",
                 "prefix": "【小岁】", "tags": ["小岁"], "tid": 21}
         second = self.root / "second.json"
-        second.write_text(json.dumps({"copy": {"title": "原场次另一条切片"},
-            "output": {"mediaPath": str(self.root / "second.mp4")}}), encoding="utf-8")
+        self._write_reviewed_metadata(second, "原场次另一条切片", "candidate-4010", 30, 40,
+                                      self.root / "second.mp4")
         self.records = {"clips": {"4002": clip, "4010": {**clip, "id": 4010, "reviewIndex": 4028232656,
             "title": "原场次另一条切片", "mediaPath": str(self.root / "second.mp4"), "metadataPath": str(second)}}}
         self.job = {"id": "upload-test", "status": "running", "clipIds": [4002, 4010]}
         self.save()
+
+    def _write_reviewed_metadata(self, path, title, candidate_id, start, end, media_path):
+        evidence = path.with_name(f"{path.stem}-evidence.json")
+        proof = {"candidates": [{"id": candidate_id, "roomId": "25788785",
+                                  "start": start, "end": end}],
+                 "decisions": [{"candidateId": candidate_id, "status": "original",
+                                 "inputDigest": f"input-{candidate_id}", "score": 95,
+                                 "searches": [{"query": "具体话题", "bvids": []}]}]}
+        evidence.write_text(json.dumps(proof), encoding="utf-8")
+        metadata = {
+            "copy": {"title": title},
+            "output": {"mediaPath": str(media_path)},
+            "roomId": "25788785",
+            "source": {"mediaPath": str(self.source_media), "srtPath": str(self.source_srt)},
+            "window": {"start": start, "end": end},
+            "creativeResult": {"status": "edited"},
+            "qaResult": {"status": "passed", "issues": []},
+            "audioQa": {"status": "passed", "issues": []},
+            "curation": {
+                "version": 1, "status": "original", "score": 95,
+                "candidateId": candidate_id, "inputDigest": f"input-{candidate_id}",
+                "sourceWindow": {"start": start, "end": end},
+                "sourceMediaPath": str(self.source_media),
+                "sourceSrtSha256": hashlib.sha256(self.source_srt.read_bytes()).hexdigest(),
+                "evidencePath": str(evidence),
+                "evidenceSha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            },
+        }
+        path.write_text(json.dumps(metadata), encoding="utf-8")
 
     def save(self):
         registry.REGISTRY_PATH.write_text(json.dumps(self.records), encoding="utf-8")

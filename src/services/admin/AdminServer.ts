@@ -174,6 +174,12 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
     const validate = () => { if (adapters.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再操作', 409); };
     validate();
     const detail = adapters.clips.detail(id);
+    if (req.body.action === 'peer-coverage') {
+      if (detail.category !== 'clip') throw new AdminError('只有普通切片支持手工同题核查', 400);
+      if (['uploaded', 'queued', 'uploading', 'processing', 'cancelling', 'excluded', 'cancelled'].includes(detail.clip.status)) {
+        throw new AdminError('已投稿或正在投稿的视频不能手工触发同题核查', 409);
+      }
+    }
     const metadata = adapters.clips.metadata(adapters.clips.record(id));
     const input = detail.category === 'activity' && ['retry-boundaries', 'repair-timing'].includes(req.body.action)
       ? { ...req.body, mediaPath: metadata.source?.mediaPath, srtPath: metadata.source?.srtPath, xmlPath: metadata.source?.xmlPath, kind: metadata.kind } : req.body;

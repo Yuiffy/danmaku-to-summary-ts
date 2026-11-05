@@ -150,6 +150,11 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
             stack.enter_context(patch.object(upload, "fetch_member_archives", return_value={}))
             stack.enter_context(patch.object(upload, "search_existing_titles", return_value={}))
             stack.enter_context(patch.object(upload, "build_credential", return_value=object()))
+            # This test exercises submission-intent recovery. The dedicated
+            # quality-policy tests cover the automatic publication gate itself.
+            import clip_upload_registry as registry_api
+            stack.enter_context(patch.object(registry_api.clip_upload_enqueue, "quality_policy_errors",
+                                              return_value=[]))
             stack.enter_context(patch.object(upload, "wait_for_upload_available", AsyncMock(return_value=(True, "ok"))))
             stack.enter_context(patch.object(upload, "save_upload_state",
                 side_effect=lambda path, state: Path(path).write_text(json.dumps(state), encoding="utf-8")))

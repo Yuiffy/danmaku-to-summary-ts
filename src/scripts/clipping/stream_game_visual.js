@@ -56,7 +56,10 @@ function anchorGameId(row, games, anchor = []) {
 function parseSampleReview(response, games, anchor = []) {
     const row = JSON.parse(response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''));
     if (!['gameplay', 'other', 'watching_game', 'uncertain'].includes(row.kind) || !String(row.reason || '').trim()) throw new Error('Unsupported temporal game sample review');
-    if (row.kind === 'gameplay' && !games.some(g => g.id === row.gameId)) row.gameId = anchorGameId(row, games, anchor).gameId;
+    // Apply the same verified-session anchor used by the full timeline pass.
+    // A lookalike can still be an allowed id, so checking only for unknown ids
+    // would let a genre-based misclassification bypass the recording evidence.
+    if (row.kind === 'gameplay') row.gameId = anchorGameId(row, games, anchor).gameId;
     if (row.kind !== 'uncertain' && (typeof row.heardWords !== 'string' || !Array.isArray(row.frames) || row.frames.length !== 5
         || row.frames.some((f, i) => f.index !== i + 1 || !['gameplay', 'other', 'watching_game', 'black'].includes(f.activity)
             || !String(f.description || '').trim())

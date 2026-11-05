@@ -138,7 +138,8 @@ export function confirmedCoverage(candidate: CoverageCandidate, peer: PeerVideo,
 }
 
 /** Candidate ordering is supplied by the source selector. IO failures are unknown, never proof of no competition. */
-export async function curateCandidates(candidates: CoverageCandidate[], raw: CoverageSettings, io: CoverageIO): Promise<CoverageDecision[]> {
+export async function curateCandidates(candidates: CoverageCandidate[], raw: CoverageSettings, io: CoverageIO,
+    options: { skipEditorialAssessment?: boolean } = {}): Promise<CoverageDecision[]> {
     const settings = coverageSettings(raw), decisions: CoverageDecision[] = [];
     let accepted = 0, suspended = false;
     for (const [index, candidate] of candidates.entries()) {
@@ -150,7 +151,9 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
             decision = { ...base, status: 'needs_review', reason: suspended ? '本批检索不可用，待恢复后核查' : '缺少完整且有界的源字幕证据' };
         } else {
             try {
-                const assessment = parseModelJson(await io.request(`assess-${candidate.id}`, assessmentPrompt(candidate)));
+                const assessment = options.skipEditorialAssessment
+                    ? { worthPublishing: true, score: settings.minScore, reason: '人工触发同题核查，跳过独立发布价值初筛', queries: [] }
+                    : parseModelJson(await io.request(`assess-${candidate.id}`, assessmentPrompt(candidate)));
                 if (typeof assessment?.worthPublishing !== 'boolean' || !Number.isInteger(assessment.score)
                     || assessment.score < 0 || assessment.score > 100 || typeof assessment.reason !== 'string' || !assessment.reason.trim()) {
                     throw new Error('invalid_editorial_assessment');

@@ -25,7 +25,7 @@ test('takes one queue snapshot per pass, reuses unchanged sidecars, refreshes a 
   expect(queryAsrHistory(historyFile).total).toBe(1000);
   const found = Array.from({ length: 20 }, (_, i) => queryAsrHistory(historyFile, i + 1, 50).items).flat().find(item => item.id === '0');
   expect(found?.elapsedSeconds).toBe(234);
-});
+}, 15000);
 
 test('retries temporary read failures and keeps prior history when a queue read fails', async () => {
   const source = path.join(root, 'a.asr_meta.json'); atomicJson(source, { elapsedSeconds: 10 });

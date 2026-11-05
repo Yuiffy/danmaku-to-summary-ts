@@ -25,6 +25,7 @@ export function clipCommand(idValue: unknown, body: any): OperatorCommand {
     return { executable: 'python', args: [...args, 'cover', '--id', id, '--selection', JSON.stringify(selection),
       '--note', text(body, 'note', 1000)], action, target: id };
   }
+  if (action === 'peer-coverage') return { executable: 'node', args: ['src/scripts/clipping/peer_coverage_candidate.js', '--id', id], action, target: id };
   if (['subtitles', 'preview', 'correct', 'cut', 'approve-review', 'rebuild', 'enqueue', 'exclude', 'precision'].includes(action) === false) throw new AdminError('不支持的视频操作');
   args.push(action, ['preview', 'cut', 'enqueue', 'exclude'].includes(action) ? '--ids' : '--id', id);
   if (['cut', 'approve-review', 'rebuild'].includes(action)) args.push('--review-note', text(body, 'note', 1000));

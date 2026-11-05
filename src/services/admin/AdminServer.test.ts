@@ -20,6 +20,17 @@ import { AdminCoverPreview } from './AdminCoverPreview';
 
 const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
 const roots: string[] = [];
+it('dispatches a manual peer coverage check for an unposted clip and blocks posted clips', async () => {
+  const f = fixture(), app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs }, token);
+  const revision = f.clips.detail('1').revision;
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'peer-coverage', revision }).expect(202);
+  await f.jobs.flush();
+  expect(f.run.mock.calls[0][0]).toMatchObject({ action: 'peer-coverage', target: '1', executable: 'node' });
+  expect(f.run.mock.calls[0][0].args).toEqual(['src/scripts/clipping/peer_coverage_candidate.js', '--id', '1']);
+  const registryPath = path.join(f.root, 'data/runtime/clip_upload_registry.json'), registry = readJson(registryPath);
+  registry.clips['1'].status = 'uploaded'; atomicJson(registryPath, registry);
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'peer-coverage', revision: f.clips.detail('1').revision }).expect(409);
+});
 it('serves authenticated read-only automatic clipping progress without launching queue work', async () => {
   const f = fixture(), directory = path.join(f.root, 'background-queue');
   const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs,

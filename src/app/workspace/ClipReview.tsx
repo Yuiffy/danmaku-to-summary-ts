@@ -70,6 +70,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
   const submitting = useRef(false);
   const focusCandidate = useRef(false);
+  const modeInitialized = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
   const [sourceOrigin, setSourceOrigin] = useState<number>();
   const feedback = useResource<{ job: AdminJob | null }>(`/clips/${id}/feedback`, 0, true);
@@ -106,16 +107,20 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const loaded = !!detail, hasMedia = !!detail?.media, sourceAvailable = !!detail?.source.available, hasCandidateSubtitles = !!detail?.subtitles;
   useEffect(() => {
     if (!loaded) return;
-    if (focusCandidate.current && hasCandidateSubtitles) {
-      focusCandidate.current = false;
-      setMode('media');
+    if (!modeInitialized.current) {
+      modeInitialized.current = true;
+      setMode(hasMedia ? 'media' : sourceAvailable ? 'source' : 'preview');
       return;
     }
-    setMode(hasMedia ? 'media' : sourceAvailable ? 'source' : 'preview');
-  }, [loaded, hasMedia, sourceAvailable, hasCandidateSubtitles]);
+    if (focusCandidate.current && hasCandidateSubtitles) {
+      focusCandidate.current = false;
+      if (mode !== 'source') setMode('media');
+      return;
+    }
+  }, [loaded, hasMedia, sourceAvailable, hasCandidateSubtitles, mode]);
   async function act(action: string, extra: Record<string, unknown> = {}, actionNote = note) {
     if (!detail || submitting.current) return;
-    if (!['preview', 'subtitles'].includes(action) && !actionNote.trim()) { setError('请填写审核或修改说明'); return; }
+    if (!['preview', 'subtitles', 'peer-coverage'].includes(action) && !actionNote.trim()) { setError('请填写审核或修改说明'); return; }
     const publishing = action === 'feedback-publish' || action === 'enqueue' || action === 'correct' && enqueue;
     if (publishing && action !== 'feedback-publish' && !window.confirm(`确认授权 #${id} 入队投稿到 B 站？${action === 'correct' ? '后台将先重制字幕与视频。' : ''}`)) return;
     if (action === 'exclude' && !window.confirm(`确认排除 #${id}，阻止后续投稿？`)) return;
@@ -139,10 +144,20 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       } else if (action === 'subtitles') {
         if (hasCandidateSubtitles) {
           focusCandidate.current = false;
-          setMode('media');
-        } else focusCandidate.current = true;
-        setMessage('正在准备可修改字幕，完成后会自动切换到候选字幕。');
+          if (!isSource) setMode('media');
+        } else focusCandidate.current = !isSource;
+        setMessage(isSource ? '正在准备可修改字幕，完成后会显示在原片定位页下方。' : '正在准备可修改字幕，完成后会自动切换到候选字幕。');
         refreshDetail();
+      } else if (action === 'correct') {
+        setMessage('字幕修改已提交。候选字幕会刷新；已有成片要重制后才会显示新字词。');
+        refreshDetail();
+        window.setTimeout(refreshDetail, 800);
+        window.setTimeout(refreshDetail, 2000);
+      } else if (action === 'peer-coverage') {
+        setMessage('已提交 B 站同题核查；完成后刷新审核证据即可查看命中视频和互动回执。');
+        refreshDetail();
+        window.setTimeout(refreshDetail, 1200);
+        window.setTimeout(refreshDetail, 3000);
       } else setMessage('操作已提交，请在任务中确认实际执行结果。');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '操作失败'); }
     finally { submitting.current = false; setBusy(false); }
@@ -150,6 +165,14 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const asset = (kind: string) => `/api/admin/clips/${id}/assets/${kind}?v=${['media', 'media-subtitles'].includes(kind) ? detail?.mediaRevision || detail?.revision : detail?.revision}&part=${part}`;
   const isPreview = mode === 'preview', isSource = mode === 'source', hasVideo = detail && (isPreview ? detail.preview : detail.media);
   const rows = subtitleRows(isSource ? detail?.source.subtitles || '' : isPreview ? detail?.previewSubtitles || '' : detail?.category !== 'clip' ? detail?.partSubtitles || '' : detail?.subtitles || '');
+  const candidateRows = subtitleRows(detail?.subtitles || '');
+  const seekCandidate = (row: ReturnType<typeof subtitleRows>[number]) => {
+    if (video.current && isSource && sourceOrigin !== undefined) {
+      video.current.currentTime = Math.max(0, row.at + (detail?.source.start || 0) - sourceOrigin);
+    }
+    setCue(row.id);
+    setFrom(row.text);
+  };
   return <>
     <div className="inspector-heading"><span className="mono">#{id}</span><button onClick={resource.refresh} disabled={processing}>刷新审核内容</button></div>
     {resource.loading && !detail && <div className="empty">读取审核内容…</div>}
@@ -179,9 +202,13 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       {tab === 'subtitles' && <section className="inspector-section">
         <div className="section-heading"><h3>{isSource ? '此时间段的原片字幕' : isPreview ? '粗剪字幕' : '候选 / 成片字幕'}</h3>{detail.category === 'clip' && <button onClick={() => void act('subtitles')} disabled={processing}>准备可修改字幕</button>}</div>
         <div className="subtitle-list">{rows.length ? rows.map((row, index) => <button key={index} onClick={() => { if (video.current && (isSource ? sourceOrigin !== undefined : !detail.pendingRebuild || isPreview)) video.current.currentTime = Math.max(0, row.at - (isSource ? sourceOrigin || 0 : 0)); if (!isSource) { setCue(isPreview ? '' : row.id); setFrom(row.text); } }}><span className="mono">{row.id} · {row.time}</span><span>{row.text}</span></button>) : <p className="muted">{isSource ? '此时间段没有可读取的原片字幕，可直接听原音核对。' : '还没有字幕文件，点击准备可修改字幕。'}</p>}</div>
-        {isSource && detail.category === 'clip' && <p className="muted">原片字幕用于选材和定位。确认改词时请切换“{detail.media ? '成片' : '候选字幕'}”，使用候选字幕行号。</p>}
+        {isSource && detail.category === 'clip' && <>
+          <p className="muted">原片字幕用于选材和听音定位。下面的候选字幕可以直接选中并改词，播放器会跳到对应原片位置。</p>
+          <div className="section-heading"><h3>候选字幕（可修改）</h3><span className="muted">{candidateRows.length ? '点击一行定位原片并带入改词框' : '先准备可修改字幕'}</span></div>
+          <div className="subtitle-list">{candidateRows.length ? candidateRows.map((row, index) => <button key={index} onClick={() => seekCandidate(row)}><span className="mono">{row.id} · {row.time}</span><span>{row.text}</span></button>) : <p className="muted">还没有候选字幕，点击上方“准备可修改字幕”。</p>}</div>
+        </>}
         {isPreview && <p className="muted">粗剪字幕包含上下文。改词使用候选字幕行号，可切换成片核对或留空替换全部匹配。</p>}
-        {detail.category === 'clip' && !isSource && <><p className="muted">确认改词可直接写在下方修改意见中，例如：“建功”改成“建构”。</p><details><summary>高级逐字修改</summary><div className="form-grid"><label>原文字<input value={from} onChange={event => setFrom(event.target.value)} /></label><label>替换为<input value={to} onChange={event => setTo(event.target.value)} /></label><label>候选字幕行号（可选）<input value={cue} onChange={event => setCue(event.target.value)} inputMode="numeric" /></label></div>
+        {detail.category === 'clip' && <><p className="muted">确认改词可直接写在下方修改意见中，例如：“建功”改成“建构”。{isSource && '保存后候选字幕会立即更新；旧成片需完成重制才会变化。'}</p><details><summary>高级逐字修改</summary><div className="form-grid"><label>原文字<input value={from} onChange={event => setFrom(event.target.value)} /></label><label>替换为<input value={to} onChange={event => setTo(event.target.value)} /></label><label>候选字幕行号（可选）<input value={cue} onChange={event => setCue(event.target.value)} inputMode="numeric" /></label></div>
           <label className="check-label"><input type="checkbox" checked={enqueue} onChange={event => setEnqueue(event.target.checked)} />改词后重制并入队投稿</label><button disabled={processing || !from} onClick={() => void act('correct')}>保存确认改词</button></details></>}
         {detail.category !== 'clip' && <p className="muted">请逐 P 核对原音与边界。没有问题可直接投稿，需要修改时在下方填写意见。</p>}
       </section>}
@@ -190,7 +217,9 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
           {detail.media ? <CoverEditor key={`${id}-${part}-${detail.mediaRevision}`} id={id} part={part} detail={detail} text={coverText} onText={setCoverText} disabled={processing} onSaved={resource.refresh} />
             : <p className="muted">成片制作完成后，可以拖动选帧并裁剪封面。</p>}</div></section>}
       {tab === 'evidence' && <>
-        <PeerCoverageEvidence curation={detail.evidence.curation} />
+        <PeerCoverageEvidence curation={detail.evidence.curation}
+          canCheck={detail.category === 'clip' && !publicationComplete && !processing && !['excluded', 'cancelled'].includes(detail.clip.status)}
+          onCheck={() => void act('peer-coverage')} />
         <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>
       </>}
       {tab === 'rebuild' && (detail.category === 'clip' ? <section className="inspector-section"><p className="muted">源时间使用整场录播的绝对秒数。重制准备修订，制作生成新视频；精剪会调用配置的 AI 流程。</p><div className="form-grid"><label>开始秒数<input value={start} onChange={event => setStart(event.target.value)} /></label><label>结束秒数<input value={end} onChange={event => setEnd(event.target.value)} /></label></div><label className="check-label"><input type="checkbox" checked={allowLong} onChange={event => setAllowLong(event.target.checked)} />保留完整的长话题</label>{allowLong && <label>完整话题说明<input value={durationNote} onChange={event => setDurationNote(event.target.value)} /></label>}<div className="button-row"><button disabled={processing} onClick={() => void act('rebuild')}>准备重制修订</button><button disabled={processing} onClick={() => void act('precision')}>AI 精剪</button></div></section> : detail.category === 'activity' ? <ActivityRevision busy={processing} kind={detail.evidence.kind} act={act} /> : <p className="muted inspector-section">完整游戏包保留连续内容，可逐 P 预览、审核和整包投稿。</p>)}
@@ -206,15 +235,16 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   </>;
 }
 
-function PeerCoverageEvidence({ curation }: { curation?: Record<string, any> }) {
+function PeerCoverageEvidence({ curation, canCheck, onCheck }: { curation?: Record<string, any>; canCheck: boolean; onCheck: () => void }) {
   const matches = Array.isArray(curation?.matches) ? curation.matches : [];
   const searches = Array.isArray(curation?.searches) ? curation.searches : [];
-  if (!curation || (!matches.length && !searches.length)) return null;
   const status = (value: string) => ({ covered: '已确认同题', subtitle_unavailable: '搜到但无完整字幕',
     same_event_unconfirmed: '疑似同题待人工核', read_failed: '读取失败待人工核', different_event: '已排除同题', own_account: '本账号' } as Record<string, string>)[value] || value;
   return <section className="inspector-section">
-    <div className="section-heading"><h3>外部同题切片核查</h3><span className="muted">{curation.status === 'covered' ? '已阻止重复自制' : '仅作审核线索，未确认前不会自动替代'}</span></div>
-    {curation.reason && <p className="muted">{curation.reason}</p>}
+    <div className="section-heading"><h3>外部同题切片核查</h3><div className="button-row"><span className="muted">{curation?.status === 'covered' ? '已阻止重复自制' : '仅作审核线索，未确认前不会自动替代'}</span><button disabled={!canCheck} onClick={onCheck}>手工检查 B 站同题</button></div></div>
+    {!curation && <p className="muted">尚未执行同题核查。手工触发后会检索 B 站字幕，确认同一事件时记录命中视频并执行已配置的点赞、收藏和转发支持。</p>}
+    {curation?.reason && <p className="muted">{curation.reason}</p>}
+    {curation?.support && <p className="muted">互动回执：<span className="mono">{JSON.stringify(curation.support)}</span></p>}
     {matches.length ? <div className="form-stack">{matches.map((match: any) => <div key={`${match.bvid}-${match.status}`}>
       <a href={match.url || `https://www.bilibili.com/video/${match.bvid}/`} target="_blank" rel="noreferrer">{match.bvid} · {match.title || '未命名视频'}</a>
       <small>{status(match.status)}{match.reason ? ` · ${match.reason}` : ''}</small>
