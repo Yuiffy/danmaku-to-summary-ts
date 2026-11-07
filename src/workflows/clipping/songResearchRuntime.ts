@@ -12,6 +12,20 @@ interface SongResearchAdapters {
   propose(prompt: string): Promise<string>;
   catalog?: SongCatalog;
 }
+function summarySongHints(metadata: Record<string, any>): string[] {
+  let summaryRecord = metadata.summary || null;
+  if (!summaryRecord) try { summaryRecord = JSON.parse(fs.readFileSync(metadata.planPath, 'utf8')).summary || null; } catch { summaryRecord = null; }
+  const summaryPath = summaryRecord?.path;
+  if (!summaryPath || !fs.existsSync(summaryPath)) return [];
+  try {
+    const text = fs.readFileSync(summaryPath, 'utf8');
+    if (summaryRecord.sha256 && lyricDigest(text) !== summaryRecord.sha256) return [];
+    const summary = JSON.parse(text);
+    const rawSongs: unknown[] = Array.isArray(summary.content?.songs) ? summary.content.songs : [];
+    const names: string[] = rawSongs.filter((name): name is string => typeof name === 'string' && Boolean(name.trim())).map(name => name.trim());
+    return Array.from(new Set<string>(names)).slice(0, 24);
+  } catch { return []; }
+}
 
 /** Best-effort naming on first creation only; failures remain visible and cannot grant approval. */
 export async function researchNewSongPresentation(row: Record<string, any>, io: {
@@ -44,8 +58,9 @@ export async function identifyActivitySongs(metadataPath: string, options: { act
   const rows = io.parse(transcript.path);
   const xml = metadata.source?.xmlPath, xmlHash = xml ? lyricDigest(fs.readFileSync(xml, 'utf8')) : null;
   const audience = xml ? await io.audience(xml) : [];
+  const hints = summarySongHints(metadata);
   const results = [];
-  for (const event of events) results.push({ activityId: event.id, ...await researchSong({ event, rows, audience, transcript, hint: options.hint },
+  for (const event of events) results.push({ activityId: event.id, ...await researchSong({ event, rows, audience, transcript, hint: options.hint, summaryHints: hints },
     { propose: io.propose, catalog: io.catalog || createSongCatalog() }) });
   if (fs.readFileSync(metadataPath, 'utf8') !== original || lyricDigest(fs.readFileSync(transcript.path, 'utf8')) !== transcript.sha256
     || xml && lyricDigest(fs.readFileSync(xml, 'utf8')) !== xmlHash) throw new Error('Song source changed during research');
@@ -56,7 +71,7 @@ export async function identifyActivitySongs(metadataPath: string, options: { act
   }
   const directory = path.join(path.dirname(metadataPath), 'temp', 'song-research', lyricDigest(original).slice(0, 16), randomUUID());
   const evidencePath = path.join(directory, 'title-evidence.json');
-  write(path.join(directory, 'research.json'), { version: 1, transcript, xml: { path: xml, sha256: xmlHash }, results });
+  write(path.join(directory, 'research.json'), { version: 2, transcript, xml: { path: xml, sha256: xmlHash }, summaryHints: hints, results });
   write(evidencePath, { version: 2, items });
   return { status: results.every(result => result.status === 'identified') ? 'identified' : 'needs_review', evidencePath,
     identified: results.filter(result => result.status === 'identified').map(result => ({ activityId: result.activityId,

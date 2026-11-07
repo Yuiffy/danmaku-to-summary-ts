@@ -128,7 +128,7 @@ describe('MikufansSummaryQueueWorker', () => {
     });
   });
 
-  it.each(['game', 'gpu'])('uses one CPU task while %s is busy without loading the GPU worker', async busy => {
+  it.each(['game', 'gpu'])('uses one CPU task while %s is busy with the reusable worker', async busy => {
     jest.spyOn(require('os'), 'freemem').mockReturnValue(32 * 1024 ** 3);
     (ConfigProvider.getConfig as jest.Mock).mockReturnValue({
       asr: { default_backend: 'paraformer', cpu_fallback: { enabled: true, min_available_memory_gb: 4 } },
@@ -143,7 +143,7 @@ describe('MikufansSummaryQueueWorker', () => {
     worker.ensureRunning();
     await settleWorker(worker);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }), true);
-    expect(resources.ensurePersistentWorker).not.toHaveBeenCalled();
+    expect(resources.ensurePersistentWorker).toHaveBeenCalledTimes(1);
     expect(worker.isRunning()).toBe(false);
   });
 

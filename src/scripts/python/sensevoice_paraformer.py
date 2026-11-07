@@ -218,7 +218,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         "model": resolved_model,
         "device": device_name,
         "disable_update": True,
-        "ncpu": int(payload.get('ncpu') or 2) if device_name == 'cpu' else 4,
+        "ncpu": int(payload.get('ncpu') or 4) if device_name == 'cpu' else 4,
     }
 
     vad_model = payload.get("vad_model", "fsmn-vad")
@@ -317,7 +317,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                         spk_model_obj = AutoModel(
                             model=resolve_cached_model_name(spk_model),
                             device=device_name,
-                            ncpu=2 if device_name == 'cpu' else 4,
+                            ncpu=int(payload.get('ncpu') or 4) if device_name == 'cpu' else 4,
                             disable_update=True,
                         )
                     cache["speaker_model"] = spk_model_obj
@@ -354,7 +354,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 spk_model_obj = AutoModel(
                     model=resolve_cached_model_name(spk_model),
                     device=device_name,
-                    ncpu=2 if device_name == 'cpu' else 4,
+                    ncpu=int(payload.get('ncpu') or 4) if device_name == 'cpu' else 4,
                     disable_update=True,
                 )
             cache["speaker_model"] = spk_model_obj

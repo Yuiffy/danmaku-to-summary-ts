@@ -7,14 +7,15 @@ const asr = require('../asr/asr_backends');
 const { fileDigest, sourceSnapshot } = require('./source_snapshot');
 const { writeJsonAtomic } = require('./candidate_subtitles');
 const { createClipResourceAdaptiveScheduler } = require('./resource_scheduler');
-const { renderGamePart, gameCover } = require('./stream_game_media');
+const { renderGamePart, renderGameSequence, gameCover } = require('./stream_game_media');
 const { verifyGame, PROTOCOL_VERSION, mediaSettings } = require('./stream_game_verification');
 const { restoreFrameNamedChapters } = require('./stream_game_names');
 const { correctFrameNames } = require('./stream_game_name_spelling');
 const { repairUnsupportedChapters } = require('./stream_game_editorial');
 const { buildParts, sha, includedRanges, mergeEvents } = require('./stream_game_plan');
 const { selectFocus, cleanLabel } = require('./stream_game_focus');
-const { loadAudience } = require('./stream_game_audience');
+const { loadAudience, parseSrt } = require('./stream_game_audience');
+const { buildHighlightPlan } = require('./stream_game_highlights');
 const { resolvePythonBin } = require('./python_bin');
 const execFileAsync = promisify(execFile);
 const scripts = path.resolve(__dirname, '..');
@@ -85,6 +86,14 @@ function audienceFor(plan) {
     }
 }
 function publicCopy(plan, game, parts, episode, submission, submissions) {
+    const actualGames = plan.catalogEvidence?.games;
+    if (Array.isArray(actualGames) && actualGames.length === 1) {
+        const normalize = value => String(value || '').normalize('NFKC').replace(/[\s《》]/gu, '').toLowerCase();
+        const actual = normalize(actualGames[0]);
+        if (![game.name, ...(game.aliases || [])].some(alias => normalize(alias) === actual)) {
+            throw new Error(`Game public copy is not bound to the verified recording game: ${actualGames[0]}`);
+        }
+    }
     const chapters = parts.flatMap(p => p.chapters || [{ title: p.title, ...p.chapter }]);
     const focus = selectFocus(chapters, { end: Math.max(...parts.map(p => Number(p.end) || 0)), audience: audienceFor(plan) });
     const title = game.members
@@ -101,6 +110,76 @@ function clippedCues(segments, part) {
     return segments.filter(c => c.end > part.start && c.start < part.end).map(c => ({ ...c,
         start: Math.max(0, c.start - part.start), end: Math.min(part.actualDuration, c.end - part.start) }))
         .filter(c => c.end > c.start && c.text.trim());
+}
+
+function formatSrtTime(seconds) {
+    const ms = Math.max(0, Math.round(Number(seconds || 0) * 1000));
+    const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60, rest = ms % 1000;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(rest).padStart(3, '0')}`;
+}
+
+function sequenceSubtitles(audience, sequence, opDuration = 3.266667) {
+    const rows = []; let cursor = 0;
+    for (const item of sequence) {
+        const duration = item.type === 'op' ? opDuration : item.end - item.start;
+        const sourceRows = item.type === 'op' ? parseSrt(item.srtPath) : (audience?.subtitles || []).filter(row => row.end > item.start && row.start < item.end);
+        for (const row of sourceRows) {
+            const start = item.type === 'op' ? row.start : Math.max(item.start, row.start) - item.start;
+            const end = item.type === 'op' ? row.end : Math.min(item.end, row.end) - item.start;
+            if (end > start) rows.push({ start: cursor + start, end: cursor + end, text: row.text });
+        }
+        cursor += duration;
+    }
+    return rows.sort((a, b) => a.start - b.start).map((row, index) => `${index + 1}\n${formatSrtTime(row.start)} --> ${formatSrtTime(row.end)}\n${row.text}\n`).join('\n');
+}
+
+/** Produce an independent teaser → 鹿饼 OP → chronological highlight revision. */
+async function renderHighlightGames(plan, options, config, files) {
+    if (!plan.events?.length) return { status: 'no_verified_gameplay', planPath: files.plan };
+    const root = options.config, capabilities = await accountCapabilities(options, files.directory);
+    if (!capabilities.collectionAllowed || !capabilities.externalSubtitlesAllowed) throw new Error('Game highlight account permissions are unavailable');
+    const audience = audienceFor(plan);
+    const settings = { ...(config.highlights || {}), ...(options.highlights || {}) };
+    const highlight = buildHighlightPlan({ events: plan.events, audience,
+        bodySeconds: settings.bodySeconds || 720, teaserSeconds: settings.teaserSeconds || 36,
+        teaserSegments: settings.teaserSegments || 4, opAssetId: settings.opAssetId || 'shikamochi-op-watch-v1' });
+    const opMediaPath = path.resolve(__dirname, '../../../public/branding/shikamochi/shikamochi-op-watch-v1.mp4');
+    const opSrtPath = path.resolve(__dirname, '../../../public/branding/shikamochi/shikamochi-op-watch-v1.srt');
+    const sequence = [...highlight.teaser, { type: 'op', mediaPath: opMediaPath, srtPath: opSrtPath, assetId: highlight.op.assetId }, ...highlight.body]
+        .map(row => row.type === 'op' ? row : { ...row, type: 'source' });
+    const game = config.games.find(row => row.id === (highlight.body[0]?.gameId || plan.events[0].gameId));
+    if (!game || !highlight.body.length) return { status: 'no_highlight_gameplay', planPath: files.plan };
+    const episode = reserveEpisode(game.id, plan.sessionId, plan.recordedAt, options.episode, options.episodeRegistryPath);
+    const signature = sha({ source: plan.source, highlight, sequence, gameId: game.id });
+    const directory = path.join(files.directory, `highlights-${signature.slice(0, 16)}`); fs.mkdirSync(directory, { recursive: true });
+    const stem = `${game.id}_E${String(episode).padStart(3, '0')}_highlights`;
+    const outputPath = path.join(directory, `${stem}.mp4`), srtPath = path.join(directory, `${stem}.srt`), coverPath = path.join(directory, `${stem}.cover.jpg`);
+    if (!fs.existsSync(outputPath)) {
+        const scheduler = (options.scheduler || createClipResourceAdaptiveScheduler)({ ownConfig: root.ownStreamClips || {}, rootConfig: root });
+        try {
+            const rendered = await renderGameSequence(options.mediaPath, sequence, outputPath, root, await scheduler.acquire().then(lease => { lease.release(); return lease.profile; }));
+            await gameCover({ mediaPath: outputPath, duration: rendered.actualDuration }, coverPath, root);
+        } finally { await scheduler.stop?.(); }
+    }
+    const segments = asr.parseSrt(options.srtPath).segments, loaded = audience || { subtitles: segments };
+    fs.writeFileSync(srtPath, sequenceSubtitles(loaded, sequence), 'utf8');
+    const renderedDuration = Number((await require('./video_probe').probeMediaDuration(outputPath, require('./media_runtime').resolveFfprobePath(root.audio?.ffmpeg?.path || 'ffmpeg'))).toFixed(3));
+    const row = { version: 1, type: 'stream_game_highlight_submission', kind: 'games', gameId: game.id, roomId: plan.roomId,
+        streamerName: plan.streamerName, episode, recordedAt: plan.recordedAt, source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null },
+        sourceSnapshot: plan.source, planSignature: plan.signature, renderSignature: signature, editorialTimeline: { ...highlight,
+            sequence: sequence.map(item => item.type === 'op' ? { type: 'op', assetId: item.assetId } : { type: item.type, start: item.start, end: item.end, chapter: item.chapter?.title || null }) },
+        window: { start: 0, end: renderedDuration, duration: renderedDuration },
+        copy: { title: `快乐小岁#${String(episode).padStart(2, '0')}｜${game.name}：${highlight.body.filter(row => row.chapter?.kind === 'boss').slice(0, 2).map(row => cleanLabel(row.chapter.title)).join('、') || '高光精剪'}`,
+            description: `${plan.streamerName}《${game.name}》高光精剪。开头先看本集精彩预告，随后播放鹿饼 OP，再按录播时间顺序保留怪话、情绪反应、Boss 战和关键推进。`, coverText: `快乐小岁#${String(episode).padStart(2, '0')}\n${game.name}` },
+        output: { metadataPath: path.join(directory, `${stem}.json`), mediaPath: outputPath, srtPath, coverPath, parts: [{ mediaPath: outputPath, srtPath, actualDuration: renderedDuration, bytes: fs.statSync(outputPath).size, sha256: fileDigest(outputPath), srtSha256: fileDigest(srtPath) }] },
+        upload: { prefix: '【小岁】', tid: game.tid || 17, tags: game.tags, roomId: plan.roomId, streamerName: plan.streamerName, externalSubtitles: true, subtitleLanguage: 'zh-CN', collectionSeasonId: game.collection?.seasonId || null, collectionSectionId: game.collection?.sectionId || null },
+        accountCapabilities: capabilities, uploadReady: false, gameReview: { status: 'pending', mode: 'highlights', reason: '高光精剪需单独核对预告、OP 接缝、正文时间顺序和音画边界' } };
+    writeJsonAtomic(row.output.metadataPath, row);
+    const manifestPath = path.join(directory, 'UPLOAD_MANIFEST.json');
+    writeJsonAtomic(manifestPath, { version: 1, type: 'bilibili_clip_upload_manifest', roomId: plan.roomId, reviewPath: files.review, planPath: files.plan,
+        clips: [{ reviewIndex: 1, metadataPath: row.output.metadataPath }] });
+    fs.writeFileSync(files.review, `# 快乐小岁游戏高光精剪\n\n${row.copy.title}\n${row.copy.description}\n元数据：${row.output.metadataPath}\n`, 'utf8');
+    return { status: 'rendered_highlights', manifestPath, metadataPath: row.output.metadataPath, planPath: files.plan, submissions: 1, parts: 1 };
 }
 function reserveEpisode(gameId, sessionId, recordedAt, number, file = path.resolve(scripts, '../../data/runtime/stream_game_episodes.json')) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -129,6 +208,7 @@ function reserveEpisode(gameId, sessionId, recordedAt, number, file = path.resol
 
 async function renderGames(plan, options, config, files) {
     if (JSON.stringify(sourceSnapshot({ source: options })) !== JSON.stringify(plan.source)) throw new Error('Game source changed before rendering');
+    if (options.editorialMode === 'highlights') return renderHighlightGames(plan, options, config, files);
     if (plan.status === 'rendered' && plan.uploadManifestPath) {
         // A policy change must not republish a previously completed source.
         const manifest = JSON.parse(fs.readFileSync(plan.uploadManifestPath, 'utf8'));
@@ -331,4 +411,4 @@ async function renderGames(plan, options, config, files) {
     plan.status = 'rendered'; plan.renderSignature = signature; plan.uploadManifestPath = manifestPath; writeJsonAtomic(files.plan, plan);
     return renderedResult(plan, files, bundles);
 }
-module.exports = { accountCapabilities, singleParts, publicCopy, clippedCues, reserveEpisode, renderGames };
+module.exports = { accountCapabilities, singleParts, publicCopy, clippedCues, reserveEpisode, renderHighlightGames, renderGames };

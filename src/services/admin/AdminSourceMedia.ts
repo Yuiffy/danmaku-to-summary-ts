@@ -17,27 +17,47 @@ const runProcess: Run = (executable, args, timeoutMs) => new Promise((resolve, r
     else reject(new AdminError(`原片预览${stage}失败，请重试或生成粗剪；具体原因见管理服务日志`, 503));
   });
 });
-export interface SourcePlayback { file: string; origin: number; start: number; end: number; direct: boolean; format: string }
+export interface SourcePlayback { file: string; origin: number; start: number; end: number; direct: boolean; format: string; sourceKey?: string; assetKey?: string }
 
 /** A disposable browser container for registered source streams; never a review/upload artifact. */
 export class AdminSourceMedia {
   private readonly pending = new Map<string, Promise<SourcePlayback>>();
+  private readonly assets = new Map<string, string>();
   constructor(private readonly directory: string, private readonly ffmpeg: () => string, private readonly run: Run = runProcess) {}
+
+  resolveAsset(key: string): string | undefined {
+    const file = this.assets.get(key);
+    if (!file || !fs.existsSync(file)) { this.assets.delete(key); return undefined; }
+    return file;
+  }
 
   async prepare(file: string, window: { start: number; end: number }, options: { forceRemux?: boolean } = {}): Promise<SourcePlayback> {
     const format = path.extname(file).toLowerCase();
-    if (!options.forceRemux && ['.mp4', '.webm', '.flv'].includes(format)) return { file, ...window, origin: 0, direct: true, format };
+    const sourceStat = fs.statSync(file);
+    const sourceKey = digest(JSON.stringify({ file, size: sourceStat.size, mtime: sourceStat.mtimeMs, version: 1 }));
+    // A large MP4 with its moov box at the tail can expose duration immediately but
+    // still take tens of seconds to seek to a three-hour source position. Prepare a
+    // short fast-start window for those files instead of making the browser scan it.
+    const directMp4 = format === '.mp4' && isFastStartMp4(file);
+    // FLV is deliberately remuxed into a short fast-start MP4 window. Browser
+    // FLV/MSE playback can expose duration immediately but still scan from the
+    // beginning when seeking deep into a long recording, leaving the target
+    // position unbuffered for a very long time.
+    if (!options.forceRemux && (format === '.webm' || directMp4)) {
+      this.assets.set(sourceKey, file);
+      return { file, ...window, origin: 0, direct: true, format, sourceKey, assetKey: sourceKey };
+    }
     if (window.end - window.start > 3600) throw new AdminError('原片范围过长，请使用已生成的分 P 视频');
-    const stat = fs.statSync(file), identity = { file, size: stat.size, mtime: stat.mtimeMs, ...window, version: 1 };
+    const stat = sourceStat, identity = { file, size: stat.size, mtime: stat.mtimeMs, ...window, version: 1 };
     const key = digest(JSON.stringify(identity)), output = path.join(this.directory, `${key}.mp4`), receipt = `${output}.json`;
     if (fs.existsSync(output) && fs.existsSync(receipt)) {
       const saved = readJson(receipt);
-      if (Number.isFinite(saved.origin)) return { file: output, ...window, origin: saved.origin, direct: false, format: '.mp4' };
+      if (Number.isFinite(saved.origin)) { this.assets.set(key, output); return { file: output, ...window, origin: saved.origin, direct: false, format: '.mp4', sourceKey, assetKey: key }; }
     }
     const current = this.pending.get(key);
     if (current) return current;
     if (this.pending.size) throw new AdminError('另一个原片正在加载，请稍后重试', 429);
-    const task = this.remux(file, window, output, receipt, identity);
+    const task = this.remux(file, window, output, receipt, identity, key);
     this.pending.set(key, task);
     try { return await task; } finally { this.pending.delete(key); }
   }
@@ -47,7 +67,7 @@ export class AdminSourceMedia {
       '-show_entries', 'packet=pts_time,dts_time,flags,data_hash', '-show_data_hash', 'md5', '-of', 'json', '-read_intervals', interval, file]);
     return JSON.parse(result).packets || [];
   }
-  private async remux(file: string, window: { start: number; end: number }, output: string, receipt: string, identity: any): Promise<SourcePlayback> {
+  private async remux(file: string, window: { start: number; end: number }, output: string, receipt: string, identity: any, assetKey: string): Promise<SourcePlayback> {
     // One budget for remux and every probe, below the HTTP adapter's 100-second deadline.
     const deadline = Date.now() + preparationTimeoutMs;
     const run = (executable: string, args: string[]) => {
@@ -83,7 +103,24 @@ export class AdminSourceMedia {
         throw new AdminError('原片时间或素材已变化，请刷新后重试', 503);
       }
       fs.renameSync(temporary, output); atomicJson(receipt, { identity, origin });
-      return { file: output, ...window, origin, direct: false, format: '.mp4' };
+      this.assets.set(assetKey, output);
+      return { file: output, ...window, origin, direct: false, format: '.mp4', sourceKey: digest(JSON.stringify({ file: identity.file, size: identity.size, mtime: identity.mtime, version: 1 })), assetKey };
     } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
+}
+
+function isFastStartMp4(file: string): boolean {
+  const stat = fs.statSync(file);
+  if (stat.size < 16) return true;
+  const sampleSize = Math.min(stat.size, 4 * 1024 * 1024);
+  const handle = fs.openSync(file, 'r');
+  try {
+    const sample = Buffer.allocUnsafe(sampleSize);
+    fs.readSync(handle, sample, 0, sampleSize, 0);
+    // Unknown/non-MP4 fixtures should retain the historical direct path. For a
+    // real ISO-BMFF file, moov must be visible near the beginning to be fast-start.
+    if (sample.indexOf(Buffer.from('ftyp')) < 0) return true;
+    const moov = sample.indexOf(Buffer.from('moov')), mdat = sample.indexOf(Buffer.from('mdat'));
+    return moov >= 0 && (mdat < 0 || moov < mdat);
+  } finally { fs.closeSync(handle); }
 }

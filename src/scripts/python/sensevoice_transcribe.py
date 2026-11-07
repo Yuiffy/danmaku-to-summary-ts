@@ -75,7 +75,8 @@ def main():
         return
     from asr_cpu_fallback import apply_cpu_fallback
     if apply_cpu_fallback(payload):
-        log_progress('GPU 繁忙：使用低优先级 CPU ASR（2 线程）')
+        threads = (payload.get('cpu_fallback') or {}).get('torch_num_threads', payload.get('ncpu', 4))
+        log_progress(f'GPU 繁忙：使用低优先级 CPU ASR（{threads} 线程）')
     audio_path = payload.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         fail("输入音频不存在", audio_path or "未提供 audio_path")

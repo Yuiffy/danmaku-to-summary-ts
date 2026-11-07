@@ -15,6 +15,21 @@ describe('complete game recordings', () => {
       .toMatchObject({ provider: 'tuZi', boundaryEvidenceMethod: 'native_audio' });
   });
 
+  test('verified recording game anchors override the standing allowlist', () => {
+    const config = plan.getGameConfig({ streamGameClips: {
+      games: [
+        { id: 'elden-ring', name: '艾尔登法环', aliases: ['老头环'] },
+        { id: 'game-shadow', name: '影之刃零', aliases: ['影刃零'] },
+      ],
+      catalogEvidence: { games: ['影之刃零'] },
+    } });
+    expect(plan.verifiedGameIds(config)).toEqual(['game-shadow']);
+    const parsed = plan.parseEvents({ events: [{ ...event(5, 90), gameId: 'elden-ring' }] },
+      { index: 1, start: 0, end: 100, from: 0, to: 100, rows: [{ id: 'T1', start: 5, end: 10, text: '开始游戏' }] }, 100, config);
+    expect(parsed[0].gameId).toBe('game-shadow');
+    expect(plan.verifiedGameIds({ ...config, catalogEvidence: { games: ['错误显示名'], gameBindings: [{ summaryName: '影之刃零', gameId: 'game-shadow', canonicalName: '影之刃零' }] } })).toEqual(['game-shadow']);
+  });
+
   test('invalid game providers and boundary methods fail before selecting another route', () => {
     for (const provider of ['daiyu', 'unknown', '', null, 42]) {
       expect(() => plan.getGameConfig({ streamGameClips: { ai: { provider } } })).toThrow(/provider/);
@@ -80,6 +95,15 @@ describe('complete game recordings', () => {
       { name: '艾尔登法环' }, parts, 17, 1, 1);
     expect(copy.title).toContain('导水桥大矛熔炉骑士、双石像鬼、回魔法学院补探索');
     expect(copy.title.length + '【小岁】'.length).toBeLessThanOrEqual(80);
+  });
+
+  test('public copy uses the verified dynamic game identity', () => {
+    const dynamic = { id: 'game-shadow', name: '影之刃零', aliases: ['影刃零'], tid: 17, tags: ['岁己', '小岁', '影之刃零'], collection: {} };
+    const copy = render.publicCopy({ streamerName: '岁己', recordedAt: '2026-11-06 20:13:00', streamTitle: '唱聊',
+      catalogEvidence: { games: ['影之刃零'] } }, dynamic,
+      [{ start: 0, end: 120, title: '探索', chapters: [{ start: 0, title: '探索', description: '探索游戏。' }] }], 5, 1, 1);
+    expect(copy.title).toContain('影之刃零 第05集');
+    expect(copy.description).toContain('《影之刃零》');
   });
 
   test('dense audience context shrinks without dropping source rows or leaving coverage gaps', () => {

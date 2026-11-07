@@ -57,6 +57,11 @@ def release_cache(runtime_cache):
 
 
 def transcribe(payload, runtime_cache):
+    from asr_cpu_fallback import apply_cpu_fallback
+    # A persistent process may serve both GPU and CPU jobs. Apply the CPU
+    # payload overrides without changing this process's CUDA visibility; the
+    # next GPU request must still be able to restore CUDA model weights.
+    cpu_fallback = apply_cpu_fallback(payload, environ={})
     resource_guard = prepare_asr_runtime(payload)
     try:
         audio_path = payload.get("audio_path")

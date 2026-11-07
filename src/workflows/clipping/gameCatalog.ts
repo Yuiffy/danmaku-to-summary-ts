@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { checkCampaignContent, CampaignSource } from './ownCampaign';
 
 type Data = Record<string, any>;
-const normalize = (value: string) => value.normalize('NFKC').replace(/[\s《》]/gu, '').toLowerCase();
+const normalize = (value: string) => value.normalize('NFKC').replace(/[^\p{L}\p{N}\u4e00-\u9fff]/gu, '').toLowerCase();
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
 /** A summary supplies candidate names only; full gameplay and media review still decide publication. */
@@ -41,6 +41,12 @@ export function resolveGameCatalog(config: Data, options: CampaignSource & { sum
     const decision = checkCampaignContent({ campaignContentGate: { requiredGames: expanded.games.map((game: Data) => game.name) } },
         { ...options, liveContentSummaryPath: summaryPath });
     if (!decision.evidenceReady) throw new Error(`Other game discovery source is not verified: ${decision.reason}`);
+    const gameBindings = summary.content.games.map((summaryName: string) => {
+        const normalized = normalize(summaryName);
+        const matches = expanded.games.filter((game: Data) => [game.name, ...(game.aliases || [])].some(alias => normalize(alias) === normalized));
+        if (matches.length !== 1) throw new Error(`Recording summary game name is ambiguous: ${summaryName}`);
+        return { summaryName, gameId: matches[0].id, canonicalName: matches[0].name };
+    });
     return { ...expanded, catalogEvidence: { summaryPath, summarySha256: digest(text),
-        sourceSha256: summary.source.sourceSha256, games: summary.content.games } };
+        sourceSha256: summary.source.sourceSha256, games: summary.content.games, gameBindings } };
 }

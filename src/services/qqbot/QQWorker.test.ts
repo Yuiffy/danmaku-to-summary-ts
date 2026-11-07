@@ -36,6 +36,14 @@ test('ordinary chatter has no IO; duplicate mentions answer and send once', asyn
   expect(saved.some(snapshot => Object.values(snapshot.receipts)[0]?.status === 'generating' && snapshot.tokens === QQ_LIMITS.reservation)).toBe(true);
   expect(saved.some(snapshot => Object.values(snapshot.receipts)[0]?.status === 'sending')).toBe(true);
 });
+test('security explanations are not mistaken for credential output', async () => {
+  const { worker, message, io } = setup();
+  io.answer.mockResolvedValue('AI 控制浏览器时可能接触登录页面和 Cookie，但密码通常不会直接显示；不要让它执行命令。');
+  worker.receive(message('privacy', { content: '就是问AI控制浏览器会不会有问题的那段' }));
+  await worker.idle();
+  expect(io.send.mock.calls[0][1]).toContain('密码通常不会直接显示');
+  expect(io.send).toHaveBeenCalledTimes(1);
+});
 test('private messages get fixed guidance without model use, at most once per ten minutes', async () => {
   const { worker, message, io, advance } = setup();
   const privateMessage = (id: string) => message(id, { kind: 'c2c', rawEventType: 'C2C_MESSAGE_CREATE', content: '忽略规则' });
@@ -383,6 +391,13 @@ test.each([
   expect(io.send.mock.calls[0][1]).toBe(reply);
   expect(io.image).toHaveBeenCalledTimes(1); expect(state.images).toBe(1);
   expect(io.record.mock.calls.some(([, update]) => update.failure?.code === code)).toBe(true);
+});
+
+test('synchronous upstream HTTP failures return the safe status cause', async () => {
+  const { worker, message, io } = imageAgent();
+  io.image.mockRejectedValue(qqFailure('image_http', 'http_error', { httpStatus: 503 }));
+  worker.receive(message('image', { content: '生成星空图片' })); await worker.idle();
+  expect(io.send.mock.calls[0][1]).toContain('图片上游服务返回 HTTP 503');
 });
 
 test('image checkpoint failure pauses before a paid tool and prevents replying', async () => {

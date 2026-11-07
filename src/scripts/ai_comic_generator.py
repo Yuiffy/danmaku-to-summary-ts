@@ -1948,6 +1948,8 @@ def model_supports_chinese(model: Optional[str] = None) -> bool:
     # 高级模型列表（支持汉字）
     advanced_models = [
         "gpt-image-2",
+        "gpt-image-2.6-sunburst",
+        "gpt-image-2.6-flare",
         "gpt-image-1.5",
         "gemini-3-pro-image-preview-async",
         "gemini-3-pro-image-preview/nano-banana-2",

@@ -155,6 +155,18 @@ test('missing source, invented names and create-on-quote cannot spend image budg
   expect(render).not.toHaveBeenCalled();
 });
 
+test('image tool observers receive the concrete blocked message for the QQ reply layer', async () => {
+  const request = qqRequest(inbound, at)!;
+  const observed: QQImageToolResult[] = [];
+  const render = jest.fn<Promise<QQImageToolResult>, any[]>(async () => ({ status: 'generated', message: 'done' }));
+  const tools = createQQImageTools(request, config, jest.fn(async () => [png]), render, undefined,
+    result => observed.push(result)).tools;
+  const generate = tools.find(tool => tool.name === 'generate_image')!;
+  const result = await generate.execute({ ...command, mode: 'create' });
+  expect(result).toMatchObject({ status: 'blocked', message: expect.stringContaining('引用或附带了原图') });
+  expect(observed).toEqual([result]);
+});
+
 test('duplicate or unknown tools and tool loops remain bounded by the agent ceiling', async () => {
   const request = qqRequest(inbound, at)!, load = jest.fn(async () => [png]), render = jest.fn();
   const model = jest.fn(async () => call('read_image_sources', {}, 'repeat'));

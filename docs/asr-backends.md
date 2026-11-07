@@ -18,7 +18,7 @@
 `paraformer-zh` 时，配置中预留但未启用的 `finetuned_model` 路径不应关闭标准模型接力。
 中央队列通过 `ASR_CPU_FALLBACK=1` 准入的任务仍遵守队列轮次和文件锁，获取锁后跳过旧 GPU 等待。
 
-协调器保留原设备配置；只有 CPU 模型子进程隐藏 CUDA，并沿用 2 线程、BelowNormal、EcoQoS
+协调器保留原设备配置；只有 CPU 模型子进程隐藏 CUDA，并沿用配置的 4 个推理线程、BelowNormal、EcoQoS
 与 E 核策略。转写期间每 5 秒持续观察资源；GPU 连续空闲 `idle_s`（45 秒）且剩余音频至少
 `min_remaining_s`（600 秒）才接力。默认空闲条件：利用率低于 40%、显存占比低于 70%、
 可用显存至少 4096MiB，且原资源保护配置未要求因游戏而暂停。GPU 边界按扣除本模型 CUDA allocator
@@ -41,7 +41,10 @@ Windows 使用 PDH GPU Engine 计数器按 PID 排除当前模型进程，按同
 仅在新设备重做尚未提交的窗口，不能跳过音频或复用旧子进程响应。返回 GPU 必须重新满足
 完整空闲观察期，防止频繁重载；此策略不覆盖最终说话人/情感后处理。
 GPU 档沿用配置中的 `batch_size_s` 与 `batch_size_threshold_s`（生产为 600 / 60）；
-CPU 档保持 30 / 30。实际批量仍受窗口长度和 VAD 分句限制，不保证恢复整场批处理吞吐。
+CPU 档生产保持 60 / 60，并使用 4 个 PyTorch 线程、1 个 interop 线程和 `inference_batch_size=1`。
+实际批量仍受窗口长度和 VAD 分句限制，不保证恢复整场批处理吞吐。当前本机实测记录为：30 秒样本的 2 线程运行约
+84.4 秒（模型加载约 38 秒），60 秒样本的 4 线程运行约 63.3 秒（模型加载约 33.5 秒）。两次样本和批长不同，
+不能当作严格 A/B；4 线程在较长窗口上已接近实时，且冷启动更短，因此作为生产折中值。
 同设备连续窗口复用已加载的模型进程，不按窗口或 batch 释放模型。CPU 中断升档已经满足的
 空闲观察期须保留到 GPU 准入完成，不能提前清零后再次判定不满足而立即退回 CPU。
 再次繁忙则先释放 GPU 模型；`asr.cpu_fallback.enabled=false` 时等待 GPU 恢复，
@@ -73,7 +76,7 @@ Web 按该契约计算速度与剩余转写时间，不把复用进度当作本�
 
 `asr.device_handoff.allow_shared_gpu=true` 时，支持 GPU 高吞吐、GPU 低占用和 GPU 超低占用。
 `asr.cpu_fallback.enabled=false` 同时禁止中央队列的 CPU 准入和任务内部的 CPU 接力；
-生产已关闭该开关。GPU 余量不足时释放模型、保留已保存窗口并等待，恢复后从断点继续。
+生产关闭共享 GPU 档。GPU 余量不足时释放模型、保留已保存窗口并切到 CPU；GPU 连续空闲并达到准入条件后，恢复后从断点继续。
 配置载入任务后不热读；中央队列所属 webhook 需要重启后使用新的准入配置。
 外部 GPU 占用达到 `gpu_util_pct` 或检测到配置中的游戏时，保留同一个 GPU 模型，
 下一音频窗口改用 `gpu_throttle.low_impact.batch_size_s`（生产 30 秒），每窗完成后按
@@ -93,7 +96,7 @@ batch 变化不重载模型。小 batch 与让出时间降低占用，但不是�
 `performance_tier` 和实际 batch 记录本窗实际派发的档位。
 `handoff_gpu_low_impact_*` / `handoff_gpu_throughput_*` 分别记录新增音频、窗口耗时和 batch，
 超低占用档使用 `handoff_gpu_ultra_low_impact_*`，状态上报中的 `performance_tier` 为
-`gpu_ultra_low_impact`。生产默认 batch 为 30 秒、窗口间让出 1.0 秒；超过利用率、显存占比或剩余显存边界时仍等待。
+`gpu_ultra_low_impact`。只有显式打开共享 GPU 档时才使用 30 秒 batch 和窗口间让出 1.0 秒；生产关闭该档，超过 GPU 忙阈值直接按 CPU fallback 处理。
 写入 `.asr_meta.json`，供 Web 历史查看；旧 GPU 汇总不推断为具体档位。
 
 ## 按负载跳过说话人处理
@@ -217,13 +220,13 @@ worker 在线才能读取；缓存无效或缺失则回退原转写流程，不�
 
 ### GPU 繁忙时的 CPU 队列处理
 
-`asr.cpu_fallback` 默认为关闭，当前生产也已关闭，`min_available_memory_gb: 10` 保留供再次开启时使用。
+`asr.cpu_fallback` 默认配置仍是关闭，当前生产已开启，`min_available_memory_gb: 10` 作为 CPU 模型入场门槛。
 中央 summary 队列检测到游戏保护或既有 GPU 使用率/显存阈值繁忙时，对 CPU 支持的
 Paraformer/SenseVoice 任务改用一次性 CPU 子进程；保持单个队列 ASR 槽位、原模型、说话人
 及后处理要求，停止 GPU 常驻 worker。CPU ASR 与岁己实时 worker 可各运行一个，内存门槛
 检查的是启动当时的剩余物理内存，并非硬内存上限。
 
-CPU 子进程禁用 CUDA，主模型/VAD/标点/说话人/情感使用 CPU、两个推理线程、低优先级和
+CPU 子进程禁用 CUDA，主模型/VAD/标点/说话人/情感使用 CPU、4 个推理线程、1 个 interop 线程、低优先级和
 EcoQoS/E 核偏好。该进程不再等待游戏退出，也不申请 GPU 资源声明，保留 CPU 忙碌节流。
 ASR 输出的 `timings.cpu_fallback: 1` 标记这一路径；无需更换模型或让用户重排任务。
 设备在任务开始时确定，正在 CUDA 上执行的任务继续原有 GPU 节流，不中途搬迁权重。

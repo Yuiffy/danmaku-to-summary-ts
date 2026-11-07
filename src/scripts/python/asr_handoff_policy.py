@@ -4,7 +4,12 @@ import math
 
 def batch_settings(payload, device, low_impact=False, ultra_low_impact=False):
     if device == 'cpu':
-        return 30, 30
+        raw = payload.get('cpu_fallback') or {}
+        batch = int(float(raw.get('batch_size_s', 60) or 60))
+        threshold = int(float(raw.get('batch_size_threshold_s', batch) or batch))
+        if batch < 1 or threshold < 1 or batch > 300 or threshold > 300:
+            raise ValueError('Invalid CPU fallback batch')
+        return batch, threshold
     if ultra_low_impact:
         raw = ((payload.get('gpu_throttle') or {}).get('ultra_low_impact') or {}).get('batch_size_s', 30)
         batch = min(int(float(payload.get('batch_size_s', 300) or 300)), int(float(raw)))

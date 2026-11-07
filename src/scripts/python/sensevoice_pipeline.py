@@ -380,7 +380,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
     model_kwargs = {
         "model": resolved_model,
         "device": "cuda:0" if device == "cuda" else device,
-        "ncpu": 2 if device == 'cpu' else 4,
+        "ncpu": int(payload.get("ncpu") or 4) if device == 'cpu' else 4,
         "disable_update": True,
     }
     if backend_name == "fun_asr_nano" or "SenseVoice" in model_name or "Fun-ASR-Nano" in model_name:
@@ -428,7 +428,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                 vad_model = AutoModel(
                     model=vad_model_name,
                     device="cuda:0" if device == "cuda" else device,
-                    ncpu=2 if device == "cpu" else 4,
+                    ncpu=int(payload.get("ncpu") or 4) if device == "cpu" else 4,
                     disable_update=True,
                 )
         log_progress("VAD 模型加载完成，开始 VAD")
@@ -501,7 +501,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                         spk_model_obj = AutoModel(
                             model=resolved_spk_model,
                             device="cuda:0" if device == "cuda" else device,
-                            ncpu=2 if device == "cpu" else 4,
+                            ncpu=int(payload.get("ncpu") or 4) if device == "cpu" else 4,
                             disable_update=True,
                         )
                 set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)

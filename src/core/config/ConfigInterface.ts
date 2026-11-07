@@ -357,7 +357,15 @@ export interface AsrConfig {
     window_s?: number;
     worker_timeout_s?: number;
   };
-  cpu_fallback?: { enabled: boolean; min_available_memory_gb?: number };
+  cpu_fallback?: {
+    enabled: boolean;
+    min_available_memory_gb?: number;
+    torch_num_threads?: number;
+    torch_num_interop_threads?: number;
+    batch_size_s?: number;
+    batch_size_threshold_s?: number;
+    inference_batch_size?: number;
+  };
   live?: {
     enabled: boolean;
     room_ids: string[];

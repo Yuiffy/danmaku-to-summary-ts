@@ -354,6 +354,13 @@ it('applies an explicit title to an existing highlight-first video without rebui
   expect(readJson(f.metadataPath).window.duration).toBe(5.2);
 });
 
+it('passes reviewed tags through the direct feedback approval path without rebuilding media', async () => {
+  const f = fixture({}, undefined, true);
+  f.feedback.submit('3354', { ...f.input('投'), tags: '小岁, 搞笑' }); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['--tags', '小岁,搞笑', '--feedback-authorized']));
+});
+
 it.each([false, true])('restores a composed clip to source order before extending its ending (direct feedback: %s)', async directFeedback => {
   const f = fixture({ start: 0, end: 4 }, undefined, directFeedback), metadata = readJson(f.metadataPath);
   fs.writeFileSync(f.srt, '1\n00:00:00,000 --> 00:00:02,000\n建功\n\n2\n00:00:02,000 --> 00:00:04,000\n后续回应说完了\n');
@@ -960,4 +967,14 @@ it('protects active uploads even when they are older than the queue page display
   expect(f.clips.queues().uploads.some((job: any) => job.id === 'old-active')).toBe(false);
   expect(() => f.feedback.submit('3354', f.input())).toThrow('已在投稿队列');
   expect(f.planner).not.toHaveBeenCalled(); expect(f.run).not.toHaveBeenCalled();
+});
+
+it('allows a manual feedback retry after the upload worker reaches its terminal retry limit', async () => {
+  const f = fixture({}, undefined, true);
+  atomicJson(path.join(f.root, 'data/runtime/clip_upload_queue.json'), {
+    jobs: [{ id: 'blocked-upload', status: 'blocked', clipIds: [3354], error: 'automatic retry limit reached' }]
+  });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded' });
 });

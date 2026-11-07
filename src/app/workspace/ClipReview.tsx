@@ -64,7 +64,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   const resource = useResource<ClipDetail>(`/clips/${id}?part=${part}`, 5000, true), detail = resource.data;
   const [tab, setTab] = useState('subtitles'), [mode, setMode] = useState('media'), [note, setNote] = useState('');
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [cue, setCue] = useState(''), [enqueue, setEnqueue] = useState(false);
-  const [title, setTitle] = useState(''), [description, setDescription] = useState(''), [coverText, setCoverText] = useState(''), [sourceKind, setSourceKind] = useState('');
+  const [title, setTitle] = useState(''), [description, setDescription] = useState(''), [coverText, setCoverText] = useState(''), [tags, setTags] = useState(''), [sourceKind, setSourceKind] = useState('');
   const [titleChoice, setTitleChoice] = useState<TitleChoiceRef>(), [titleBusy, setTitleBusy] = useState(false);
   const [start, setStart] = useState(''), [end, setEnd] = useState(''), [allowLong, setAllowLong] = useState(false), [durationNote, setDurationNote] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
@@ -100,10 +100,12 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
     restored.current = true; setNote(value);
     try { localStorage.setItem(`clip-feedback-${id}`, value); } catch { /* Server saves submitted opinions independently. */ }
   }
-  const savedTitle = detail?.title, savedDescription = detail?.description, savedCoverText = detail?.coverText;
+  const savedTitle = detail?.title, savedDescription = detail?.description, savedCoverText = detail?.coverText,
+    savedTags = detail?.tags?.join(', ');
   useEffect(() => { if (savedTitle !== undefined) setTitle(savedTitle); }, [savedTitle]);
   useEffect(() => { if (savedDescription !== undefined) setDescription(savedDescription); }, [savedDescription]);
   useEffect(() => { if (savedCoverText !== undefined) setCoverText(savedCoverText); }, [savedCoverText]);
+  useEffect(() => { if (savedTags !== undefined) setTags(savedTags); }, [savedTags]);
   const loaded = !!detail, hasMedia = !!detail?.media, sourceAvailable = !!detail?.source.available, hasCandidateSubtitles = !!detail?.subtitles;
   useEffect(() => {
     if (!loaded) return;
@@ -129,12 +131,13 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       const body: any = { ...extra, action, revision: detail.revision, note: actionNote, publishApproved: publishing };
       if (titleChoice) Object.assign(body, { titleSetId: titleChoice.setId, titleRevision: titleChoice.revision });
       if (action === 'correct') Object.assign(body, { from, to, cue, enqueue });
-      if (['cut', 'approve-review', 'rebuild'].includes(action)) Object.assign(body, { title, description, coverText, sourceKind: action === 'cut' ? '' : sourceKind });
+      if (['cut', 'approve-review', 'rebuild'].includes(action)) Object.assign(body, { title, description, coverText, tags, sourceKind: action === 'cut' ? '' : sourceKind });
       if (action === 'rebuild') Object.assign(body, { start, end, allowLong, durationNote });
       if (action === 'feedback-publish' && detail.category === 'clip') {
         if (sourceKind) body.sourceKind = sourceKind;
-        for (const [key, value] of Object.entries({ title, description, coverText })) {
-          if (value !== detail[key as 'title' | 'description' | 'coverText']) body[key] = value;
+        for (const [key, value] of Object.entries({ title, description, coverText, tags })) {
+          const current = key === 'tags' ? detail.tags.join(', ') : detail[key as 'title' | 'description' | 'coverText'];
+          if (value !== current) body[key] = value;
         }
       }
       const result = await api<AdminJob>(`/clips/${id}/actions`, body);
@@ -198,6 +201,9 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       </video> : <div className="media-empty">{mode === 'media' ? '尚无成片，先查看粗剪或执行制作。' : '尚无粗剪，可点击生成粗剪。'}</div>}
       {detail.pendingRebuild && <div className="notice">修订尚未制作。播放器显示已有视频，字幕编辑区显示待制作修订。</div>}
       {detail.clip.issues.length > 0 && <div className="review-issues"><strong>待核对</strong>{detail.clip.issues.map((issue, index) => <p key={index}>{issue}</p>)}</div>}
+      {detail.category === 'clip' && <PeerCoverageEvidence curation={detail.evidence.curation} preUpload={detail.evidence.preUploadPeerCoverage}
+        canCheck={!publicationComplete && !processing && !['excluded', 'cancelled'].includes(detail.clip.status)}
+        onCheck={() => void act('peer-coverage')} compact />}
       <div className="tabs">{[['subtitles', '字幕'], ['copy', '文案与封面'], ['evidence', '审核证据'], ['rebuild', '重制与精剪']].map(([key, label]) => <button key={key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>{label}</button>)}</div>
       {tab === 'subtitles' && <section className="inspector-section">
         <div className="section-heading"><h3>{isSource ? '此时间段的原片字幕' : isPreview ? '粗剪字幕' : '候选 / 成片字幕'}</h3>{detail.category === 'clip' && <button onClick={() => void act('subtitles')} disabled={processing}>准备可修改字幕</button>}</div>
@@ -212,12 +218,12 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
           <label className="check-label"><input type="checkbox" checked={enqueue} onChange={event => setEnqueue(event.target.checked)} />改词后重制并入队投稿</label><button disabled={processing || !from} onClick={() => void act('correct')}>保存确认改词</button></details></>}
         {detail.category !== 'clip' && <p className="muted">请逐 P 核对原音与边界。没有问题可直接投稿，需要修改时在下方填写意见。</p>}
       </section>}
-      {tab === 'copy' && <section className="inspector-section copy-layout"><div className="form-stack"><label>标题<input readOnly value={title} /></label>{detail.category === 'clip' && <p className="muted">在上方“标题方案”中选择或保存手写标题。</p>}<label>简介<textarea readOnly={detail.category !== 'clip'} value={description} onChange={event => setDescription(event.target.value)} rows={5} /></label><label>封面文字<textarea readOnly={detail.category !== 'clip'} value={coverText} onChange={event => setCoverText(event.target.value)} rows={2} /></label>{detail.category === 'clip' && <><label>内容归属<select value={sourceKind} onChange={event => setSourceKind(event.target.value)}><option value="">沿用现有归属</option><option value="live_speech">主播本人发言</option><option value="recount">转述 / 引用</option><option value="playback">播放音频</option><option value="audience">观众弹幕</option></select></label><p className="muted">改好的文案会随“按意见修改并投稿”一起保存和制作。</p></>}{detail.category === 'activity' && <button disabled={processing} onClick={() => void act('restyle')}>更新歌切 / 视听包装</button>}</div>
+      {tab === 'copy' && <section className="inspector-section copy-layout"><div className="form-stack"><label>标题<input readOnly value={title} /></label>{detail.category === 'clip' && <p className="muted">在上方“标题方案”中选择或保存手写标题。</p>}<label>简介<textarea readOnly={detail.category !== 'clip'} value={description} onChange={event => setDescription(event.target.value)} rows={5} /></label><label>封面文字<textarea readOnly={detail.category !== 'clip'} value={coverText} onChange={event => setCoverText(event.target.value)} rows={2} /></label>{detail.category === 'clip' && <><label>投稿标签（逗号分隔）<input value={tags} onChange={event => setTags(event.target.value)} maxLength={1000} placeholder="例如：小岁, 影之刃零, 搞笑" /></label><p className="muted">标签会随“只保存审核”或“按意见修改并投稿”保存；至少保留一个标签。</p><label>内容归属<select value={sourceKind} onChange={event => setSourceKind(event.target.value)}><option value="">沿用现有归属</option><option value="live_speech">主播本人发言</option><option value="recount">转述 / 引用</option><option value="playback">播放音频</option><option value="audience">观众弹幕</option></select></label><p className="muted">改好的文案会随“按意见修改并投稿”一起保存和制作。</p></>}{detail.category === 'activity' && <button disabled={processing} onClick={() => void act('restyle')}>更新歌切 / 视听包装</button>}</div>
         <div>{detail.cover && <Image className="review-cover" src={asset('cover')} alt="当前视频封面" width={480} height={300} unoptimized />}
           {detail.media ? <CoverEditor key={`${id}-${part}-${detail.mediaRevision}`} id={id} part={part} detail={detail} text={coverText} onText={setCoverText} disabled={processing} onSaved={resource.refresh} />
             : <p className="muted">成片制作完成后，可以拖动选帧并裁剪封面。</p>}</div></section>}
       {tab === 'evidence' && <>
-        <PeerCoverageEvidence curation={detail.evidence.curation}
+        <PeerCoverageEvidence curation={detail.evidence.curation} preUpload={detail.evidence.preUploadPeerCoverage}
           canCheck={detail.category === 'clip' && !publicationComplete && !processing && !['excluded', 'cancelled'].includes(detail.clip.status)}
           onCheck={() => void act('peer-coverage')} />
         <pre className="evidence-view">{JSON.stringify(detail.evidence, null, 2)}</pre>
@@ -235,16 +241,25 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   </>;
 }
 
-function PeerCoverageEvidence({ curation, canCheck, onCheck }: { curation?: Record<string, any>; canCheck: boolean; onCheck: () => void }) {
+function PeerCoverageEvidence({ curation, preUpload, canCheck, onCheck, compact = false }: { curation?: Record<string, any>; preUpload?: Record<string, any>; canCheck: boolean; onCheck: () => void; compact?: boolean }) {
   const matches = Array.isArray(curation?.matches) ? curation.matches : [];
   const searches = Array.isArray(curation?.searches) ? curation.searches : [];
   const status = (value: string) => ({ covered: '已确认同题', subtitle_unavailable: '搜到但无完整字幕',
     same_event_unconfirmed: '疑似同题待人工核', read_failed: '读取失败待人工核', different_event: '已排除同题', own_account: '本账号' } as Record<string, string>)[value] || value;
+  const preStatus = preUpload?.status === 'covered' ? '投稿前已确认同题，已暂停投稿' : preUpload?.status === 'original' ? '投稿前已确认暂未发现同题' : preUpload?.status === 'needs_review' ? '投稿前核查待人工复核，投稿已暂停' : '';
+  if (compact) return <section className="inspector-section peer-coverage-quick">
+    <div className="section-heading"><h3>外部同题核查</h3><div className="button-row"><span className="muted">{curation?.status === 'covered' ? '已确认同题，已阻止重复自制' : curation ? status(curation.status) : '尚未检查'}</span><button disabled={!canCheck} onClick={onCheck}>手工检查 B 站同题</button></div></div>
+    <p className="muted">用于确认 B 站是否已有相同事件切片；确认后会展示命中视频和已配置的互动回执，不会自动替代人工审核。</p>
+    {preStatus && <p className="muted">{preStatus}{preUpload?.cached ? '（缓存）' : ''}：{preUpload?.reason}</p>}
+    {curation?.reason && <p className="muted">最近结果：{curation.reason}</p>}
+  </section>;
   return <section className="inspector-section">
     <div className="section-heading"><h3>外部同题切片核查</h3><div className="button-row"><span className="muted">{curation?.status === 'covered' ? '已阻止重复自制' : '仅作审核线索，未确认前不会自动替代'}</span><button disabled={!canCheck} onClick={onCheck}>手工检查 B 站同题</button></div></div>
     {!curation && <p className="muted">尚未执行同题核查。手工触发后会检索 B 站字幕，确认同一事件时记录命中视频并执行已配置的点赞、收藏和转发支持。</p>}
     {curation?.reason && <p className="muted">{curation.reason}</p>}
     {curation?.support && <p className="muted">互动回执：<span className="mono">{JSON.stringify(curation.support)}</span></p>}
+    {preStatus && <p className="muted">投稿前自动门禁：{preStatus}{preUpload?.cached ? '（缓存）' : ''}。{preUpload?.reason}</p>}
+    {preUpload?.decision?.support && <p className="muted">投稿前互动回执：<span className="mono">{JSON.stringify(preUpload.decision.support)}</span></p>}
     {matches.length ? <div className="form-stack">{matches.map((match: any) => <div key={`${match.bvid}-${match.status}`}>
       <a href={match.url || `https://www.bilibili.com/video/${match.bvid}/`} target="_blank" rel="noreferrer">{match.bvid} · {match.title || '未命名视频'}</a>
       <small>{status(match.status)}{match.reason ? ` · ${match.reason}` : ''}</small>

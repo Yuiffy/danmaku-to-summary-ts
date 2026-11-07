@@ -11,13 +11,22 @@ describe('asr_backends', () => {
       const payload=JSON.parse(input);console.log(JSON.stringify({backend:payload.backend,segments:[],
       handoff:payload.device_handoff,cuda:process.env.CUDA_VISIBLE_DEVICES,cpu:process.env.ASR_CPU_FALLBACK}));});`);
     const requests: string[] = [];
+    const persistentPayloads: any[] = [];
     const server = net.createServer((socket: any) => {
       let input = '';
       socket.on('data', (data: Buffer) => {
         input += data.toString();
         if (!input.includes('\n')) return;
-        requests.push(JSON.parse(input.split('\n')[0]).type);
-        socket.end(JSON.stringify({ ok: true }) + '\n');
+        const request = JSON.parse(input.split('\n')[0]);
+        requests.push(request.type);
+        persistentPayloads.push(request.payload);
+        socket.end(JSON.stringify({ ok: true, result: {
+          backend: request.payload.backend,
+          segments: [],
+          handoff: request.payload.device_handoff,
+          cuda: process.env.CUDA_VISIBLE_DEVICES,
+          cpu
+        } }) + '\n');
       });
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -35,7 +44,14 @@ describe('asr_backends', () => {
       } });
       expect(result).toMatchObject({ cuda: '0', cpu, handoff: { enabled: true, idle_s: 45,
         cpu_fallback_enabled: enabled !== false, min_available_memory_gb: 12 } });
-      expect(requests).toEqual([]); // The Python supervisor leases the existing worker.
+      if (cpu === '1') {
+        expect(requests).toEqual(['transcribe']);
+        expect(persistentPayloads[0]).toMatchObject({
+          device: 'cpu', vad_device: 'cpu', speaker_device: 'cpu', _cpu_fallback: true
+        });
+      } else {
+        expect(requests).toEqual([]);
+      }
     } finally {
       keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i]; });
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -56,7 +72,7 @@ describe('asr_backends', () => {
       const result = await asr.transcribeParaformer('fixture.wav', { asr: { paraformer: {
         python_executable: process.execPath, python_args: [adapter], process_timeout_s: 10
       } } });
-      expect(result).toMatchObject({ backend: 'paraformer', cuda: '', threads: '2', cpu: '1' });
+      expect(result).toMatchObject({ backend: 'paraformer', cuda: '', threads: '4', cpu: '1' });
     } finally {
       keys.forEach((key, index) => { if (original[index] === undefined) delete process.env[key]; else process.env[key] = original[index]; });
       fs.rmSync(directory, { recursive: true, force: true });

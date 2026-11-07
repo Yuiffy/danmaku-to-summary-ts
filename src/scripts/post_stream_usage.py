@@ -63,7 +63,8 @@ def request_record(attempt, stage, artifact, index, defaults=None):
     image_input = number(details.get('image_tokens'))
     text_input = number(details.get('text_tokens'))
     image_output = number(output_details.get('image_tokens'))
-    if stage == 'image' and model in ('gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare') and None not in (image_input, text_input, image_output):
+    if stage == 'image' and model in ('gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare',
+                                      'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare') and None not in (image_input, text_input, image_output):
         image_estimate = (image_input * 8.0 + text_input * 5.0 + image_output * 30.0) / 1e6
     return {'stage': stage, 'phase': attempt.get('phase'), 'model': model, 'provider': attempt.get('provider') or defaults.get('provider'),
             'quality': attempt.get('quality', defaults.get('quality')),
@@ -199,7 +200,7 @@ def main():
     records, errors = collect(root, since, until, set(args.rooms.split(',')))
     result = {'generatedAt': dt.datetime.now().astimezone().isoformat(), 'sourceRoot': root,
               'since': args.since, 'until': args.until, 'records': records, 'errors': errors,
-              'pricing': '2026-09-09 official USD equivalents, not gateway billing. GPT Image 2/2.5 images priced as uncached inputs. Missing cache-write usage assumes zero writes.',
+              'pricing': '2026-09-09 official USD equivalents, not gateway billing. GPT Image 2/2.5/2.6 images priced as uncached inputs. Missing cache-write usage assumes zero writes.',
               'pricingSource': 'https://developers.openai.com/api/docs/pricing',
               'limits': ['Known saved attempts only; absent usage is not free.', 'Historical anonymous retries cannot always be deduplicated.',
                          'No source artifacts were modified and no network requests were made.']}

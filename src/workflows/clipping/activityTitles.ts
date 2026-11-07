@@ -23,14 +23,15 @@ export function bindTranscriptTitles(items: Data[], events: Data[], rows: Data[]
         authority: 'user', audioVisualReviewed: false, confirmation: String(item.confirmation).trim(), note: item.note,
         window: { start: event.start, end: event.end } };
     }
-    if (item.method === 'catalog_lyric_match') {
+    if (item.method === 'catalog_lyric_match' || item.method === 'catalog_title_context_match') {
       if (!event || !Array.isArray(item.segments) || !item.segments.length) throw new Error('Invalid catalog title evidence');
       // A boundary edit may discard old citations. Check their original content before
       // rematching the same catalog work using only the newly retained performance.
       const previousSpan = { ...event, start: Math.min(event.start, ...item.segments.map((r: Data) => r.start)),
         end: Math.max(event.end, ...item.segments.map((r: Data) => r.end)) };
       validateCatalogTitle(item, previousSpan as any, rows as any, transcript as any);
-      const refreshed = identifySongFromCatalog(event as any, rows as any, [item.catalog], transcript as any);
+      const refreshed = identifySongFromCatalog(event as any, rows as any, [item.catalog], transcript as any,
+        { hints: item.titleAlias?.value ? [item.titleAlias.value] : [] });
       if (refreshed.status !== 'identified' || refreshed.item.name !== item.name) throw new Error('Current performance no longer supports its catalog title');
       validateCatalogTitle(refreshed.item, event as any, rows as any, transcript as any);
       return refreshed.item;
@@ -50,7 +51,11 @@ export function namedEvents(events: Data[], evidence: Data | null): Data[] {
   if (items.some(item => !events.some(event => event.id === item.activityId)) || new Set(items.map(i => i.activityId)).size !== items.length) {
     throw new Error('Reviewed content names must refer to specific source activities');
   }
-  return events.map(event => ({ ...event, name: items.find(item => item.activityId === event.id)?.name || event.name }));
+  return events.map(event => {
+    const matches = items.filter(item => item.activityId === event.id)
+      .sort((a, b) => Number(b.method === 'explicit_user_title') - Number(a.method === 'explicit_user_title'));
+    return { ...event, name: matches[0]?.name || event.name };
+  });
 }
 
 export function songTitle(name: string, date: string): string {

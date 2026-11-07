@@ -5,6 +5,7 @@ import { AdminError } from './AdminFiles';
 import { bundleCommand, clipCommand, OperatorCommand } from './AdminCommandPolicy';
 import { FeedbackPlan, missingFeedbackFields, parseFeedbackPlan } from './AdminFeedbackPolicy';
 import { activityRepairCommand } from './AdminWorkflowPolicy';
+import { PreUploadPeerCoverageGate } from './AdminPreUploadPeerCoverage';
 
 /** One revision-bound edit session. Tools can inspect results, but cannot grant their own approval. */
 export class AdminFeedbackSession {
@@ -21,7 +22,8 @@ export class AdminFeedbackSession {
     private readonly edits: Record<string, unknown>, private readonly clips: AdminClipStore,
     private readonly run: CommandRunner, private readonly output: (text: string) => void,
     private readonly update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
-    private readonly assertEditable: () => void, readonly directFeedback = false) { this.expected = revision;
+    private readonly assertEditable: () => void, readonly directFeedback = false,
+    private readonly peerCoverageGate?: PreUploadPeerCoverageGate) { this.expected = revision;
         this.originalStart = this.clips.detail(this.id).source.start;
         try {
             const fs = require('fs'), path = require('path');
@@ -113,8 +115,10 @@ export class AdminFeedbackSession {
     if (detail.category !== 'clip' || !detail.media || !detail.cover || detail.pendingRebuild || record.pendingCut
       || record.reviewPending || record.editorialExclusion) throw new AdminError('当前版本尚未达到可恢复投稿状态，请重新按意见处理');
     const expected = { title: plan.title || detail.title, description: plan.description || detail.description,
-      coverText: plan.coverText || detail.coverText };
-    if (detail.title !== expected.title || detail.description !== expected.description || detail.coverText !== expected.coverText) {
+      coverText: plan.coverText || detail.coverText,
+      tags: Array.isArray((plan as any).tags) ? (plan as any).tags : detail.tags };
+    if (detail.title !== expected.title || detail.description !== expected.description || detail.coverText !== expected.coverText
+      || JSON.stringify(detail.tags) !== JSON.stringify(expected.tags)) {
       throw new AdminError('上次修改后的文案与当前成片不一致，请刷新后按最新意见重试');
     }
     this.requestedTitle = expected.title;
@@ -136,7 +140,9 @@ export class AdminFeedbackSession {
     this.validate();
     if (++this.attempts > 3) throw new AdminError('本次已完成三轮修改复核，仍未解决的问题已保存');
     const initial = this.context();
-    const plan: FeedbackPlan = { ...parseFeedbackPlan(JSON.stringify(raw), initial, this.note, this.originalStart), ...this.edits };
+    const plannerInput = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : raw;
+    if (plannerInput && typeof plannerInput === 'object' && !Array.isArray(plannerInput)) delete (plannerInput as Record<string, unknown>).tags;
+    const plan: FeedbackPlan = { ...parseFeedbackPlan(JSON.stringify(plannerInput), initial, this.note, this.originalStart), ...this.edits };
     if (plan.blockedReason) throw new AdminError(plan.blockedReason);
     const missing = missingFeedbackFields(plan, initial, this.directFeedback);
     if (!humanReview && missing.length) throw new AdminError(`修改计划缺少：${missing.join('；')}`);
@@ -144,7 +150,8 @@ export class AdminFeedbackSession {
     this.update({ plan: { ...plan, ...(humanReview ? { reviewMode: 'human' } : {}) } });
     if (initial.category === 'clip') {
       const copy = { title: plan.title || initial.title, description: plan.description || initial.description,
-        coverText: plan.coverText || initial.coverText, ...this.edits };
+        coverText: plan.coverText || initial.coverText,
+        tags: Array.isArray((this.edits as any).tags) ? (this.edits as any).tags : initial.tags };
       this.requestedTitle = copy.title as string;
       const record = this.clips.record(this.id), metadata = this.clips.metadata(record);
       const sourceKind = plan.sourceKind || initial.evidence.sourceKind || (this.directFeedback ? 'live_speech' : undefined);
@@ -218,6 +225,15 @@ export class AdminFeedbackSession {
     if (this.queued) throw new AdminError('本次已加入投稿队列');
     if (!this.ready()) throw new AdminError(`成片复核尚未通过，未入队：${this.clips.detail(this.id).clip.issues.join('；') || '尚未完成当前版本复核或标题与修改计划不一致'}`);
     const final = this.clips.record(this.id), detail = this.clips.detail(this.id);
+    if (detail.category === 'clip' && this.peerCoverageGate) {
+      const peer = await this.peerCoverageGate.check(this.id, detail, this.output, value => this.update(value));
+      if (peer.status === 'covered') {
+        throw new AdminError(`已确认 B 站存在同题成片，已执行支持并暂停投稿：${peer.reason}`);
+      }
+      if (peer.status === 'needs_review') {
+        throw new AdminError(`投稿前 B 站同题核查未完成，已暂停投稿：${peer.reason}`);
+      }
+    }
     const command = detail.category === 'clip' ? clipCommand(this.id, { action: 'enqueue', note: this.note, publishApproved: true })
       : bundleCommand(this.id, { action: 'enqueue', note: this.note, publishApproved: true }, detail.category,
         this.clips.checkedInput(final.metadataPath, ['.json']));

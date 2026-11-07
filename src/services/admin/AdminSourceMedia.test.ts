@@ -16,16 +16,15 @@ it('matches the real keyframe time, shares concurrent requests and invalidates c
     return JSON.stringify({ packets: [{ flags: 'K_', data_hash: 'MD5:keyframe', pts_time: args[args.length - 1] === file ? '90.5' : '.08' }] });
   });
   const media = new AdminSourceMedia(path.join(directory, 'cache'), () => 'ffmpeg', run);
-  const remux = { forceRemux: true };
-  const [first, concurrent] = await Promise.all([media.prepare(file, { start: 100, end: 120 }, remux), media.prepare(file, { start: 100, end: 120 }, remux)]);
+  const [first, concurrent] = await Promise.all([media.prepare(file, { start: 100, end: 120 }), media.prepare(file, { start: 100, end: 120 })]);
   expect(first.origin).toBeCloseTo(90.42); expect(concurrent).toEqual(first); expect(run).toHaveBeenCalledTimes(3);
   expect(run.mock.calls[0][1]).toEqual(expect.arrayContaining(['-c', 'copy', '-ss', '92']));
-  expect(await media.prepare(file, { start: 100, end: 120 }, remux)).toEqual(first); expect(run).toHaveBeenCalledTimes(3);
+  expect(await media.prepare(file, { start: 100, end: 120 })).toEqual(first); expect(run).toHaveBeenCalledTimes(3);
   fs.appendFileSync(file, 'changed');
-  expect((await media.prepare(file, { start: 100, end: 120 }, remux)).file).not.toBe(first.file);
+  expect((await media.prepare(file, { start: 100, end: 120 })).file).not.toBe(first.file);
   expect(fs.readFileSync(file, 'utf8')).toBe('sourcechanged');
 });
-it('passes browser formats through and refuses an unproven time mapping without saving a ready receipt', async () => {
+it('passes fast-start browser formats through and refuses an unproven FLV mapping without saving a ready receipt', async () => {
   const file = path.join(directory, 'source.mp4'); fs.writeFileSync(file, 'source');
   const run = jest.fn(async (_executable: string, args: string[]) => {
     if (args.includes('-movflags')) { fs.writeFileSync(args[args.length - 1], 'mp4'); return ''; }
@@ -35,9 +34,24 @@ it('passes browser formats through and refuses an unproven time mapping without 
   expect(await media.prepare(file, { start: 10, end: 12 })).toMatchObject({ file, origin: 0, direct: true, format: '.mp4' });
   expect(run).not.toHaveBeenCalled();
   const flv = path.join(directory, 'source.flv'); fs.writeFileSync(flv, 'flv');
-  expect(await media.prepare(flv, { start: 10, end: 12 })).toMatchObject({ file: flv, origin: 0, direct: true, format: '.flv' });
-  await expect(media.prepare(flv, { start: 10, end: 12 }, { forceRemux: true })).rejects.toThrow('原片时间');
+  await expect(media.prepare(flv, { start: 10, end: 12 })).rejects.toThrow('原片时间');
   expect(fs.readdirSync(cache)).toEqual([]);
+});
+
+it('prepares a short window when an MP4 index is at the tail', async () => {
+  const file = path.join(directory, 'tail-index.mp4');
+  const bytes = Buffer.alloc(4 * 1024 * 1024 + 32, 0);
+  bytes.write('ftypisom', 4);
+  bytes.write('mdat', 16);
+  bytes.write('moov', 4 * 1024 * 1024 + 4);
+  fs.writeFileSync(file, bytes);
+  const run = jest.fn(async (_executable: string, args: string[]) => {
+    if (args.includes('-movflags')) { fs.writeFileSync(args[args.length - 1], 'fast-start-window'); return ''; }
+    return JSON.stringify({ packets: [{ flags: 'K_', data_hash: 'same', pts_time: args[args.length - 1] === file ? '12.5' : '.08' }] });
+  });
+  const media = new AdminSourceMedia(path.join(directory, 'cache'), () => 'ffmpeg', run);
+  await expect(media.prepare(file, { start: 20, end: 22 })).resolves.toMatchObject({ direct: false, format: '.mp4' });
+  expect(run).toHaveBeenCalledWith('ffmpeg', expect.arrayContaining(['-movflags', '+faststart']), expect.any(Number));
 });
 
 function slowProcesses(source: string, remuxMs: number, probeMs: number) {

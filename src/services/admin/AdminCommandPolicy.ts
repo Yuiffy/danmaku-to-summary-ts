@@ -39,8 +39,11 @@ export function clipCommand(idValue: unknown, body: any): OperatorCommand {
     if (body.enqueue === true) { publication(body); args.push('--enqueue'); }
   }
   if (['cut', 'approve-review', 'rebuild'].includes(action)) {
-    for (const [key, flag] of [['title', '--title'], ['description', '--description'], ['coverText', '--cover-text']] as const) {
-      if (body[key] !== undefined) args.push(flag, text(body, key, key === 'description' ? 10000 : 300, false));
+    for (const [key, flag] of [['title', '--title'], ['description', '--description'], ['coverText', '--cover-text'], ['tags', '--tags']] as const) {
+      if (body[key] !== undefined) {
+        const value = key === 'tags' && Array.isArray(body[key]) ? body[key].join(',') : text(body, key, key === 'description' ? 10000 : 300, false);
+        args.push(flag, value);
+      }
     }
     if (body.sourceKind) {
       if (!['live_speech', 'recount', 'playback', 'audience'].includes(body.sourceKind) || action === 'cut') throw new AdminError('归属类型无效');

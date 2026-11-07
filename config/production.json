@@ -481,6 +481,30 @@
             {
               "model": "gpt-image-2.5-flare",
               "quality": "max"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "high"
             }
           ]
         }
@@ -2616,14 +2640,19 @@
       "min_remaining_s": 600,
       "gpu_util_pct": 70,
       "window_s": 120,
-      "allow_shared_gpu": true,
+      "allow_shared_gpu": false,
       "shared_gpu_util_pct": 90,
       "gpu_busy_s": 15,
       "device_cooldown_s": 120
     },
     "cpu_fallback": {
-      "enabled": false,
-      "min_available_memory_gb": 10
+      "enabled": true,
+      "min_available_memory_gb": 10,
+      "torch_num_threads": 4,
+      "torch_num_interop_threads": 1,
+      "batch_size_s": 60,
+      "batch_size_threshold_s": 60,
+      "inference_batch_size": 1
     },
     "live": {
       "enabled": true,

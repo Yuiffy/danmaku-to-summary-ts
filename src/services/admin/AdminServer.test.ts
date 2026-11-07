@@ -238,6 +238,9 @@ it('cancels an individual upload through the existing CLI without requiring a st
   expect(f.run.mock.calls[1][0].args).toContain('old');
   atomicJson(queuePath, { jobs: [{ id: 'old', status: 'running', clipIds: [1], cancellationRequests: { 1: {} }, cancellationAcknowledgedIds: [1] }] });
   expect(f.clips.hasActiveUpload('1')).toBe(false);
+  atomicJson(queuePath, { jobs: [{ id: 'blocked', status: 'blocked', clipIds: [1] }] });
+  expect(f.clips.hasActiveUpload('1')).toBe(false);
+  expect(f.clips.detail('1').uploadJob).toBeUndefined();
 });
 
 it('applies web reminder edits in the bot without resetting receipts, and acknowledges rejected commands', async () => {
@@ -365,7 +368,10 @@ it('shows untitled candidate evidence and seeks registered originals without pre
   expect(detail.source.subtitles).toContain('00:45:41,000'); expect(detail.source.subtitles).not.toContain('范围外');
   expect(detail.media).toBe(false); expect(detail.preview).toBe(false);
   const playback = (await request(app).get('/clips/1/source-playback').set(headers).expect(200)).body;
-  expect(playback).toEqual({ start: 2742.139, end: 2746, origin: 0, direct: true, format: '.mp4' });
+  expect(playback).toEqual(expect.objectContaining({ start: 2742.139, end: 2746, origin: 0, direct: true, format: '.mp4' }));
+  expect(playback.sourceKey).toEqual(expect.any(String));
+  expect(playback.assetKey).toEqual(expect.any(String));
+  await request(app).get(`/source-assets/${playback.assetKey}`).set(headers).set('Range', 'bytes=2-5').expect(206);
   await request(app).get('/clips/1/assets/source-preview').set(headers).set('Range', 'bytes=2-5').expect(206);
   expect(fs.readFileSync(registryFile, 'utf8')).toBe(before); expect(fs.readFileSync(metadataFile, 'utf8')).toBe(metaBefore);
   expect(f.run).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();

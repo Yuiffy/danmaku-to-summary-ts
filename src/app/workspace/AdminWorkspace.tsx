@@ -10,20 +10,24 @@ import { BilibiliLogin } from './BilibiliLogin';
 import { CommentReplies } from './CommentReplies';
 import { CommentFeedback } from './CommentFeedback';
 import { QQRecords } from './QQRecords';
+import { QQChat } from './QQChat';
+import { QQKnowledge } from './QQKnowledge';
 import { CampaignCandidates } from './CampaignCandidates';
 import { UploadQueue } from './UploadQueue';
 import { AsrQueue } from './AsrQueue';
 import { ClipProgress } from './ClipProgress';
 import { useResource } from './client';
 
-type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq';
+type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq' | 'qq-chat' | 'qq-knowledge';
 const navigation: { id: View; mark: string; name: string; caption: string }[] = [
   { id: 'review', mark: '▷', name: '视频审核', caption: '素材 · 字幕 · 投稿' },
   { id: 'fuya', mark: '◇', name: '候补切片', caption: '逐场候补 · 原片审核' },
   { id: 'config', mark: '≡', name: '配置', caption: '处理流程与房间规则' },
   { id: 'login', mark: '◎', name: 'B 站登录', caption: '状态检查 · 恢复登录' },
   { id: 'comments', mark: '↔', name: '评论回复', caption: '处理进度 · 回复记录' },
-  { id: 'qq', mark: '@', name: 'QQ 问答', caption: '群聊艾特 · 本地记录' },
+  { id: 'qq', mark: '@', name: 'QQ 问答', caption: '艾特问答 · 本地记录' },
+  { id: 'qq-chat', mark: '☷', name: 'QQ 群聊', caption: '全量归档 · 上下文删除' },
+  { id: 'qq-knowledge', mark: '✦', name: 'QQ 知识库', caption: '配置规则 · 本地记忆' },
   { id: 'feedback', mark: '✎', name: '视频反馈', caption: '观众建议 · 制作复盘' },
   { id: 'reminders', mark: '◷', name: '直播提醒', caption: '事项与发送记录' },
   { id: 'questions', mark: '⌕', name: '问鹿饼', caption: '直播记忆 · 证据检索' },
@@ -63,6 +67,8 @@ export function AdminWorkspace() {
         {view === 'comments' && <CommentReplies />}
         {view === 'feedback' && <CommentFeedback />}
         {view === 'qq' && <QQRecords />}
+        {view === 'qq-chat' && <QQChat />}
+        {view === 'qq-knowledge' && <QQKnowledge />}
         {view === 'reminders' && <Reminders onConfig={() => navigate('config')} />}
         {view === 'operations' && <Operations />}
         {view === 'delayed' && <DelayedTasks />}

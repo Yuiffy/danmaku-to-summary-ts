@@ -15,6 +15,7 @@ export interface CoverageSettings {
     maxSearchResults?: number; maxSearchQueries?: number;
     supportActions?: Array<'like' | 'favorite' | 'repost'>; favoriteFolderId?: string;
     maxSupportPerDay?: number; supportIntervalSeconds?: number;
+    preUploadSearchQuery?: string;
 }
 export type CoverageMatchStatus = 'own_account' | 'subtitle_unavailable' | 'read_failed'
     | 'different_event' | 'same_event_unconfirmed' | 'covered';
@@ -40,7 +41,8 @@ export const COVERAGE_STANDARD = '只保留有明确独立看点、必要铺垫�
 const normalized = (value: string) => value.replace(/[\p{P}\p{Z}\s]/gu, '').toLowerCase();
 export const coverageDigest = (candidate: CoverageCandidate): string => createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 
-export function coverageSettings(raw: CoverageSettings = {}): Required<Omit<CoverageSettings, 'favoriteFolderId'>> & { favoriteFolderId?: string } {
+export function coverageSettings(raw: CoverageSettings = {}): Required<Omit<CoverageSettings, 'favoriteFolderId' | 'preUploadSearchQuery'>>
+    & { favoriteFolderId?: string; preUploadSearchQuery?: string } {
     const settings = { enabled: false, minScore: 90, maxStandalone: 5, maxCandidates: 50, maxSearchResults: 5, maxSearchQueries: 4,
         supportActions: ['like', 'favorite'] as Array<'like' | 'favorite'>, maxSupportPerDay: 10, supportIntervalSeconds: 60, ...raw };
     for (const [field, low, high] of [['minScore', 0, 100], ['maxStandalone', 1, 5], ['maxCandidates', 1, 100],
@@ -139,7 +141,7 @@ export function confirmedCoverage(candidate: CoverageCandidate, peer: PeerVideo,
 
 /** Candidate ordering is supplied by the source selector. IO failures are unknown, never proof of no competition. */
 export async function curateCandidates(candidates: CoverageCandidate[], raw: CoverageSettings, io: CoverageIO,
-    options: { skipEditorialAssessment?: boolean } = {}): Promise<CoverageDecision[]> {
+    options: { skipEditorialAssessment?: boolean; searchQueries?: (candidate: CoverageCandidate, modelQueries: unknown, limit: number) => string[] } = {}): Promise<CoverageDecision[]> {
     const settings = coverageSettings(raw), decisions: CoverageDecision[] = [];
     let accepted = 0, suspended = false;
     for (const [index, candidate] of candidates.entries()) {
@@ -161,7 +163,9 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
                 if (!assessment.worthPublishing || assessment.score < settings.minScore) {
                     decision = { ...base, status: 'rejected', score: assessment.score, reason: assessment.reason };
                 } else {
-                    const queries = buildCoverageQueries(candidate, assessment.queries, settings.maxSearchQueries);
+                    const queries = options.searchQueries
+                        ? options.searchQueries(candidate, assessment.queries, settings.maxSearchQueries)
+                        : buildCoverageQueries(candidate, assessment.queries, settings.maxSearchQueries);
                     if (!queries.length) throw new Error('invalid_search_queries');
                     decision = { ...base, status: 'original', score: assessment.score, reason: assessment.reason, searches: [], matches: [] };
                     const seen = new Set<string>();

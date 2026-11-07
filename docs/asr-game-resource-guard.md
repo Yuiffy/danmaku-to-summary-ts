@@ -2,9 +2,9 @@
 
 ## 结论
 
-Paraformer 的主要推理路径在 GPU 上。把它强制搬到 E 核 CPU 会明显变慢，也可能增加游戏的 CPU 帧时间，因此生产配置默认继续使用 CUDA。
+Paraformer 的主要推理路径在 GPU 上。把它搬到 E 核 CPU 会变慢，因此 CPU fallback 只在 GPU 繁忙且可用内存达标时启用，并使用低优先级和 E 核偏好降低对游戏的影响。
 
-游戏期间不再因为进程名直接暂停队列。Python 运行时会使用低优先级、EcoQoS、PyTorch 线程上限和 Windows CPU Sets 的 E-core 偏好；当检测到其他 GPU 进程造成明显压力时，继续使用 GPU，但把交互 batch 缩小，并在 CUDA 阶段之间主动让出短时间。CPU 负载过高时，CPU 节流只有限等待，避免任务无限堆积。
+游戏期间不再因为进程名直接暂停队列。Python 运行时会使用低优先级、EcoQoS、PyTorch 线程上限和 Windows CPU Sets 的 E-core 偏好；生产配置在检测到其他 GPU 进程造成压力时释放 ASR 的 GPU 模型并切到 CPU，不再用超低 GPU 档和游戏共享显卡。CPU 负载过高时，CPU 节流只有限等待，避免任务无限堆积。
 
 ## 通用 GPU 检测
 
@@ -75,4 +75,4 @@ Paraformer 的主要推理路径在 GPU 上。把它强制搬到 E 核 CPU 会�
 
 `prefer_e_cores` 使用 Windows CPU Sets 的效率等级，不依赖固定逻辑核心编号。系统不支持 CPU Sets 时仍保留低优先级和 EcoQoS。
 
-如果确实希望游戏期间完全排队，可将 `pause_when_game_running` 改为 `true`；这只是显式的兼容模式，不是生产默认策略。
+如果确实希望游戏期间完全排队，可将 `pause_when_game_running` 改为 `true`；这只是显式的兼容模式，不是生产默认策略。生产 CPU fallback 参数为 `torch_num_threads=4`、`torch_num_interop_threads=1`、`batch_size_s=60`、`batch_size_threshold_s=60`。

@@ -5,12 +5,13 @@ import { AdminError } from './AdminFiles';
 import { AdminFeedbackSession } from './AdminFeedbackSession';
 import { FeedbackAgentRunner } from './AdminFeedbackAgent';
 import { ACTIVITY_TITLE_EVIDENCE_ERROR, feedbackPrompt, FeedbackPlan, FeedbackPlanner, isUnchangedReview, missingFeedbackFields, parseFeedbackPlan } from './AdminFeedbackPolicy';
+import { PreUploadPeerCoverageGate } from './AdminPreUploadPeerCoverage';
 
 /** One saved operator intent; all media/review/queue mutations remain with the existing CLIs. */
 export class AdminFeedback {
   constructor(private readonly clips: AdminClipStore, private readonly jobs: AdminJobs,
     private readonly run: CommandRunner, private readonly plan: FeedbackPlanner, private readonly agent?: FeedbackAgentRunner,
-    private readonly directFeedback = true) {}
+    private readonly directFeedback = true, private readonly peerCoverageGate?: PreUploadPeerCoverageGate) {}
 
   submit(id: string, body: any): AdminJob {
     if (body.publishApproved !== true) throw new AdminError('请明确授权修改完成后投稿');
@@ -25,6 +26,13 @@ export class AdminFeedback {
     for (const key of ['title', 'description', 'coverText']) if (body[key] !== undefined) {
       if (typeof body[key] !== 'string' || !body[key].trim() || body[key].length > (key === 'description' ? 10000 : 300)) throw new AdminError(`修改后的 ${key} 无效`);
       edits[key] = body[key];
+    }
+    if (body.tags !== undefined) {
+      if (this.clips.detail(id).category !== 'clip') throw new AdminError('完整包标签请使用专用包装流程');
+      if (typeof body.tags !== 'string' || body.tags.length > 1000 || body.tags.includes('\0')) throw new AdminError('修改后的 tags 无效');
+      const tags: string[] = Array.from(new Set<string>(body.tags.split(/[,，、;；\s]+/u).map((value: string) => value.trim()).filter(Boolean)));
+      if (!tags.length || tags.some(tag => tag.length > 100) || tags.length > 20) throw new AdminError('请至少填写一个有效标签（最多 20 个）');
+      edits.tags = tags;
     }
     if (body.sourceKind) {
       if (!['live_speech', 'recount', 'playback', 'audience'].includes(body.sourceKind)) throw new AdminError('内容归属无效');
@@ -53,7 +61,8 @@ export class AdminFeedback {
       const unchangedReview = !Object.keys(edits).length && isUnchangedReview(note);
       const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note)
         && !missingFeedbackFields(edits, initial, true).length;
-      const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update, () => this.assertEditable(id), this.directFeedback);
+      const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update,
+        () => this.assertEditable(id), this.directFeedback, this.peerCoverageGate);
       if (resumeFrom && ['failed', 'interrupted'].includes(resumeFrom.status) && resumeFrom.note === note
         && resumeFrom.plan && initial.category === 'clip') {
         session.resumeReviewed(resumeFrom.plan as FeedbackPlan);

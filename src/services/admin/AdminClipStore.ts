@@ -144,7 +144,8 @@ export class AdminClipStore {
       sourceRevision: digest(JSON.stringify({ source, media: fingerprints.filter(entry => entry.file === (metadata.source?.mediaPath || clip.sourceMediaPath)) })),
       title: clip.title || copy.title || '', description: clip.description || copy.description || '', coverText: copy.coverText || metadata.clip?.coverText || '',
       coverSelection: metadata.coverSelection,
-      tags: Array.isArray(clip.tags) ? clip.tags : [], subtitles, previewSubtitles, partSubtitles, source,
+      tags: Array.isArray(clip.tags) ? clip.tags : Array.isArray(copy.tags) ? copy.tags
+        : Array.isArray(metadata.upload?.tags) ? metadata.upload.tags : [], subtitles, previewSubtitles, partSubtitles, source,
       pendingRebuild: !!(clip.pendingRebuild || metadata.rebuildRequired), mediaSubtitles: !!this.resolveAsset(clip, metadata, 'media-subtitles'),
       category: metadata.type === 'stream_activity_submission' ? 'activity' : metadata.type === 'stream_game_submission' ? 'game' : 'clip',
       parts: parts.map((part: any) => ({ title: part.title || '', duration: part.duration || part.actualDuration || 0, subtitles: !!part.srtPath })),
@@ -159,7 +160,8 @@ export class AdminClipStore {
         clipIntent: this.intent(clip, metadata), candidate: metadata.candidate, subtitleProofreading: metadata.subtitleProofreading,
         humanReview: metadata.humanReview, corrections: metadata.candidateSubtitles?.corrections || metadata.renderedSubtitles?.corrections,
         reviewPreview: metadata.reviewPreview, editorial: metadata.editorial, diagnostics: clip.failureReason,
-        activityReview: metadata.activityReview, gameReview: metadata.gameReview, source: metadata.source, kind: metadata.kind, parts })
+        activityReview: metadata.activityReview, gameReview: metadata.gameReview, source: metadata.source, kind: metadata.kind, parts,
+        preUploadPeerCoverage: this.preUploadPeerCoverage(String(clip.id)) })
     };
   }
   feedbackDetail(id: string): ClipDetail {
@@ -191,6 +193,13 @@ export class AdminClipStore {
     }
     return detail;
   }
+  preUploadPeerCoverage(id: string): any {
+    const value = readJson(path.join(this.root, 'data/runtime/admin/peer-coverage', `${id}.json`), null);
+    return value && typeof value === 'object' ? value : undefined;
+  }
+  savePreUploadPeerCoverage(id: string, value: unknown): void {
+    atomicJson(path.join(this.root, 'data/runtime/admin/peer-coverage', `${id}.json`), value);
+  }
   feedbackSourceSubtitles(id: string, start: number, end: number): string {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > 900) {
       throw new AdminError('原片上下文需指定有效起止秒数，每次最多 15 分钟');
@@ -209,7 +218,10 @@ export class AdminClipStore {
   }
   private activeUploadJob(id: string): ClipDetail['uploadJob'] {
     const queue = readJson(path.join(this.root, 'data/runtime/clip_upload_queue.json'), { jobs: [] });
-    const job = queue.jobs.find((job: any) => ['pending', 'queued', 'retry_wait', 'blocked', 'running', 'uploading', 'processing'].includes(job.status)
+    // `blocked` is the upload worker's terminal retry-limit state. It must stay
+    // visible in the queue history, but it no longer owns the clip: the operator
+    // needs to be able to fix the metadata and submit a fresh manual attempt.
+    const job = queue.jobs.find((job: any) => ['pending', 'queued', 'retry_wait', 'running', 'uploading', 'processing'].includes(job.status)
       && job.clipIds?.includes(Number(id)) && !job.cancellationAcknowledgedIds?.includes(Number(id)));
     return job ? { id: job.id, cancelling: !!job.cancellationRequests?.[id], submissionStarted: !!job.submissionStartedClipIds?.includes(Number(id)) } : undefined;
   }

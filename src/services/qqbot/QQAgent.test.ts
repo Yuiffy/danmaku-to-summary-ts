@@ -21,6 +21,18 @@ test('uses the fixed small model, dedicated credential and no arbitrary tools or
   expect(body.response_format.type).toBe('json_schema');
   expect(call[1].body).not.toMatch(/secret-group-openid|secret-message-id|dedicated-qq-secret/u);
 });
+test('allows a privacy explanation to mention browser, Cookie, password and command boundaries', async () => {
+  const transport = jest.fn(async () => response(final(
+    'AI 控制浏览器时可能接触登录后的页面和 Cookie，但密码：通常不会直接显示；仍应限制权限，不让它执行命令。',
+    'general', [])));
+  const answer = createQQAnswerer(settings, undefined, transport as any);
+  await expect(answer({ ...request, text: '就是问AI控制浏览器会不会有问题的那段' }, signal()))
+    .resolves.toContain('密码：通常不会直接显示');
+});
+test('still rejects credential-shaped output while allowing security terminology', async () => {
+  const send = jest.fn(async () => response(final('Cookie: SESSDATA=abcdef1234567890', 'general', [])));
+  await expect(createQQAnswerer(settings, undefined, send as any)(request, signal())).rejects.toThrow('QQ generation failed');
+});
 test('help is an agent decision and can answer without unnecessary tool execution', async () => {
   const transport = jest.fn(async () => response(final('在群里艾特我，可以查最新直播梗概，也可以聊天。')));
   const knowledge = jest.fn(() => ({ scope: '仅岁己', tools: [], close: async () => {} }));

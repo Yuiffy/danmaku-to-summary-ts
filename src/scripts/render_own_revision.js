@@ -285,6 +285,12 @@ async function updateRevision(metadataPath, options, config = require('./config-
             for (const field of ['title', 'description', 'coverText']) {
                 if (options[field] !== undefined) metadata.copy[field] = String(options[field]).replace(/\\n/g, '\n').trim();
             }
+            if (options.tags !== undefined) {
+                const tags = Array.from(new Set(String(options.tags).split(/[,，、;；\s]+/u).map(tag => tag.trim()).filter(Boolean)));
+                if (!tags.length || tags.length > 20 || tags.some(tag => tag.length > 100)) throw new Error('At least one valid upload tag is required');
+                metadata.upload = { ...metadata.upload, tags };
+                metadata.copy = { ...metadata.copy, tags };
+            }
             if (!String(options.reviewNote || '').trim()) throw new Error('An explicit editorial review note is required');
             const sourceKind = options.sourceKind || metadata.renderedSubtitles.review?.sourceKind;
             const reviewed = await validateCopy(metadata, sourceKind, revisionEvidence(metadata, evidence), options.feedbackAuthorized === 'yes');

@@ -1,4 +1,4 @@
-import { CatalogSong, identifySongFromCatalog, lyricDigest, SongRow, songWorkName, validateCatalogTitle } from './songIdentity';
+import { CatalogSong, identifySongFromCatalog, lyricDigest, SongRow, songWorkKey, songWorkName, validateCatalogTitle } from './songIdentity';
 import { researchSong } from './songResearch';
 import { createSongCatalog } from './songIdentityCatalog';
 import { bindTranscriptTitles } from './activityTitles';
@@ -49,6 +49,14 @@ test('normalizes explicit cover presentation and performer prefixes without merg
   expect(songWorkName('【甲/乙】测试之歌', ['甲', '乙'])).toBe('测试之歌');
   expect(songWorkName('【夜】测试之歌', ['甲', '乙'])).toBe('【夜】测试之歌');
   expect(songWorkName('测试之歌2')).toBe('测试之歌2');
+  expect(songWorkKey('天之若')).toBe(songWorkKey('天ノ弱'));
+});
+test('summary hint plus nearby spoken announcement can resolve a short or garbled lyric capture', () => {
+  const contextRows = [{ index: 0, start: 90, end: 95, text: '那我唱天之若了' }, ...rows];
+  const result = identifySongFromCatalog(event, contextRows, [{ ...song, name: '天ノ弱', lyrics: '无法从本段字幕匹配的目录歌词' }], transcript, { hints: ['天之若'] });
+  expect(result).toMatchObject({ status: 'identified', item: { name: '天之若', method: 'catalog_title_context_match', titleAlias: { source: 'recording_summary_hint' } } });
+  if (result.status !== 'identified') throw new Error('expected context match');
+  expect(() => validateCatalogTitle(result.item, event, contextRows, transcript)).not.toThrow();
 });
 test('packaging revalidates original rows, catalog identity and lyric digests', () => {
   const result = identifySongFromCatalog(event, rows, [song], transcript);
@@ -67,6 +75,14 @@ test('uses nearby song-request comments for discovery but rejects the suggested 
     { index: 2, time: 10000, text: '远处的点歌' }] }, { propose, catalog: { search, lyrics: async () => ({ ...song, lyrics: '完全无关的歌曲歌词' }) } });
   expect(search).toHaveBeenCalledWith('测试之歌', 'name'); expect(result.status).toBe('unresolved');
   expect(result.discovery.audience).toEqual([{ index: 1, time: 90, text: '点一首测试之歌' }]);
+});
+test('automatically searches recording summary song hints before model proposals', async () => {
+  const search = jest.fn(async (query: string) => query === '天之若' ? [{ id: '123', name: '天ノ弱', artists: [] }] : []);
+  const propose = jest.fn(async () => JSON.stringify({ queries: [] }));
+  const result = await researchSong({ event, rows: [{ index: 0, start: 90, end: 95, text: '那我唱天之若了' }, ...rows], transcript,
+    audience: [], summaryHints: ['天之若'] }, { propose, catalog: { search, lyrics: async () => ({ ...song, name: '天ノ弱', lyrics: '无关歌词' }) } });
+  expect(search).toHaveBeenCalledWith('天之若', 'name');
+  expect(result).toMatchObject({ status: 'identified', item: { name: '天之若', method: 'catalog_title_context_match' } });
 });
 test('provider failure falls back to literal local lyric queries and still requires cross-checking', async () => {
   const search = jest.fn(async () => [{ id: song.id, name: song.name, artists: song.artists }]);

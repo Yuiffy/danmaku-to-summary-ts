@@ -954,8 +954,12 @@ function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 't
 }
 
 function runJsonPython(scriptPath, payload, label = 'ASR backend') {
-    if (payload?.backend === 'paraformer' && !payload?.device_handoff?.enabled && process.env.ASR_CPU_FALLBACK !== '1') {
-        const persistentRequest = runPersistentAsrWorker(payload, label);
+    const cpuAdmission = process.env.ASR_CPU_FALLBACK === '1';
+    if (payload?.backend === 'paraformer' && (cpuAdmission || !payload?.device_handoff?.enabled)) {
+        const persistentPayload = cpuAdmission
+            ? { ...payload, device: 'cpu', vad_device: 'cpu', speaker_device: 'cpu', _cpu_fallback: true }
+            : payload;
+        const persistentRequest = runPersistentAsrWorker(persistentPayload, label);
         if (persistentRequest) {
             return persistentRequest.catch((error) => {
                 if (error?.persistentWorkerResponse) {
@@ -975,11 +979,12 @@ function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
         const pythonCommand = resolvePythonCommand(payload);
         const pythonScriptPath = translatePythonPath(scriptPath, payload);
         const resourceConfig = getFfmpegResourceConfig(payload);
+        const cpuThreads = Math.max(1, Math.min(64, Number(payload?.cpu_fallback?.torch_num_threads) || 4));
         const child = spawn(pythonCommand.executable, [...pythonCommand.args, pythonScriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
             shell: false,
-            env: { ...process.env, PYTHONUTF8: '1', ...(process.env.ASR_CPU_FALLBACK === '1' && !payload?.device_handoff?.enabled ? { CUDA_VISIBLE_DEVICES: '', OMP_NUM_THREADS: '2', MKL_NUM_THREADS: '2', OPENBLAS_NUM_THREADS: '2' } : {}) }
+            env: { ...process.env, PYTHONUTF8: '1', ...(process.env.ASR_CPU_FALLBACK === '1' && !payload?.device_handoff?.enabled ? { CUDA_VISIBLE_DEVICES: '', OMP_NUM_THREADS: String(cpuThreads), MKL_NUM_THREADS: String(cpuThreads), OPENBLAS_NUM_THREADS: String(cpuThreads) } : {}) }
         });
         applyFfmpegProcessPriority(
             child.pid,
@@ -1107,6 +1112,7 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
         model_profile: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.model_profile) || backendConfig.model_profile || null),
         finetuned_model: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.finetuned_model) || backendConfig.finetuned_model || null)
     };
+    options.cpu_fallback = { ...(asrConfig.cpu_fallback || {}) };
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
         const profile = String(options.model_profile || '').trim().toLowerCase();

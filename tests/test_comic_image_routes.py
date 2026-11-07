@@ -97,8 +97,10 @@ class ImageRoutesTest(unittest.TestCase):
         import json
         root = Path(__file__).resolve().parents[1]
         expected = {('gpt-image-2', 'high')} | {
-            (model, quality) for model in ('gpt-image-2.5-flare', 'gpt-image-2.5-sunburst')
-            for quality in ('low', 'medium', 'high', 'xhigh', 'max')}
+            (model, quality) for model in ('gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
+                                           'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst')
+            for quality in (('low', 'medium', 'high') if model.startswith('gpt-image-2.6-')
+                            else ('low', 'medium', 'high', 'xhigh', 'max'))}
         modes = json.loads((root / 'config' / 'generation-modes.json').read_text(encoding='utf-8'))['modes']
         for name in ('default', 'production'):
             config = resolve_generation_modes(json.loads((root / 'config' / f'{name}.json').read_text(encoding='utf-8')), modes)
@@ -106,7 +108,7 @@ class ImageRoutesTest(unittest.TestCase):
             self.assertTrue(policy['rollout']['enabled'])
             variants = policy['rollout']['variants']
             self.assertEqual({(v['model'], v['quality']) for v in variants}, expected)
-            self.assertEqual(len(variants), 11)
+            self.assertEqual(len(variants), 17)
             with patch('comic.image_routes.random.choice') as choose:
                 routes = _get_image_generation_routes(config, {}, '25788785')
                 choose.assert_not_called()

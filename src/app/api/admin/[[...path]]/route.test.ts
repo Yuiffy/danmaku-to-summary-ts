@@ -162,6 +162,9 @@ it('proxies only ID-bound source playback descriptors and preserves original vid
   fetchMock.mockResolvedValue(new Response('mp4', { status: 206, headers: { 'Content-Range': 'bytes 0-2/100' } }));
   const media = await forwardAdmin(request('/clips/3359/assets/source-preview', { headers: { Range: 'bytes=0-2' } }));
   expect(media.status).toBe(206); expect(fetchMock.mock.calls[1][1].headers.Range).toBe('bytes=0-2');
+  fetchMock.mockResolvedValue(new Response('mp4', { status: 206, headers: { 'Content-Range': 'bytes 0-2/100' } }));
+  const cached = await forwardAdmin(request(`/source-assets/${'a'.repeat(64)}`, { headers: { Range: 'bytes=0-2' } }));
+  expect(cached.status).toBe(206); expect(fetchMock.mock.calls[2][0].pathname).toBe(`/source-assets/${'a'.repeat(64)}`);
   expect((await forwardAdmin(request('/clips/3359/assets/source'))).status).toBe(404);
 });
 it('forwards saved feedback and one-click intents to the operator owner', async () => {

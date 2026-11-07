@@ -20,10 +20,12 @@ import { AdminBilibiliLogin } from './AdminBilibiliLogin';
 import { AdminCommentReplies } from './AdminCommentReplies';
 import { AdminCommentFeedback } from './AdminCommentFeedback';
 import { AdminQQRecords } from './AdminQQRecords';
+import { AdminQQChat } from './AdminQQChat';
 import { AdminCampaignCandidates } from './AdminCampaignCandidates';
 import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 import { AdminAsrStatus } from './AdminAsrStatus';
 import { AdminClipProgress } from './AdminClipProgress';
+import { AdminQQKnowledge } from './AdminQQKnowledge';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -38,6 +40,8 @@ export interface AdminAdapters {
   commentReplies?: AdminCommentReplies;
   commentFeedback?: AdminCommentFeedback;
   qqRecords?: AdminQQRecords;
+  qqChat?: AdminQQChat;
+  qqKnowledge?: AdminQQKnowledge;
   campaignCandidates?: AdminCampaignCandidates;
   campaignFeedback?: AdminCampaignFeedback;
   asr?: AdminAsrStatus;
@@ -57,6 +61,13 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.use(express.json({ limit: '1mb' }));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   const candidates = () => { if (!adapters.campaignCandidates) throw new AdminError('活动候选未配置', 503); return adapters.campaignCandidates; };
+  app.get('/source-assets/:key', (req, res) => {
+    if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
+    const file = adapters.sourceMedia.resolveAsset(req.params.key);
+    if (!file) throw new AdminError('原片缓存已失效，请重新定位', 404);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.sendFile(file);
+  });
   app.get('/campaign-candidates', (req, res) => res.json(candidates().list({
     room: String(req.query.room || ''), session: String(req.query.session || ''), search: String(req.query.search || ''), page: String(req.query.page || '1'), sort: String(req.query.sort || ''), view: String(req.query.view || '')
   })));
@@ -71,9 +82,10 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   };
   app.get('/campaign-candidates/:id/source-playback', async (req, res) => {
     const playback = await candidatePlayback(req.params.id, req.query.remux === '1');
-    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format });
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format, sourceKey: playback.sourceKey, assetKey: playback.assetKey });
   });
   app.get('/campaign-candidates/:id/assets/source-preview', async (req, res) => {
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     res.sendFile((await candidatePlayback(req.params.id, req.query.remux === '1')).file);
   });
   app.get('/comment-replies', (req, res) => {
@@ -91,6 +103,30 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.get('/qq-records/:appId/:date/:id/image', (req, res) => {
     if (!adapters.qqRecords) throw new AdminError('QQ 记录未配置', 503);
     res.type('png').send(adapters.qqRecords.image(req.params.appId, req.params.date, req.params.id));
+  });
+  app.get('/qq-chat', (req, res) => {
+    if (!adapters.qqChat) throw new AdminError('QQ 群聊归档未配置', 503);
+    res.json(adapters.qqChat.view(req.query));
+  });
+  app.delete('/qq-chat', (req, res) => {
+    if (!adapters.qqChat) throw new AdminError('QQ 群聊归档未配置', 503);
+    res.json(adapters.qqChat.deleteBefore(req.query.before));
+  });
+  app.get('/qq-knowledge', (req, res) => {
+    if (!adapters.qqKnowledge) throw new AdminError('QQ 知识库未配置', 503);
+    res.json(adapters.qqKnowledge.list(req.query));
+  });
+  app.get('/qq-knowledge/:id', (req, res) => {
+    if (!adapters.qqKnowledge) throw new AdminError('QQ 知识库未配置', 503);
+    res.json(adapters.qqKnowledge.get(req.params.id));
+  });
+  app.put('/qq-knowledge/:id', (req, res) => {
+    if (!adapters.qqKnowledge) throw new AdminError('QQ 知识库未配置', 503);
+    res.json(adapters.qqKnowledge.save(req.params.id, req.body));
+  });
+  app.delete('/qq-knowledge/:id', (req, res) => {
+    if (!adapters.qqKnowledge) throw new AdminError('QQ 知识库未配置', 503);
+    res.json(adapters.qqKnowledge.remove(req.params.id));
   });
   app.route('/bilibili/login').get(loginRoute).post(loginRoute);
   async function loginRoute(req: express.Request, res: express.Response) {
@@ -157,7 +193,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   };
   app.get('/clips/:id/source-playback', async (req, res) => {
     const playback = await sourcePlayback(req.params.id, req.query.remux === '1');
-    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format });
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end, direct: playback.direct, format: playback.format, sourceKey: playback.sourceKey, assetKey: playback.assetKey });
   });
   app.post('/clips/:id/actions', (req, res) => {
     const id = req.params.id, revision = req.body.revision;
@@ -201,7 +237,10 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.get('/clips/:id/assets/:kind', async (req, res) => {
     const kind = req.params.kind as AssetKind;
-    if (req.params.kind === 'source-preview') { res.sendFile((await sourcePlayback(req.params.id, req.query.remux === '1')).file); return; }
+    if (req.params.kind === 'source-preview') {
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.sendFile((await sourcePlayback(req.params.id, req.query.remux === '1')).file); return;
+    }
     if (!['media', 'preview', 'cover', 'subtitles', 'preview-subtitles', 'media-subtitles'].includes(kind)) throw new AdminError('素材类型不存在', 404);
     const file = adapters.clips.asset(req.params.id, kind, Number(req.query.part || 1));
     if (!file) throw new AdminError('素材不存在', 404);

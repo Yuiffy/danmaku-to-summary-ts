@@ -24,8 +24,28 @@ def publication_errors(api, clips, registry=None, *, manual_enqueue=False):
     # The worker checks every finished artifact after rendering and before upload.
     quality_clips = [clip for clip in clips if not (manual_enqueue and
                      (clip.get('pendingCut') or clip.get('pendingRebuild')))]
-    return (duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
+    return (title_errors(clips)
+            + duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
             + quality_policy_errors(api, quality_clips))
+
+
+def title_errors(clips):
+    """Reject deterministic Bilibili title failures before creating a queue job.
+
+    Registry records keep the display prefix separately from the title body, but
+    Bilibili validates the concatenated title. The 80-character limit therefore
+    applies to both fields together.
+    """
+    errors = []
+    for clip in clips:
+        # Some quality-policy callers use partial clip records without a title;
+        # leave completeness validation to their existing policy in that case.
+        if clip.get('title') is None:
+            continue
+        title = f"{clip.get('prefix') or ''}{clip.get('title') or ''}".strip()
+        if not title or len(title) > 80:
+            errors.append(f"clip {clip.get('id')}: title must be 1-80 characters including prefix")
+    return errors
 
 
 def quality_policy_errors(api, clips):

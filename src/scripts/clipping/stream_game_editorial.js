@@ -14,8 +14,11 @@ function parseCopyProposal(response, chapter) {
         || typeof row.description !== 'string' || !row.description.trim() || row.description.length > 48
         || !String(row.reason || '').trim()) throw new Error('Invalid factual game chapter copy proposal');
     const normalize = value => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+    const keepsName = chapter.nameEvidence && normalize(row.title).includes(normalize(chapter.nameEvidence));
+    const canDowngradeLocation = chapter.kind === 'location' && chapter.nameEvidence
+        && chapter.nameEvidenceSource !== 'original_frame';
     if (chapter.nameEvidenceSource === 'original_frame' && row.title !== chapter.title
-        || chapter.kind !== 'phase' && chapter.nameEvidence && !normalize(row.title).includes(normalize(chapter.nameEvidence))) {
+        || chapter.kind !== 'phase' && chapter.nameEvidence && !keepsName && !canDowngradeLocation) {
         throw new Error('Game copy repair cannot discard a verified name');
     }
     return row;
@@ -42,13 +45,27 @@ async function repairUnsupportedChapters(event, plan, verification, options, fil
         for (const frame of frames) if (fileDigest(frame.path) !== frame.sha256) throw new Error('Original game editorial frame changed');
         const phaseRows = sourceRows.filter(c => c.end > chapter.start && c.start < end);
         const transcript = phaseRows.map(c => ({id:c.id,start:c.start,end:c.end,text:c.text}));
+        const normalize = value => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+        const genericizeLocation = chapter.kind === 'location' && chapter.nameEvidence
+            && chapter.nameEvidenceSource !== 'original_frame'
+            && /地点|专名|名称|标题/u.test(String(rejection.reason || ''));
         const directory = path.join(files.directory, 'temp', 'game-editorial-repairs', sha({ version: editorialStage().GAME_COPY_POLICY_VERSION, source: plan.source, chapter,
             end, rejection, frames, settings }).slice(0,16)); fs.mkdirSync(directory,{recursive:true});
         const prompt = editorialStage().chapterCopyPrompt(chapter, rejection, end, frames, transcript);
-        const response = await withSelectionCache({ directory:path.join(files.directory,'temp','game-editorial-cache'),phase:'game-copy-proposal-v1',
-            prompt,signature:{source:plan.source,settings,frames},validate:value=>{try{parseCopyProposal(value,chapter);return true;}catch{return false;}} },
+        let response = await withSelectionCache({ directory:path.join(files.directory,'temp','game-editorial-cache'),phase:'game-copy-proposal-v1',
+            prompt,signature:{source:plan.source,settings,frames},validate:value=>{try{
+                const proposed = parseCopyProposal(value,chapter);
+                if (genericizeLocation && normalize(proposed.title).includes(normalize(chapter.nameEvidence))) throw new Error('Unverified location must be generalized');
+                return true;
+            }catch{return false;}} },
         ()=>(options.editorialRequest||options.verifyRequest||requestMediaVerification)(prompt,frames.map(f=>({...f,mimeType:'image/jpeg'})),options.config,settings));
         const row = parseCopyProposal(response, chapter);
+        const downgradeLocation = genericizeLocation
+            && !normalize(row.title).includes(normalize(chapter.nameEvidence));
+        if (genericizeLocation && !downgradeLocation) {
+            row.title = row.title.replace(String(chapter.nameEvidence), '').replace(/^[：:、，,\s]+|[：:、，,\s]+$/gu, '').trim() || '探索与战斗';
+            response = { ...response, text: JSON.stringify(row) };
+        }
         if (row.title===chapter.title&&row.description===chapter.description
             && JSON.stringify(chapter.evidenceIds)===JSON.stringify(phaseRows.map(c=>c.id))) continue;
         const proposalPath=path.join(directory,'PROPOSAL.json');writeJsonAtomic(proposalPath,response);
@@ -57,6 +74,12 @@ async function repairUnsupportedChapters(event, plan, verification, options, fil
             ...(chapter.editorialRevision ? {previousRevision:chapter.editorialRevision} : {}),
             originalCopy:{title:chapter.title,description:chapter.description},newCopy:{title:row.title,description:row.description},
             originalEvidenceIds:chapter.evidenceIds, rejectionReason:rejection.reason,phaseStart:chapter.start,phaseEnd:end,frames,proposalPath,proposalSha256:fileDigest(proposalPath)} };
+        if (genericizeLocation) {
+            event.chapters[index].kind = 'phase';
+            event.chapters[index].nameEvidence = null;
+            delete event.chapters[index].nameEvidenceSource;
+            delete event.chapters[index].frameNameEvidence;
+        }
         changed=true;
     }
     return changed;

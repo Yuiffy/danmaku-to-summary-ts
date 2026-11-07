@@ -179,6 +179,7 @@ const ConfigSchema = Joi.object({
         minScore: Joi.number().integer().min(0).max(100), maxStandalone: Joi.number().integer().min(1).max(5),
         maxCandidates: Joi.number().integer().min(1).max(100), maxSearchResults: Joi.number().integer().min(1).max(5),
         maxSearchQueries: Joi.number().integer().min(1).max(6),
+        preUploadSearchQuery: Joi.string().min(3).max(80),
         supportActions: Joi.array().items(Joi.string().valid('like', 'favorite', 'repost')).unique(), favoriteFolderId: Joi.string().pattern(/^[1-9]\d*$/u),
         maxSupportPerDay: Joi.number().integer().min(0).max(20), supportIntervalSeconds: Joi.number().integer().min(30).max(86400)
     }),

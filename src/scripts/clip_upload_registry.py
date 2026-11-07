@@ -2055,6 +2055,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", default=None)
     p.add_argument("--description", default=None)
     p.add_argument("--cover-text", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags")
     p.add_argument("--source-kind", choices=("live_speech", "recount", "playback", "audience"), default=None)
     p.add_argument("--start", type=float, default=None)
     p.add_argument("--end", type=float, default=None)
@@ -2090,8 +2091,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--description", default=None)
     p.add_argument("--cover-text", default=None)
     p.add_argument("--source-kind", choices=("live_speech", "recount", "playback", "audience"), default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags")
     p.set_defaults(func=approve_rendered_review)
-
     p = sub.add_parser("enqueue", help="Queue upload by ID; the background worker renders approved candidates first")
     p.add_argument("--ids", required=True)
     p.add_argument("--delay", type=int, default=DEFAULT_DELAY)
@@ -2111,7 +2112,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Use this collection section for one JSON-backed clip")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=enqueue)
-
     p = sub.add_parser("exclude", help="Cancel selected candidates and block future uploads, including --force")
     p.add_argument("--ids", required=True)
     p.add_argument("--note", required=True)

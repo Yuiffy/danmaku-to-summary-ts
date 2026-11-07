@@ -18,7 +18,7 @@ def approve_review(args, api):
             raise ValueError("Queued/uploaded clips cannot be changed by this review command")
         explicit_review = getattr(args, "feedback_authorized", False) or any(
             getattr(args, name, None) is not None
-            for name in ("title", "description", "cover_text", "source_kind")
+            for name in ("title", "description", "cover_text", "tags", "source_kind")
         )
         if not clip.get("reviewPending") and not explicit_review:
             print(f"[OK] {args.id} is already review-ready; no change made")
@@ -28,7 +28,7 @@ def approve_review(args, api):
                    "--review-index", str(clip["reviewIndex"]), "--review-note", args.review_note]
         if getattr(args, "feedback_authorized", False):
             command.append("--feedback-authorized")
-        for name in ("title", "description", "cover_text", "source_kind"):
+        for name in ("title", "description", "cover_text", "tags", "source_kind"):
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(["--" + name.replace("_", "-"), value])

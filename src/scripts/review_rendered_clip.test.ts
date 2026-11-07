@@ -65,6 +65,14 @@ describe('human review of rendered own-stream clips', () => {
     expect(saved.ownStreamHumanReview.digests.video).toBe(fileDigest(metadata.output.mediaPath));
     expect(saved.ownStreamHumanReview.digests.subtitles).toBe(fileDigest(metadata.output.srtPath));
   });
+  test('saves reviewed upload tags with the metadata-bound approval', async () => {
+    metadata.upload = { prefix: '[Host]', source: 'Host stream', tags: ['Host'] };
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '调整标签', tags: 'Host, 搞笑', feedbackAuthorized: true }, {});
+    const saved = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    expect(saved.copy.tags).toEqual(['Host', '搞笑']);
+    expect(saved.upload.tags).toEqual(['Host', '搞笑']);
+  });
   test('passes the saved manual frame and crop through a later human review', async () => {
     metadata.coverSelection = { time: 3.2, part: 1, text: metadata.copy.coverText,
       crop: { x: .1, y: .1, width: .8, height: .8 }, mediaIdentity: { path: metadata.output.mediaPath } };

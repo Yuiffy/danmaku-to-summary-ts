@@ -27,6 +27,11 @@ describe('factual game chapter repair proposals',()=>{
     expect(()=>parse({...proposal,title:'接肢葛瑞克挑战'},chapter)).toThrow(/discard a verified name/);
     expect(parse({...proposal,title:chapter.title},chapter).title).toBe(chapter.title);
   });
+  test('an unverified location may downgrade to a generic factual title',()=>{
+    const chapter={kind:'location',title:'龙胜梯田',nameEvidence:'龙胜梯田'};
+    expect(parse({title:'木头人遭遇',description:'讨论木头人原来是人被害后变成的。',reason:'原字幕支持木头人讨论。'},chapter).title)
+      .toBe('木头人遭遇');
+  });
   test.each([false,true])('an overlapping proposal cites its actual phase when copy changes=%s',async(changesCopy:boolean)=>{
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'game-editorial-citations-'));
     try {
@@ -69,6 +74,22 @@ describe('factual game chapter repair proposals',()=>{
       expect(await repairUnsupportedChapters(event,{source:{id:'original'}},verification,options,{directory},{})).toBe(false);
       expect(editorialRequest).toHaveBeenCalledTimes(1);
       expect(()=>parse({...proposal,description:'绕路探索'.repeat(20)})).toThrow(/Invalid factual/);
+    } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+  });
+  test('a rejected location rewrite clears an unverified proper name when copy is generalized', async () => {
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'game-editorial-location-'));
+    try {
+      const srtPath=path.join(directory,'source.srt'), imagePath=path.join(directory,'frame.jpg');
+      fs.writeFileSync(srtPath,'1\n00:00:20,000 --> 00:00:23,000\n木头人原来是人被害后变成的\n');
+      fs.writeFileSync(imagePath,'original location frame');
+      const event={start:20,end:40,chapters:[{start:20,title:'龙胜梯田',kind:'location',nameEvidence:'龙胜梯田',
+        description:'主播继续探索并进入出现人偶和木头人的区域。',evidenceIds:['T1']}]};
+      const verification={decision:'uncertain',chapterReviews:[{index:1,supported:false,reason:'原帧和原文没有证实该地点名'}],
+        originalFrameEvidence:[{index:1,time:25,path:imagePath,sha256:fileDigest(imagePath)}]};
+      const editorialRequest=jest.fn(async () => ({text:JSON.stringify({title:'龙胜梯田：木头人遭遇',description:'讨论木头人原来是人被害后变成的。',reason:'原字幕支持木头人讨论。'})}));
+      expect(await repairUnsupportedChapters(event,{source:{id:'original'}},verification,{srtPath,config:{},editorialRequest},{directory},{})).toBe(true);
+      expect(event.chapters[0]).toMatchObject({title:'木头人遭遇',kind:'phase',nameEvidence:null,
+        description:'讨论木头人原来是人被害后变成的。'});
     } finally { fs.rmSync(directory,{recursive:true,force:true}); }
   });
 });

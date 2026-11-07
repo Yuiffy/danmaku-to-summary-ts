@@ -1,9 +1,9 @@
-import { SAFETY_NOTICE, publishableAnswer, shanghaiDay, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
-import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_REPLY, qqFixedReply, qqRequest } from './QQPolicy';
+import { SAFETY_NOTICE, shanghaiDay, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
+import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_REPLY, publishableQQAnswer, qqFixedReply, qqRequest } from './QQPolicy';
 import { QQState } from './QQState';
 import { QQRecordUpdate } from './QQRecords';
 import { QQ_MODEL } from './QQPolicy';
-import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, QQ_IMAGE_MODERATION_REPLY, QQ_IMAGE_SEXUAL_REPLY, QQ_IMAGE_SOURCE_REPLY, qqImageCommandReply, qqImageQuota } from './QQImagePolicy';
+import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, qqImageFailureReply, qqImageCommandReply, qqImageQuota } from './QQImagePolicy';
 import { QQAgentTrace } from '../../core/admin/qqRecords';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure } from './QQDiagnostics';
@@ -189,16 +189,14 @@ export class QQWorker {
                 const failure = qqDiagnostic(error, 'image_http', 'unexpected', imageController.signal, { elapsedMs: Math.max(0, this.io.now() - at) });
                 this.io.report({ event: 'qq_image_failed', scope: request.scope, requestId: request.key, failure });
                 await persistImage({ status: 'generating', error: 'image_failed', failure });
-                return { status: 'failed', message: failure.code === 'image_sexual' ? QQ_IMAGE_SEXUAL_REPLY :
-                  failure.code === 'image_moderation' ? QQ_IMAGE_MODERATION_REPLY :
-                  request.imageInput && failure.stage === 'image_prepare' ? QQ_IMAGE_SOURCE_REPLY : '这次生图没能完成，请稍后重新艾特我试试。' };
+                return { status: 'failed', message: qqImageFailureReply(failure, { sourceInput: !!request.imageInput }) };
               } finally { clearTimeout(imageTimer); controller.signal.removeEventListener('abort', abortImage); }
               await persistImage({ status: 'generating', image: { sha256: image.sha256, prompt: image.prompt } });
               return { status: 'generated', message: command.mode === 'edit' ? '原图编辑完成。' : '图片生成完成。' };
             };
             const result = await this.io.answer(request, controller.signal, this.config.images?.enabled ? executeImage : undefined);
             controller.signal.throwIfAborted();
-            answer = pendingMessage || imageLimitMessage || publishableAnswer(typeof result === 'string' ? result : result.text);
+            answer = pendingMessage || imageLimitMessage || publishableQQAnswer(typeof result === 'string' ? result : result.text);
             if (!answer) throw qqFailure('answer_validation', 'unsafe_answer');
             if (typeof result !== 'string') {
               if (!Number.isSafeInteger(result.tokens) || result.tokens < 1 || result.tokens > QQ_LIMITS.reservation) throw qqFailure('answer_validation', 'invalid_tokens');

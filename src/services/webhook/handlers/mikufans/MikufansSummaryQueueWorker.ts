@@ -192,7 +192,10 @@ export class MikufansSummaryQueueWorker {
       const gpuStatus = gameStatus.busy ? { busy: false, reason: '' } : await this.asrResources.isLegacyGpuBusy();
       const useCpu = (gameStatus.busy || gpuStatus.busy) && canUseAsrCpuFallback(config, nextTask);
       if (useCpu) {
-        await this.asrResources.stopPersistentWorker('GPU/游戏繁忙，改用低优先级 CPU ASR');
+        // Keep the queue-owned worker alive. The Python worker switches its
+        // resident model cache between CUDA and CPU, so CPU fallback can reuse
+        // the loaded model instead of paying a cold model load per task.
+        await this.asrResources.ensurePersistentWorker();
         this.logger.info(`CPU 后台 ASR: ${gameStatus.reason || gpuStatus.reason}`);
         await this.executeTask(nextTask, true);
         continue;

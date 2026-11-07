@@ -31,6 +31,17 @@ test('song tags follow submitted Ps and reviewed names without borrowing unsubmi
     expect(presentationFor(plan, 'songs', parts, evidence, ['歌切']).signature).not.toBe(result.signature);
 });
 
+test('explicit user title confirmation overrides an automatic song spelling', () => {
+    const result = presentationFor({ recordedAt: '2026-11-06 20:13:00', streamerName: '岁己', streamTitle: '唱聊',
+        events: [{ id: 's1', kind: 'song', name: '天之若' }] }, 'songs',
+        [{ activityId: 's1', sha256: 'one' }],
+        { items: [{ activityId: 's1', method: 'explicit_user_title', name: '天之弱', note: '用户确认歌名', confirmation: '歌名是天之弱' }] });
+    expect(result.copy.title).toBe('天之弱-2026.11.6');
+    expect(result.parts[0].title).toBe('天之弱-2026.11.6');
+    expect(result.tags).toContain('天之弱');
+    expect(result.tags).not.toContain('天之若');
+});
+
 test('viewing titles and screenshot covers identify the watched movie rather than a generic category', () => {
     const result = presentationFor({ recordedAt: '2026-10-04 20:38:02', streamerName: '岁己', streamTitle: '唱聊',
         events: [{ id: 'w1', kind: 'watch', name: '雷神3', mediaKind: 'movie' }] }, 'watch',

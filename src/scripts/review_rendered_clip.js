@@ -55,12 +55,18 @@ async function reviewCopy(metadata, options, evidence) {
     const sourceKind = options.sourceKind || metadata.grounding?.sourceKind;
     if (!['live_speech', 'recount', 'playback', 'audience'].includes(sourceKind)) throw new Error('Confirm --source-kind before approving uncertain attribution');
     const originalCopy = metadata.attributionReview?.originalCopy || metadata.copy || {};
+    const rawTags = options.tags ?? originalCopy.tags ?? metadata.upload?.tags;
+    const tags = Array.from(new Set((Array.isArray(rawTags) ? rawTags : String(rawTags || '').split(/[,，、;；\s]+/u))
+        .map(tag => String(tag || '').trim()).filter(Boolean)));
+    const tagsProvided = options.tags !== undefined || originalCopy.tags !== undefined || metadata.upload?.tags !== undefined;
+    if (tagsProvided && (!tags.length || tags.length > 20 || tags.some(tag => tag.length > 100))) throw new Error('At least one valid upload tag is required');
     const copy = {
         title: options.title ?? metadata.copy?.title,
         description: publicDescription(metadata, options.description ?? originalCopy.description),
-        coverText: options.coverText ?? metadata.copy?.coverText
+        coverText: options.coverText ?? metadata.copy?.coverText,
+        ...(tags.length ? { tags } : {})
     };
-    for (const key of Object.keys(copy)) {
+    for (const key of ['title', 'description', 'coverText']) {
         copy[key] = String(copy[key] || '').replace(/\\n/g, '\n').trim();
         if (!copy[key]) throw new Error(`Missing publishing copy: ${key}`);
     }
@@ -112,6 +118,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
         || fileDigest(output.mediaPath) !== videoHash || fileDigest(output.srtPath) !== subtitleHash) throw new Error('Source or metadata changed during review; no approval saved');
     const updated = { ...metadata, reviewIndex: options.reviewIndex || metadata.reviewIndex || window.index,
         publicCopyPending: false, uploadReady: true, grounding,
+        ...(copy.tags ? { upload: { ...metadata.upload, tags: copy.tags } } : {}),
         copy: { ...metadata.copy, ...copy, description: metadata.mode === 'own_stream_fun_review'
             ? own.buildClipDescription({ streamerName: metadata.streamerName, streamTitle: metadata.streamTitle,
                 recordedAt: metadata.recordedAt, start: window.start, end: window.end, description: copy.description,
@@ -134,11 +141,11 @@ module.exports = { approveRenderedClip, sourceSnapshot, fileDigest, reviewCopy, 
 if (require.main === module) {
     const { values } = parseArgs({ options: { metadata: { type: 'string' }, id: { type: 'string' },
         'review-index': { type: 'string' }, 'review-note': { type: 'string' }, title: { type: 'string' },
-        description: { type: 'string' }, 'cover-text': { type: 'string' }, 'source-kind': { type: 'string' },
+        description: { type: 'string' }, 'cover-text': { type: 'string' }, tags: { type: 'string' }, 'source-kind': { type: 'string' },
         'feedback-authorized': { type: 'boolean', default: false } } });
     approveRenderedClip(values.metadata, { id: Number(values.id), reviewIndex: Number(values['review-index']),
         reviewNote: values['review-note'], title: values.title, description: values.description,
-        coverText: values['cover-text'], sourceKind: values['source-kind'], feedbackAuthorized: values['feedback-authorized'] })
+        coverText: values['cover-text'], tags: values.tags, sourceKind: values['source-kind'], feedbackAuthorized: values['feedback-authorized'] })
         .then(result => console.log('REVIEW_RESULT: ' + JSON.stringify(result)))
         .catch(error => { console.error(error.message); process.exitCode = 1; });
 }

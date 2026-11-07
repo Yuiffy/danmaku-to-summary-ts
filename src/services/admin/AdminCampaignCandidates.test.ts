@@ -78,7 +78,9 @@ it('includes ordinary Sui sessions outside campaign dates and without campaign c
   expect(f.candidates.list({ view: 'all' }).total).toBe(9);
   const id = list.candidates[0].id;
   expect((await request(f.app).get(`/campaign-candidates/${id}`).set(headers).expect(200)).body.subtitles).toContain('候选原话');
-  expect((await request(f.app).get(`/campaign-candidates/${id}/source-playback`).set(headers).expect(200)).body).toEqual({ origin: 0, start: 10, end: 20, direct: true, format: '.mp4' });
+  const playback = (await request(f.app).get(`/campaign-candidates/${id}/source-playback`).set(headers).expect(200)).body;
+  expect(playback).toEqual(expect.objectContaining({ origin: 0, start: 10, end: 20, direct: true, format: '.mp4' }));
+  expect(playback.sourceKey).toEqual(expect.any(String));
   const roots = [path.join(root, 'recordings'), path.dirname(path.dirname(path.dirname(newer.statePath)))];
   const withoutCampaigns = new AdminCampaignCandidates(f.clips, () => roots, () => []);
   expect(withoutCampaigns.list({ view: 'all' }).candidates.map(row => row.id)).toEqual(list.candidates.map((row: any) => row.id));
@@ -205,7 +207,9 @@ it('returns only window subtitles, streams byte ranges and leaves all workflow f
   const detail = (await request(f.app).get(`/campaign-candidates/${id}`).set(headers).expect(200)).body;
   expect(detail.subtitles).toContain('候选原话'); expect(detail.subtitles).not.toContain('窗外');
   expect(JSON.stringify(list)).not.toContain(root); expect(JSON.stringify(detail)).not.toContain(root);
-  expect((await request(f.app).get(`/campaign-candidates/${id}/source-playback`).set(headers).expect(200)).body).toEqual({ origin: 0, start: 10, end: 20, direct: true, format: '.mp4' });
+  const playback = (await request(f.app).get(`/campaign-candidates/${id}/source-playback`).set(headers).expect(200)).body;
+  expect(playback).toEqual(expect.objectContaining({ origin: 0, start: 10, end: 20, direct: true, format: '.mp4' }));
+  expect(playback.sourceKey).toEqual(expect.any(String));
   const media = await request(f.app).get(`/campaign-candidates/${id}/assets/source-preview`).set(headers).set('Range', 'bytes=0-3').expect(206);
   expect(media.headers['content-range']).toBe('bytes 0-3/10');
   expect(fs.readFileSync(s.statePath, 'utf8')).toBe(before);

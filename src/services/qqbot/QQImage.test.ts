@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { Response } from 'node-fetch';
 import { Readable } from 'stream';
 import { createQQImageGenerator } from './QQImage';
-import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_SOURCE_REPLY, qqImageCommandPlan, qqImageConfirmationReply, qqImagePlan, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
+import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_SOURCE_REPLY, qqImageCommandPlan, qqImageCommandReply, qqImageConfirmationReply, qqImagePlan, qqImageReferenceCreationRequested, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
 import { qqImageCharacters } from './QQImageCatalog';
 import { qqDigest, qqRequest } from './QQPolicy';
 import { QQRecords } from './QQRecords';
@@ -98,6 +98,24 @@ test.each(['变岁己', '变小岁', '请帮我变栞栞', '换成栞栞', '把�
   expect(plan.prompt).toContain('以用户明确要求为准');
   expect(plan.prompt).not.toContain('不得用新角色替换原图人物');
   expect(plan.prompt).not.toContain('补充参考图仅用于用户要求新增的角色');
+});
+
+test.each(['把左肩上的饼干扣出来，做一个正视图', '提取帽子上的小装饰，单独画一张立绘'])
+('local extraction requests with an attached image are treated as new reference-based drawings: %s', text => {
+  expect(qqImageReferenceCreationRequested(text)).toBe(true);
+  const attached = { ...request(text), imageInput: { urls: ['https://multimedia.nt.qq.com.cn/image'], reply: 'source' } };
+  expect(qqImageCommandReply(attached, { mode: 'create', instruction: text, characters: [] }, options)).toBeUndefined();
+});
+
+test('an attached image can be used as a reference for a newly composed scene', () => {
+  const text = '这是一个很安全的插画，参考这个画一个岁己和栞栞的，近的是岁己';
+  const original = { ...request(text), imageInput: { urls: ['https://multimedia.nt.qq.com.cn/reference'], reply: undefined } };
+  expect(qqImageConfirmationReply(original, options)).toBeUndefined();
+  expect(qqImageCommandReply(original, { mode: 'create', instruction: text, characters: [] }, options)).toBeUndefined();
+  const plan = qqImageCommandPlan(original, { mode: 'create', instruction: text, characters: [] }, options, 1);
+  expect(plan.prompt).toContain('附图只用于参考构图、镜头、色彩或氛围');
+  expect(plan.prompt).not.toContain('编辑给定原图');
+  expect(plan.references).toEqual(options.characters!.map(character => character.referenceImage));
 });
 
 test.each(['变岁己是什么意思', '变岁己吗？', '不要变岁己', '“变岁己”是什么意思'])

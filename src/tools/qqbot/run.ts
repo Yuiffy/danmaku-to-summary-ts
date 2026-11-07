@@ -20,6 +20,8 @@ import { QQImageInputs } from '../../services/qqbot/QQImageInputs';
 import { createQQImageTools } from '../../services/qqbot/QQImageTools';
 import { QQImageJobs } from '../../services/qqbot/QQImageJobs';
 import { qqDiagnostic } from '../../services/qqbot/QQDiagnostics';
+import { QQChatArchive } from '../../services/qqbot/QQChatArchive';
+import { QQKnowledgeBase, qqKnowledgeFile } from '../../services/qqbot/QQKnowledgeBase';
 
 type QQMode = 'check' | 'live' | 'status' | 'resume';
 export function parseQQArgs(args: string[]): { config: string; mode: QQMode } {
@@ -70,7 +72,7 @@ export async function runQQBot(args: string[]): Promise<void> {
   if (config.images?.enabled) validateQQImageConfig({ ...config.images, characters });
   if (options.mode === 'check') {
     console.info(JSON.stringify({ valid: true, appId, model: QQ_MODEL, keyName: provider.keyName, knowledge: !!knowledge,
-      groupMode: 'mention-only', privateMode: 'fixed-guidance', imageModel: config.images?.enabled ? config.images.model : null, imageCharacters: characters.length }));
+      groupMode: config.groupMessageMode === 'mention' ? 'mention' : 'all', privateMode: 'fixed-guidance', imageModel: config.images?.enabled ? config.images.model : null, imageCharacters: characters.length }));
     return;
   }
   const state = await store.open();
@@ -79,6 +81,7 @@ export async function runQQBot(args: string[]): Promise<void> {
   let bot: InstanceType<typeof QQBot> | undefined;
   let worker: QQWorker | undefined;
   let imageJobs: QQImageJobs | undefined;
+  let localKnowledge: QQKnowledgeBase | undefined;
   const report = (event: import('../../services/qqbot/QQWorker').QQLogEvent) => {
     console.info(JSON.stringify({ ...event, appId, at: new Date().toISOString(), diagnosticsVersion: 1, pid: process.pid }));
     if (state.paused) bot?.stop();
@@ -93,6 +96,9 @@ export async function runQQBot(args: string[]): Promise<void> {
       baseUrl: 'https://api.bot.qq.com', tokenBaseUrl: 'https://api.bot.qq.com',
       userAgent: 'shikamochi-qqbot/0.1', reconnect: { maxAttempts: 10 }, logger: { info: () => {}, error: () => {} } });
     const records = new QQRecords(root, appId);
+    const chatArchive = new QQChatArchive(root, appId);
+    localKnowledge = new QQKnowledgeBase(qqKnowledgeFile(root));
+    localKnowledge.seedDefaults();
     const imageInputs = new QQImageInputs(root, appId, undefined, (request, sourceRead) => report({
       event: 'qq_image_source_read', requestId: request.key, scope: request.scope, sourceRead }));
     const generate = config.images?.enabled ? createQQImageGenerator(root, appId, config.images, settings, undefined, imageInputs) : undefined;
@@ -109,14 +115,18 @@ export async function runQQBot(args: string[]): Promise<void> {
     worker = new QQWorker(workerConfig, state, { now: Date.now, save: value => store.save(value), record: (request, update) => records.write(request, update),
       answer: async (request, signal, executeImage) => {
         let tokens = QQ_LIMITS.reservation as number;
+        let imageToolMessage: string | undefined;
         const answer = createQQAnswerer(settings, knowledge, undefined, async (question, agent) => {
           tokens = Math.min(QQ_LIMITS.reservation, Math.max(1, agent.inputTokens + agent.outputTokens));
           report({ event: 'qq_agent_trace', requestId: question.key, scope: question.scope, agent });
           await records.write(question, { status: 'generating', agent });
         }, config.images?.enabled && executeImage ? createQQImageTools(request, { ...config.images, characters },
           () => imageInputs.load(request, signal), executeImage, count => report({ event: 'qq_image_sources_loaded',
-            requestId: request.key, scope: request.scope, imageSourceCount: count })) : undefined);
-        return { text: await answer(request, signal), tokens };
+            requestId: request.key, scope: request.scope, imageSourceCount: count }), result => {
+              if (result.status === 'blocked' || result.status === 'failed') imageToolMessage = result.message;
+            }) : undefined, chatArchive, localKnowledge);
+        const generatedAnswer = await answer(request, signal);
+        return { text: imageToolMessage || generatedAnswer, tokens };
       },
       image: generate,
       pendingImage: imageJobs ? request => imageJobs!.pending(request) : undefined,
@@ -138,14 +148,20 @@ export async function runQQBot(args: string[]): Promise<void> {
     bot.on('disconnected', () => report({ event: 'qq_disconnected' }));
     bot.on('error', () => report({ event: 'qq_gateway_error' }));
     bot.on('message', (_ctx, message) => {
-      worker!.receive(message);
+      void (async () => {
+        const isGroup = message && typeof message === 'object' && (message as any).kind === 'group';
+        const allMode = config.groupMessageMode !== 'mention';
+        const captured = isGroup && allMode ? await chatArchive.capture(message as any) : undefined;
+        const event = captured ? { ...(message as any), chatContext: await chatArchive.recent(captured.conversation, captured.createdAt, 24) } : message;
+        worker!.receive(event);
+      })().catch(() => { /* malformed gateway events must not stop the websocket */ });
     });
     report({ event: 'qq_starting' });
     await bot.start();
     if (state.paused) process.exitCode = 2;
     else if (!stopping) throw new Error('QQ gateway stopped unexpectedly');
   } finally {
-    stop(); await worker?.idle(); await imageJobs?.close();
+    stop(); await worker?.idle(); await imageJobs?.close(); localKnowledge?.close();
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('message', onMessage);
     await store.close();
   }

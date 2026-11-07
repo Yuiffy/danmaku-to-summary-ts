@@ -8,14 +8,15 @@ export function SourcePlayer({ id, revision, subtitles, video, onOrigin, basePat
 }) {
   const [forceRemux, setForceRemux] = useState(false);
   const sourceEndpoint = `${basePath}/source-playback?v=${revision}${forceRemux ? '&remux=1' : ''}`;
-  const resource = useResource<{ origin: number; start: number; end: number; direct?: boolean; format?: string }>(sourceEndpoint);
+  const resource = useResource<{ origin: number; start: number; end: number; direct?: boolean; format?: string; sourceKey?: string; assetKey?: string }>(sourceEndpoint);
   const [track, setTrack] = useState(''), [error, setError] = useState('');
   const busyRetry = resource.status === 429;
   const retryAttempt = useRef(0);
   const flvPlayer = useRef<{ destroy: () => void }>();
   const playback = resource.data;
   const rawFlv = !!playback && playback.direct === true && playback.format === '.flv' && !forceRemux;
-  const sourceUrl = `/api/admin${basePath}/assets/source-preview?v=${revision}${forceRemux ? '&remux=1' : ''}`;
+  const sourceUrl = playback?.assetKey ? `/api/admin/source-assets/${playback.assetKey}`
+    : `/api/admin${basePath}/assets/source-preview?v=${revision}${forceRemux ? '&remux=1' : ''}`;
   useEffect(() => { setForceRemux(false); }, [basePath, revision]);
   useEffect(() => {
     if (!busyRetry) {
@@ -64,10 +65,10 @@ export function SourcePlayer({ id, revision, subtitles, video, onOrigin, basePat
     return () => URL.revokeObjectURL(url);
   }, [playback, subtitles, onOrigin]);
   return <>
-    {resource.loading && <div className="media-empty">正在定位原片…大录播首次加载可能需要约 1 分钟，完成后会缓存。</div>}
+    {resource.loading && <div className="media-empty">正在准备可快速播放的原片片段…首次读取大录播可能需要一点时间，完成后会缓存。</div>}
     {busyRetry ? <div className="notice" role="status">另一个原片正在加载，已自动排队重试…<button onClick={() => { retryAttempt.current = 0; resource.refresh(); }}>立即重试</button></div>
       : (resource.error || error) && <div className="notice error" role="alert">{resource.error || error}<button onClick={() => { setError(''); resource.refresh(); }}>重试原片</button></div>}
-    {playback && <><video ref={video} key={`${revision}-${playback.origin}-${forceRemux ? 'remux' : 'source'}`} className="review-video" controls preload="metadata"
+    {playback && <><video ref={video} key={`${playback.sourceKey || revision}-${playback.origin}-${forceRemux ? 'remux' : 'source'}`} className="review-video" controls playsInline preload="auto"
       src={rawFlv ? undefined : sourceUrl}
       onLoadedMetadata={event => { event.currentTarget.currentTime = Math.max(0, playback.start - playback.origin); }}
       onError={() => { if (rawFlv) { setError('FLV 直读失败，正在切换兼容预览…'); setForceRemux(true); } else setError('浏览器无法播放这段原片，可生成粗剪后预览。'); }}>

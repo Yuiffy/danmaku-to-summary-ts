@@ -16,6 +16,7 @@ import { AdminBilibiliLogin } from '../../services/admin/AdminBilibiliLogin';
 import { AdminCommentReplies } from '../../services/admin/AdminCommentReplies';
 import { AdminCommentFeedback } from '../../services/admin/AdminCommentFeedback';
 import { AdminQQRecords } from '../../services/admin/AdminQQRecords';
+import { AdminQQChat } from '../../services/admin/AdminQQChat';
 import { AdminCampaignCandidates } from '../../services/admin/AdminCampaignCandidates';
 import { AdminCampaignFeedback } from '../../services/admin/AdminCampaignFeedback';
 import { AdminAsrStatus } from '../../services/admin/AdminAsrStatus';
@@ -24,6 +25,9 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AITextGenerator } from '../../services/ai/AITextGenerator';
 import { createFeedbackAgent } from '../../services/admin/AdminFeedbackAgent';
 import { createFeedbackCompletion } from '../../services/admin/AdminFeedbackClient';
+import { AdminQQKnowledge } from '../../services/admin/AdminQQKnowledge';
+import { qqKnowledgeFile } from '../../services/qqbot/QQKnowledgeBase';
+import { AdminPreUploadPeerCoverage } from '../../services/admin/AdminPreUploadPeerCoverage';
 
 export function startAdminService(): void {
   const root = getProjectRoot(), tokenFile = path.join(root, 'data/runtime/admin/access-token');
@@ -41,13 +45,18 @@ export function startAdminService(): void {
   const sourceMedia = new AdminSourceMedia(path.join(root, 'data/runtime/admin/source-previews'),
     () => readJson(path.join(root, 'config/production.json'), {}).audio?.ffmpeg?.path || 'ffmpeg');
   const clips = new AdminClipStore(root, roots);
-  const feedback = new AdminFeedback(clips, jobs, runner, async prompt => {
+  const peerRequest = async (prompt: string) => {
     await ConfigProvider.initialize({ configPath: path.join(root, 'config/production.json') });
     return new AITextGenerator().generateText(prompt, { temperature: 0.1, maxTokens: 6000, timeout: 120000 });
-  }, createFeedbackAgent(async (messages, tools) => {
+  };
+  const peerCoverage = new AdminPreUploadPeerCoverage(root, clips, async () => {
+    await ConfigProvider.initialize({ configPath: path.join(root, 'config/production.json') });
+    return ConfigProvider.reload();
+  }, peerRequest);
+  const feedback = new AdminFeedback(clips, jobs, runner, peerRequest, createFeedbackAgent(async (messages, tools) => {
     await ConfigProvider.initialize({ configPath: path.join(root, 'config/production.json') });
     return createFeedbackCompletion(ConfigProvider.getConfig() as any)(messages, tools);
-  }));
+  }), true, peerCoverage);
   const covers = new AdminCoverPreview(root, process.env.ADMIN_PYTHON);
   const titles = new AdminTitles(path.join(root, 'data/runtime/admin/title-choices'), clips, jobs, async prompt => {
     await ConfigProvider.initialize({ configPath: path.join(root, 'config/production.json') });
@@ -57,17 +66,19 @@ export function startAdminService(): void {
   const commentReplies = new AdminCommentReplies(root);
   const commentFeedback = new AdminCommentFeedback(root);
   const qqRecords = new AdminQQRecords(root);
+  const qqChat = new AdminQQChat(root);
+  const qqKnowledge = new AdminQQKnowledge(qqKnowledgeFile(root));
   const campaignCandidates = new AdminCampaignCandidates(clips, roots,
     () => readJson(path.join(root, 'config/production.json'), {}).ownStreamClips?.campaigns || []);
   const campaignFeedback = new AdminCampaignFeedback(campaignCandidates, clips, jobs, runner, feedback);
   const asr = new AdminAsrStatus(root, { queueFile: process.env.WHISPER_QUEUE_FILE, logFile: process.env.ADMIN_ASR_LOG_FILE });
   asr.startHistoryIndex();
   const clipProgress = new AdminClipProgress(root);
-  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, campaignCandidates, campaignFeedback, asr, clipProgress }, fs.readFileSync(tokenFile, 'utf8').trim());
+  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, qqChat, qqKnowledge, campaignCandidates, campaignFeedback, asr, clipProgress }, fs.readFileSync(tokenFile, 'utf8').trim());
   const port = Number(process.env.ADMIN_PORT || 15127);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ADMIN_PORT 无效');
   const server = app.listen(port, '127.0.0.1', () => console.log(`管理 API: http://127.0.0.1:${port}`));
-  const stop = () => { queries.stop(); asr.close(); server.close(); void jobs.flush().then(() => process.exit()); };
+  const stop = () => { queries.stop(); asr.close(); qqKnowledge.close(); server.close(); void jobs.flush().then(() => process.exit()); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
 }
 if (require.main === module) startAdminService();

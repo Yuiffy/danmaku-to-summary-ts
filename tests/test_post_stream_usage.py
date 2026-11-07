@@ -48,15 +48,16 @@ class PostStreamUsageTest(unittest.TestCase):
         self.assertAlmostEqual(row['estimatedUncachedImageUsd'], 0.09783)
 
     def test_image_rollout_comparison_fields_and_new_model_prices(self):
-        for model in ('gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'):
-            row = usage.request_record({'model': model, 'quality': 'max', 'elapsedMs': 120000,
-                'rolloutVariant': model + ':max', 'usage': {'input_tokens': 8214,
+        for model, quality in (('gpt-image-2.5-sunburst', 'max'), ('gpt-image-2.5-flare', 'max'),
+                               ('gpt-image-2.6-sunburst', 'high'), ('gpt-image-2.6-flare', 'high')):
+            row = usage.request_record({'model': model, 'quality': quality, 'elapsedMs': 120000,
+                'rolloutVariant': model + ':' + quality, 'usage': {'input_tokens': 8214,
                 'input_tokens_details': {'image_tokens': 5200, 'text_tokens': 3014},
                 'output_tokens': 1372, 'output_tokens_details': {'image_tokens': 1372}}}, 'image', 'file', 0)
             self.assertAlmostEqual(row['estimatedUncachedImageUsd'], 0.09783)
-            self.assertEqual(row['quality'], 'max')
+            self.assertEqual(row['quality'], quality)
             self.assertEqual(row['elapsedMs'], 120000)
-            self.assertEqual(row['rolloutVariant'], model + ':max')
+            self.assertEqual(row['rolloutVariant'], model + ':' + quality)
 
     def test_failed_recording_without_reply_keeps_its_known_cost(self):
         with tempfile.TemporaryDirectory() as directory:

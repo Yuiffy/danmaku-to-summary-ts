@@ -57,7 +57,7 @@ export function AsrQueue() {
       <div><dt>预计转写剩余</dt><dd>{current ? estimate(current) : '—'}</dd><small>随资源与语音密度变化；不含后处理</small></div>
     </dl>
     <details className="upload-expanded asr-expanded"><summary>查看字幕排队顺序与运行详情</summary>
-      <p className="muted asr-policy">{status.policy.cpuFallbackEnabled ? `已启用 CPU 后台转写：GPU 繁忙时，支持的模型可用低优先级、2 线程继续处理；启动要求可用内存至少 ${status.policy.minAvailableMemoryGb} GiB。` : '当前配置未启用 CPU 后台转写。'}{status.policy.deviceHandoffEnabled ? '标准 Paraformer 按资源切换 CPU / GPU；新任务支持中断未完成窗口，保留已保存进度。' : ''}</p>
+      <p className="muted asr-policy">{status.policy.cpuFallbackEnabled ? `已启用 CPU 后台转写：GPU 繁忙时，支持的模型可用低优先级、4 线程继续处理；启动要求可用内存至少 ${status.policy.minAvailableMemoryGb} GiB。` : '当前配置未启用 CPU 后台转写。'}{status.policy.deviceHandoffEnabled ? '标准 Paraformer 按资源切换 CPU / GPU；新任务支持中断未完成窗口，保留已保存进度。' : ''}</p>
       <p className="muted">速度取同设备连续进度的最近约两分钟，切换设备或重做窗口后重新采样，至少观察一分钟才估算剩余转写时间；旧路线没有音频总进度时不估算。按优先级和入队先后排队。每 5 秒刷新，读取于 {dateText(status.observedAt)}。</p>
       {!status.logAvailable && <p className="upload-stale">运行记录暂不可读，设备和阶段待确认；排队顺序仍来自现有队列。</p>}
       <div className="table-scroll asr-queue-table"><table><thead><tr><th>顺序</th><th>主播 / 场次</th><th>状态 / 进度</th><th>等待 / 已用时</th><th>入队时间</th></tr></thead><tbody>{status.queue.map(task => <tr key={task.id}>

@@ -99,6 +99,17 @@ test('non-retryable provider failure remains single-shot, and successful notice 
   expect(JSON.stringify(f.io.report.mock.calls)).not.toContain('private provider detail'); await f.jobs.close();
 });
 
+test.each([
+  [502, '图片上游服务返回 HTTP 502'],
+  [503, '图片上游服务返回 HTTP 503'],
+  [504, '图片上游服务返回 HTTP 504'],
+])('failed background attempt exposes the safe HTTP cause for %i', async (httpStatus, text) => {
+  const f = fixture(); f.io.generate.mockReset().mockRejectedValue(qqFailure('image_http', 'http_error', { httpStatus }));
+  await f.jobs.open(); await f.jobs.enqueue(f.request('original'), command); await f.jobs.idle();
+  expect((await f.jobs.pending(f.request('notice')))!.text).toContain(text);
+  await f.jobs.close();
+});
+
 test('background deadline is fifteen minutes and remains independent of any original request controller', async () => {
   jest.useFakeTimers();
   try {

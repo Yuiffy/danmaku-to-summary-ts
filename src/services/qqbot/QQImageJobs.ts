@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { QQRequest, QQ_LIMITS, qqDigest } from './QQPolicy';
-import { QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_MODERATION_REPLY, QQ_IMAGE_SEXUAL_REPLY } from './QQImagePolicy';
+import { QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, qqImageFailureReply } from './QQImagePolicy';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { qqDiagnostic, qqFailure } from './QQDiagnostics';
@@ -187,8 +187,7 @@ export class QQImageJobs {
     });
     return { text: image ? job.key === request.key ? '图片生成完成。' : '上次的图片生成完成，给你发来啦。' : job.status === 'unknown' ?
       '上次图片任务因超时或服务中断未能确认结果，没有重复调用生图接口。如需重画，请再次艾特并说明绘图要求。' :
-      job.failure?.code === 'image_sexual' ? QQ_IMAGE_SEXUAL_REPLY : job.failure?.code === 'image_moderation' ? QQ_IMAGE_MODERATION_REPLY :
-      '上次图片生成失败。如需重试，请再次艾特并说明绘图要求。', ...(image ? { image } : {}) };
+      qqImageFailureReply(job.failure), ...(image ? { image } : {}) };
   }
   async delivered(request: QQRequest): Promise<void> {
     const job = Object.values(this.state.jobs).find(item => item.status === 'delivering' && item.deliveryRequest === request.key &&

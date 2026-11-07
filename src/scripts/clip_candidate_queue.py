@@ -208,7 +208,7 @@ def prepare_rebuild(args, api):
         if args.enqueue and is_published(clip):
             raise ValueError("Already published: local rebuild only; duplicate upload is not allowed")
         options = {key: getattr(args, key, None) for key in (
-            "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml", "transcript_record")}
+            "review_note", "title", "description", "cover_text", "tags", "source_kind", "start", "end", "duration_note", "xml", "transcript_record")}
         options["allow_long"] = "yes" if args.allow_long else None
         options["allow_short"] = "yes" if getattr(args, "allow_short", False) else None
         options["ordinary"] = "yes" if getattr(args, "ordinary", False) else None

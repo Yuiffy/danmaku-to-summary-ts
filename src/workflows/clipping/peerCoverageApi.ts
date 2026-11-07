@@ -15,7 +15,7 @@ export class PeerPlatformUnavailable extends Error {
 }
 export interface PeerApi {
     accountId(): Promise<string>;
-    search(query: string, limit: number): Promise<PeerVideo[]>;
+    search(query: string, limit: number, options?: { page?: number; order?: 'totalrank' | 'pubdate' }): Promise<PeerVideo[]>;
     read(video: PeerVideo): Promise<PeerVideo>;
     has(action: 'like' | 'favorite' | 'repost', video: PeerVideo, receipt?: any): Promise<boolean>;
     act(action: 'like' | 'favorite' | 'repost', video: PeerVideo, folder?: string): Promise<unknown>;
@@ -86,9 +86,10 @@ export function createPeerApi(cookie: string, transport: (url: string, init: Req
     };
     return {
         accountId: async () => id((await navigation()).mid),
-        search: async (query, limit) => {
-            if (query.length < 3 || query.length > 80 || limit < 1 || limit > 5) throw new Error('Invalid bounded peer search');
-            const params = await signed({ keyword: query, search_type: 'video', page: '1', page_size: String(limit), order: 'totalrank' });
+        search: async (query, limit, options = {}) => {
+            const page = options.page || 1, order = options.order || 'totalrank';
+            if (query.length < 3 || query.length > 80 || limit < 1 || limit > 20 || !Number.isInteger(page) || page < 1 || page > 5) throw new Error('Invalid bounded peer search');
+            const params = await signed({ keyword: query, search_type: 'video', page: String(page), page_size: String(limit), order });
             const data = await readJson(`${API}/x/web-interface/wbi/search/type?${params}`);
             if (!Array.isArray(data?.result)) {
                 if (data?.numResults === 0) return [];

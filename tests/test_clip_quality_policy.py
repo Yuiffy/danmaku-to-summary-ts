@@ -82,6 +82,13 @@ class ClipQualityPolicyTests(unittest.TestCase):
         self.assertEqual(publication_errors(api, [candidate], {'clips': {}}, manual_enqueue=True), [])
         self.assertTrue(publication_errors(api, [candidate], {'clips': {}}))
 
+    def test_enqueue_rejects_title_that_exceeds_limit_after_display_prefix(self):
+        api = SimpleNamespace(load_upload_runtime_config=lambda: self.policy,
+                              load_json=lambda file, default: self.metadata)
+        candidate = {**self.clip, 'prefix': '【小岁】', 'title': 'a' * 80, 'pendingCut': True}
+        errors = publication_errors(api, [candidate], {'clips': {}}, manual_enqueue=True)
+        self.assertTrue(any('including prefix' in error for error in errors))
+
     def test_explicit_dedicated_manual_queue_keeps_its_existing_approval_contract(self):
         self.metadata = {'mode': 'manual_clip_queue'}
         self.assertEqual(self.errors(), [])

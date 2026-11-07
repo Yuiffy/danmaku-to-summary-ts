@@ -25,8 +25,22 @@ class CpuFallbackTests(unittest.TestCase):
         self.assertEqual(value['emotion_analysis']['device'], 'cpu')
         self.assertFalse(value['resource_guard']['pause_when_game_running'])
         self.assertFalse(value['resource_guard']['claim_enabled'])
-        self.assertEqual(value['resource_guard']['torch_num_threads'], 2)
+        self.assertEqual(value['resource_guard']['torch_num_threads'], 4)
+        self.assertEqual(value['ncpu'], 4)
+        self.assertEqual(value['batch_size_s'], 60)
         self.assertEqual(env['CUDA_VISIBLE_DEVICES'], '')
+        self.assertEqual(env['OMP_NUM_THREADS'], '4')
+
+    def test_cpu_settings_can_be_overridden_per_job(self):
+        value = {'backend': 'paraformer', 'cpu_fallback': {
+            'torch_num_threads': 3, 'torch_num_interop_threads': 1,
+            'batch_size_s': 45, 'batch_size_threshold_s': 30, 'inference_batch_size': 1}}
+        env = {'ASR_CPU_FALLBACK': '1'}
+        self.assertTrue(apply_cpu_fallback(value, env))
+        self.assertEqual(value['ncpu'], 3)
+        self.assertEqual(value['batch_size_s'], 45)
+        self.assertEqual(value['batch_size_threshold_s'], 30)
+        self.assertEqual(env['OMP_NUM_THREADS'], '3')
 
     def test_gpu_only_backend_fails_instead_of_silently_changing_model(self):
         with self.assertRaisesRegex(ValueError, 'does not support'):

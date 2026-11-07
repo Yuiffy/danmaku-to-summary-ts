@@ -24,7 +24,8 @@ async function main(argv = process.argv.slice(2)) {
         const result = await workflow.generateStreamGames({ mediaPath: path.resolve(options.media), srtPath: path.resolve(options.srt),
             xmlPath: options.xml ? path.resolve(options.xml) : null, context: { roomId: options['room-id'] || '25788785' }, config,
             planOnly: command === 'plan', registerUpload: !options['no-register'], enqueue: options.enqueue,
-            combineGames: options['combine-games'], episode: options.episode ? Number(options.episode) : null });
+            combineGames: options['combine-games'], editorialMode: options['editorial-mode'] || null,
+            episode: options.episode ? Number(options.episode) : null });
         console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (command === 'inventory') {
@@ -58,7 +59,7 @@ async function main(argv = process.argv.slice(2)) {
         return;
     }
     if (command !== 'help') throw new Error(`Unknown game command ${command}`);
-    console.log('node src/scripts/stream_game_clips.js plan|run --media <recording> --srt <SRT> [--xml <XML>] [--episode <number>] [--combine-games] [--enqueue]\n'
+    console.log('node src/scripts/stream_game_clips.js plan|run --media <recording> --srt <SRT> [--xml <XML>] [--episode <number>] [--combine-games] [--editorial-mode highlights] [--enqueue]\n'
         + 'node src/scripts/stream_game_clips.js approve --metadata <game submission JSON> --note <review/authorization> [--enqueue]\n'
         + 'node src/scripts/stream_game_clips.js inventory --root <game output root>');
 }

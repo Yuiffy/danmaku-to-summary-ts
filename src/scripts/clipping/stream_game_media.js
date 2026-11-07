@@ -61,4 +61,49 @@ async function gameCover(part, coverPath, config) {
     return coverPath;
 }
 
-module.exports = { renderGamePart, gameCover };
+/**
+ * Render a short-form game editorial sequence. Source ranges are first cut with
+ * the same stream-copy checks as ordinary game parts; the final concat keeps the
+ * original audio/video whenever the inputs are compatible and falls back to one
+ * predictable H.264/AAC encode for mixed OP/source inputs.
+ */
+async function renderGameSequence(mediaPath, sequence, outputPath, config, profile, hooks = {}) {
+    const root = require('path').dirname(outputPath), fsPath = require('path');
+    const work = fsPath.join(root, `.sequence-${process.pid}-${Date.now()}`);
+    require('fs').mkdirSync(work, { recursive: true });
+    const files = [];
+    try {
+        for (let index = 0; index < sequence.length; index++) {
+            const item = sequence[index], segmentPath = fsPath.join(work, `${String(index).padStart(3, '0')}.mp4`);
+            if (item.type === 'op') {
+                require('fs').copyFileSync(item.mediaPath, segmentPath);
+            } else {
+                await renderGamePart(mediaPath, { start: item.start, end: item.end, duration: item.end - item.start }, segmentPath, config, profile, hooks);
+            }
+            files.push(segmentPath);
+        }
+        const list = fsPath.join(work, 'concat.txt');
+        require('fs').writeFileSync(list, files.map(file => `file '${file.replace(/'/gu, "'\\''")}'`).join('\n') + '\n', 'utf8');
+        const ffmpegPath = config.audio?.ffmpeg?.path || 'ffmpeg';
+        const mixedEditorialInputs = sequence.some(item => item.type === 'op');
+        try {
+            if (mixedEditorialInputs) throw new Error('Mixed OP/source frame rates require timestamp-normalized concat');
+            await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', outputPath],
+                { ffmpegPath, threads: 1, timeoutMs: 30 * 60 * 1000, stage: '游戏高光合并' });
+        } catch (copyError) {
+            const inputs = files.flatMap(file => ['-i', file]);
+            const chains = files.map((_, i) => `[${i}:v:0][${i}:a:0]`).join('');
+            await runFfmpeg(['-y', ...inputs, '-filter_complex', `${chains}concat=n=${files.length}:v=1:a=1[v][a]`,
+                '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k',
+                '-vsync', 'cfr', '-fps_mode', 'cfr', '-movflags', '+faststart', outputPath], { ffmpegPath, threads: 1, timeoutMs: 30 * 60 * 1000, stage: '游戏高光重编码', copyError });
+        }
+        const duration = await probeMediaDuration(outputPath, resolveFfprobePath(ffmpegPath));
+        return { mediaPath: outputPath, bytes: require('fs').statSync(outputPath).size, sha256: fileDigest(outputPath), actualDuration: duration,
+            processing: { resourceMode: profile?.mode || 'idle', videoEncoder: 'sequence-copy-or-h264', audioEncoder: 'source-or-aac', originalStreamCopy: false },
+            audio: 'original_recording_mix', burnedSubtitles: false };
+    } finally {
+        try { require('fs').rmSync(work, { recursive: true, force: true }); } catch { /* retain no publication state */ }
+    }
+}
+
+module.exports = { renderGamePart, renderGameSequence, gameCover };

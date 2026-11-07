@@ -5,6 +5,8 @@ import { createQQAnswerer } from './QQAgent';
 import { createQQKnowledge, QQKnowledge, QQReadTool } from './QQKnowledge';
 import { QQ_LIMITS, QQRequest } from './QQPolicy';
 import { createQQImageTools } from './QQImageTools';
+import type { QQChatReader } from './QQChatArchive';
+import { QQKnowledgeBase } from './QQKnowledgeBase';
 
 const request: QQRequest = { key: 'receipt', user: 'hash', scope: 'group', targetId: 'private-group', msgId: 'private-msg',
   text: '岁己最新直播播了什么', createdAt: Date.parse('2026-10-28T02:00:00+08:00') };
@@ -37,6 +39,7 @@ test('screenshot question lets the SDK agent select real latest-overview IO and 
     const first = JSON.parse(transport.mock.calls[0][1].body), second = JSON.parse(transport.mock.calls[1][1].body);
     expect(first.tools.map((entry: any) => entry.function.name)).toEqual(expect.arrayContaining(['read_live_overview', 'search_recordings', 'list_recordings', 'read_context']));
     expect(first.messages[0].content).toContain('最新不等于今天');
+    expect(first.messages[0].content).toContain('获取群内全部消息');
     expect(JSON.stringify(second.messages)).toContain('Innocence');
     expect(JSON.stringify(second)).not.toMatch(/private-group|private-msg|qq-secret-key|unused-index/u);
     expect(trace.mock.calls[0][1]).toMatchObject({ modelCalls: 2, tools: [{ name: 'read_live_overview', status: 'ok' }] });
@@ -52,6 +55,34 @@ test('tool failure is data for replanning, then another tool and an evidence-bac
   expect(read).toHaveBeenCalledTimes(1); expect(search).toHaveBeenCalledTimes(1);
   expect(transport.mock.calls[1][1].body).toContain('工具失败');
   expect(transport.mock.calls[1][1].body).not.toContain('private/leak');
+});
+
+test('group chat summaries expose archive ids as checked citations', async () => {
+  const chat: QQChatReader = {
+    recent: jest.fn(),
+    range: jest.fn(async () => [{ version: 1, id: 'chat-1', appId: 'app', conversation: 'room', user: 'user',
+      senderName: '群友', text: '大家在讨论新活动', createdAt: request.createdAt - 1000 }]),
+  };
+  const transport = jest.fn().mockResolvedValueOnce(call('read_group_chat', { lookbackMinutes: 60, limit: 120 }))
+    .mockResolvedValueOnce(final('群里主要在讨论新活动。', 'evidence', ['chat-1']));
+  await expect(createQQAnswerer(settings, undefined, transport as any, undefined, undefined, chat)(
+    { ...request, text: '群里在聊啥' }, signal())).resolves.toContain('新活动');
+  const body = JSON.parse(transport.mock.calls[1][1].body);
+  const evidence = JSON.parse(body.messages.find((message: any) => message.role === 'tool').content).untrustedEvidence;
+  expect(evidence[0]).toMatchObject({ evidenceId: 'chat-1', text: '大家在讨论新活动' });
+});
+
+test('configuration questions can cite the local QQ knowledge base', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'qq-agent-local-knowledge-'));
+  const base = new QQKnowledgeBase(path.join(root, 'knowledge.sqlite'));
+  base.seedDefaults();
+  try {
+    const transport = jest.fn().mockResolvedValueOnce(call('search_local_knowledge', { query: '群主 全部消息', limit: 8 }))
+      .mockResolvedValueOnce(final('需要让群主或有权限的管理员在该群设置中开启获取群内全部消息。', 'evidence', ['qq.group-message-scope']));
+    await expect(createQQAnswerer(settings, undefined, transport as any, undefined, undefined, undefined, base)(
+      { ...request, text: 'QQ群怎么开启全部消息' }, signal())).resolves.toContain('群主');
+    expect(JSON.stringify(transport.mock.calls[1][1].body)).toContain('qq.group-message-scope');
+  } finally { base.close(); fs.rm(root, { recursive: true, force: true }); }
 });
 
 test('casual chat can answer directly with available tools and does not run fixed keyword retrieval', async () => {

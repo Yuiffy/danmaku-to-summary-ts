@@ -50,7 +50,8 @@ test('discovery uses only a current, room-bound actual-play summary, including v
         fs.writeFileSync(srtPath, 'subtitles'); fs.writeFileSync(xmlPath, 'danmaku'); save();
         const result = resolveGameCatalog(config(), options);
         expect(result.games.map((game: any) => game.name)).toEqual(['艾尔登法环', '影之刃零']);
-        expect(result.catalogEvidence.summarySha256).toBe(hash(fs.readFileSync(summaryPath, 'utf8')));
+    expect(result.catalogEvidence.summarySha256).toBe(hash(fs.readFileSync(summaryPath, 'utf8')));
+    expect(result.catalogEvidence.gameBindings).toEqual([{ summaryName: '影之刃零', gameId: expect.any(String), canonicalName: '影之刃零' }]);
         summary.content.games = []; save();
         expect(resolveGameCatalog(config(), options).games).toHaveLength(1);
         context.roomId = 'other-room'; save();

@@ -29,7 +29,7 @@ export function QQRecords() {
   const selectUser = (value: string) => { setUser(value); setConversation(''); setPage(1); };
   const resetPeople = () => { setUser(''); setConversation(''); setPage(1); };
   return <div className="comment-replies">
-    <div className="toolbar"><p className="muted">群聊仅响应艾特，私聊回复入群引导。问答长期保存在本机，每 5 秒更新。</p><button onClick={resource.refresh}>刷新</button></div>
+    <div className="toolbar"><p className="muted">群聊艾特触发问答，私聊回复入群引导。全量群聊归档请看“QQ 群聊”。问答长期保存在本机，每 5 秒更新。</p><button onClick={resource.refresh}>刷新</button></div>
     <form className="toolbar" onSubmit={event => { event.preventDefault(); setQuery(search.trim()); setPage(1); }}>
       <label>日期 <select value={date} onChange={event => { setDate(event.target.value); resetPeople(); }}><option value="">最新有记录日期</option>
         {data?.dates.map(day => <option key={day} value={day}>{day}</option>)}

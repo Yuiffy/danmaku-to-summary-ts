@@ -110,7 +110,7 @@ def serve():
                             if kwargs[key]:
                                 kwargs[key] = resolve_cached_model_name(kwargs[key])
                         loaded = AutoModel(**kwargs, device=options['device'],
-                                          ncpu=2 if options['device'] == 'cpu' else 4,
+                                          ncpu=int(options.get('ncpu') or 4) if options['device'] == 'cpu' else 4,
                                           disable_update=True, disable_pbar=True)
                         configure_paraformer_devices(loaded, options['device'], options.get('vad_device') or 'cpu')
                         return loaded

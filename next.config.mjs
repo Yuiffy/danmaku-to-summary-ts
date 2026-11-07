@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Build review candidates without replacing the running workspace's .next.
+  // The runner assigns an isolated directory for dev and candidate builds.
+  // Keep the environment override for deployment and independent validation.
   distDir: process.env.DANMAKU_NEXT_BUILD_DIR || '.next',
 };
 

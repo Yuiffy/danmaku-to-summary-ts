@@ -21,7 +21,9 @@ class InterruptTests(unittest.TestCase):
     def test_gpu_uses_configured_batch_cpu_keeps_small_background_batch(self):
         payload = {'batch_size_s': 600, 'batch_size_threshold_s': 60}
         self.assertEqual(batch_settings(payload, 'cuda'), (600, 60))
-        self.assertEqual(batch_settings(payload, 'cpu'), (30, 30))
+        self.assertEqual(batch_settings(payload, 'cpu'), (60, 60))
+        payload['cpu_fallback'] = {'batch_size_s': 45, 'batch_size_threshold_s': 30}
+        self.assertEqual(batch_settings(payload, 'cpu'), (45, 30))
 
     def test_gpu_own_load_excluded_and_external_processes_grouped_per_engine(self):
         rows = [('pid_123_luid_a_phys_0_eng_0_engtype_3D', 99, 0),

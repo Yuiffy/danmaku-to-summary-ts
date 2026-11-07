@@ -392,7 +392,9 @@ def postprocess_cached_paraformer(payload, audio_path, device, results, cache, g
             if gpu_throttle:
                 gpu_throttle.wait_if_busy('缓存转写后的说话人模型加载')
             speaker = AutoModel(model=resolve_cached_model_name(payload['spk_model']),
-                                device=device, ncpu=2 if device == 'cpu' else 4, disable_update=True)
+                                device=device,
+                                ncpu=int(payload.get('ncpu') or 4) if device == 'cpu' else 4,
+                                disable_update=True)
             set_timing(payload, 'speaker_model_load_s', time.perf_counter()-began)
         except Exception as exc:
             log_progress(f'说话人模型加载失败，保留实时转写: {exc}')

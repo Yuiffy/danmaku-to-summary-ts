@@ -28,7 +28,10 @@ class ModelWorker:
     def __init__(self, payload, device, timeout):
         env = {**os.environ, 'PYTHONUTF8': '1', 'ASR_CPU_FALLBACK': '1' if device == 'cpu' else ''}
         if device == 'cpu':
-            env.update(CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2')
+            from asr_cpu_fallback import cpu_fallback_settings
+            threads = str(cpu_fallback_settings(payload)['torch_num_threads'])
+            env.update(CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS=threads,
+                       MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads)
         self.timeout = timeout
         self.process = subprocess.Popen([sys.executable, str(Path(__file__).with_name('asr_handoff_worker.py'))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.__stderr__, text=True,

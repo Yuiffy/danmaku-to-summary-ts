@@ -882,6 +882,8 @@ def model_supports_chinese(model: str) -> bool:
     # 高级模型列表（支持汉字）
     advanced_models = [
         "gpt-image-2",
+        "gpt-image-2.6-sunburst",
+        "gpt-image-2.6-flare",
         "gpt-image-1.5",
         "gemini-3-pro-image-preview-async",
         "gemini-3-pro-image-preview/nano-banana-2",
@@ -1923,7 +1925,10 @@ def call_tuzi_chat_completions_for_image(
         # 注：gemini-3-pro-image-preview-async 即 nano-banana-pro 的异步版本
         primary_model = model or "gpt-image-2"
         fallback_async_model = async_fallback_model or "gemini-3-pro-image-preview-async"
-        gpt_image_timeout = max(timeout, 1000) if primary_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1") else timeout
+        gpt_image_timeout = max(timeout, 1000) if primary_model in (
+            "gpt-image-2", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare",
+            "gpt-image-1.5", "gpt-image-1",
+        ) else timeout
         normalized_strategy_mode = str(strategy_mode or "").strip().lower()
         if normalized_strategy_mode in ("async", "asynconly", "async_only"):
             print(f"[INFO] 房间 {room_id} 使用 async-only 图片策略：{fallback_async_model}")
@@ -2017,8 +2022,11 @@ def call_tuzi_chat_completions_for_image(
                 
                 # 同步策略：调用标准 chat/completions API
                 if strategy_type == "sync":
-                    # gpt-image-2 专用：优先使用 /v1/images/generations 接口
-                    if current_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1"):
+                    # GPT Image 专用：优先使用 /v1/images/generations 接口
+                    if current_model in (
+                        "gpt-image-2", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare",
+                        "gpt-image-1.5", "gpt-image-1",
+                    ):
                         print(f"[INFO] 使用 /v1/images/generations 专用接口调用 {current_model}")
                         img_gen_result = call_tuzi_images_generations(
                             prompt=current_prompt,
