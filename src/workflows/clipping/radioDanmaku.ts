@@ -8,6 +8,8 @@ export interface RadioSettings {
   roomIds?: string[];
   fontScale?: number;
   fps?: number;
+  /** Fixed lifetime for ordinary (unsped) comments crossing the frame. */
+  scrollSeconds?: number;
 }
 interface Window { start: number; duration: number }
 interface Resolution { width: number; height: number }
@@ -100,8 +102,10 @@ export function buildRadioAss(comments: Comment[], window: Window, resolution: R
   const { width, height } = resolution;
   const scale = settings.fontScale ?? 2;
   const fps = settings.fps ?? 30;
-  if (![width, height, window.duration, scale, fps].every(v => Number.isFinite(v) && v > 0)
-      || !Number.isFinite(window.start) || window.start < 0 || fps < 24 || fps > 60 || scale > 4) {
+  const scrollSeconds = settings.scrollSeconds ?? 8;
+  if (![width, height, window.duration, scale, fps, scrollSeconds].every(v => Number.isFinite(v) && v > 0)
+      || !Number.isFinite(window.start) || window.start < 0 || fps < 24 || fps > 60 || scale > 4
+      || scrollSeconds < 4 || scrollSeconds > 20) {
     throw new Error('Invalid radio danmaku dimensions, window, scale or frame rate');
   }
   const fontSize = Math.round(Math.min(width, height) * 40 / 1080 * scale);
@@ -111,9 +115,9 @@ export function buildRadioAss(comments: Comment[], window: Window, resolution: R
   const selected = comments.filter(c => c.time >= window.start && c.time < window.start + window.duration);
   const events = selected.map(comment => {
     const start = comment.time - window.start;
-    // Comments projected onto a sped span carry a compressed lifetime; unsped ones
-    // scroll for 8 seconds and let the video boundary clip the motion.
-    const end = start + (Number(comment.scrollSeconds) > 0 ? Number(comment.scrollSeconds) : 8);
+    // Comments projected onto a sped span carry a compressed lifetime; ordinary
+    // comments use the configured fixed duration and let the video boundary clip motion.
+    const end = start + (Number(comment.scrollSeconds) > 0 ? Number(comment.scrollSeconds) : scrollSeconds);
     const text = displayText(comment.text);
     const textWidth = Math.ceil(Array.from(text).reduce((sum, char) => sum + (/\p{Script=Latin}|[\x20-\x7e]/u.test(char) ? .6 : 1), 0) * fontSize);
     // Only share a lane after the previous tail cleared the entrance and cannot be caught.

@@ -27,6 +27,16 @@ test('legacy preview markup is ignored, entities decode once, and window/color/t
     .toContain('0:00:11.00,0:00:19.00');
 });
 
+test('ordinary comments can use one fixed scroll duration for a review style', () => {
+  const result = buildRadioAss([
+    { time: 10.25, text: '短', color: 16777215 },
+    { time: 11, text: '这是一条更长的弹幕', color: 16777215 }
+  ], window, resolution, { ...settings, scrollSeconds: 12 });
+  expect(result.ass).toContain('0:00:00.25,0:00:12.25');
+  expect(result.ass).toContain('0:00:01.00,0:00:13.00');
+  expect(() => buildRadioAss([], window, resolution, { ...settings, scrollSeconds: 3 })).toThrow('dimensions');
+});
+
 test('concurrent comments get different lanes; controls cannot inject ASS tags', () => {
   const result = buildRadioAss([
     { time: 10, text: 'first', color: 16777215 },

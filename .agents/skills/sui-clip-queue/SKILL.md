@@ -117,6 +117,10 @@ Subtitle or collection retry never authorizes resubmitting an already successful
 For 精剪/精切, read [references/precision-editing.md](references/precision-editing.md) for how AI chooses
 content, cuts, visual emphasis, placement, audio and final review. The shared automated pipeline uses
 these same rules; a one-clip experiment must not become a hardcoded rule for unrelated material.
+For game-object stories where a visible item is noticed, approached, collected and then missed,
+also read [references/game-object-story-clips.md](references/game-object-story-clips.md). It defines
+the evidence chain, OpenCV candidate recall limits, complete action/speech boundaries and the
+full-radio-danmaku review checklist.
 
 For a user-selected same-recording multi-topic keyword bundle, use the numeric
 `precision-bundle --ids ... --title ... --description ... --cover-text ... --note ...`
