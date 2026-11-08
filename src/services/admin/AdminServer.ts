@@ -75,6 +75,7 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   const campaignFeedback = () => { if (!adapters.campaignFeedback) throw new AdminError('活动候选投稿未配置', 503); return adapters.campaignFeedback; };
   app.get('/campaign-candidates/:id/feedback', (req, res) => res.json(campaignFeedback().view(req.params.id)));
   app.post('/campaign-candidates/:id/actions', (req, res) => res.status(202).json(campaignFeedback().submit(req.params.id, req.body)));
+  app.get('/peer-coverage/history', (req, res) => res.json(adapters.clips.peerCoverageHistory(Number(req.query.limit) || 80)));
   const candidatePlayback = async (id: string, forceRemux = false) => {
     const source = candidates().source(id);
     if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
@@ -165,7 +166,8 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.get('/configs', (_req, res) => res.json({ names: adapters.configs.list() }));
   app.get('/configs/:name', (req, res) => res.json(adapters.configs.get(req.params.name)));
   app.put('/configs/:name', (req, res) => res.json(adapters.configs.save(req.params.name, req.body.revision, req.body.value)));
-  app.get('/clips', (req, res) => res.json(adapters.clips.list({ search: String(req.query.search || ''), status: String(req.query.status || ''), room: String(req.query.room || ''), page: String(req.query.page || '1') })));
+  app.get('/clips', (req, res) => res.json(adapters.clips.list({ search: String(req.query.search || ''), status: String(req.query.status || ''), room: String(req.query.room || ''), page: String(req.query.page || '1'), feedbackStatus: String(req.query.feedbackStatus || '') },
+    id => adapters.jobs.feedbackStatus(id))));
   app.get('/clips/:id', (req, res) => res.json(adapters.clips.detail(req.params.id, Number(req.query.part || 1))));
   const titles = () => { if (!adapters.titles) throw new AdminError('标题候选未配置', 503); return adapters.titles; };
   app.get('/title-stats', (_req, res) => res.json(titles().stats()));

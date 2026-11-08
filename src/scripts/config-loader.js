@@ -137,7 +137,8 @@ const AISchema = Joi.object({
                 enabled: Joi.boolean().default(false),
                 variants: Joi.array().items(Joi.object({
                     model: Joi.string().required(),
-                    quality: Joi.string().valid('low', 'medium', 'high', 'xhigh', 'max', 'auto').required()
+                    quality: Joi.string().valid('low', 'medium', 'high', 'xhigh', 'max', 'auto').required(),
+                    complexity: Joi.string().valid('low', 'medium', 'high').optional()
                 })).min(1).required()
             }).optional(),
             routes: Joi.array().items(Joi.object({
@@ -150,6 +151,7 @@ const AISchema = Joi.object({
                 timeoutSec: Joi.number().integer().min(1).optional(),
                 size: Joi.string().default('1:1'),
                 quality: Joi.string().default('high'),
+                complexity: Joi.string().valid('low', 'medium', 'high').optional(),
                 outputFormat: Joi.string().default('png'),
                 responseFormat: Joi.string().default('b64_json'),
                 useTuziRetry: Joi.boolean().default(false)

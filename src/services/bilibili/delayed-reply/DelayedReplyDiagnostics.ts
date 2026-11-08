@@ -125,6 +125,7 @@ export class DelayedReplyDiagnostics {
       const provider = meta.provider || successfulRoute?.provider || '未知服务';
       const model = meta.model || successfulRoute?.model || '未知模型';
       const quality = meta.quality || successfulRoute?.quality || '未记录';
+      const complexity = meta.complexity || successfulRoute?.complexity;
       const elapsedMs = this.getFiniteNumber(meta.elapsedMs);
       const endpoint = meta.endpoint || '未知接口';
       const reason = meta.reason ? String(meta.reason) : '';
@@ -154,7 +155,8 @@ export class DelayedReplyDiagnostics {
         const attemptStatus = attempt?.status || 'unknown';
         const attemptReason = attempt?.reason ? `: ${String(attempt.reason).slice(0, 120)}` : '';
         const attemptElapsed = this.getFiniteNumber(attempt?.elapsedMs);
-        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attempt?.quality || '质量未记录'} / ${attemptStatus}${attemptElapsed !== undefined ? ` / ${(attemptElapsed / 1000).toFixed(1)}s` : ''}${attemptReason}`;
+        const attemptComplexity = attempt?.complexity ? ` / 复杂度 ${attempt.complexity}` : '';
+        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attempt?.quality || '质量未记录'}${attemptComplexity} / ${attemptStatus}${attemptElapsed !== undefined ? ` / ${(attemptElapsed / 1000).toFixed(1)}s` : ''}${attemptReason}`;
       });
       const summary = `${formatRoute(provider, model, endpoint)}: ${status}`;
 
@@ -162,6 +164,7 @@ export class DelayedReplyDiagnostics {
         modeInfo,
         `模型: ${summary}`,
         `质量: ${quality}`,
+        complexity ? `复杂度: ${complexity}` : undefined,
         meta.rolloutVariant ? `灰度抽中: ${meta.rolloutVariant}` : undefined,
         usageInfo ? `用量: ${usageInfo}` : undefined,
         `生图耗时: ${elapsedMs !== undefined ? `${(elapsedMs / 1000).toFixed(1)}s（含重试）` : '未记录'}`,

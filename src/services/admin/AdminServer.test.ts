@@ -31,6 +31,20 @@ it('dispatches a manual peer coverage check for an unposted clip and blocks post
   registry.clips['1'].status = 'uploaded'; atomicJson(registryPath, registry);
   await request(app).post('/clips/1/actions').set(headers).send({ action: 'peer-coverage', revision: f.clips.detail('1').revision }).expect(409);
 });
+it('lists compact read-only peer coverage history without exposing source paths or full subtitle evidence', async () => {
+  const f = fixture(), evidenceDir = path.join(f.root, 'data/runtime/peer_coverage/pre-upload');
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  atomicJson(path.join(evidenceDir, 'run.json'), { version: 1, checkedAt: '2026-11-08T04:00:00.000Z',
+    candidates: [{ id: '1', host: '小岁', title: '测试同题', source: 'D:/private/source.flv', start: 12, end: 34, cues: [{ id: 'S1', text: '不要泄露', start: 12, end: 13 }] }],
+    decisions: [{ candidateId: '1', status: 'needs_review', reason: '待人工核对', searches: [{ query: '岁己', bvids: ['BV1234567890'], results: [{ bvid: 'BV1234567890', title: '对方切片', status: 'same_event_unconfirmed', reason: '字幕不完整', url: 'https://www.bilibili.com/video/BV1234567890/' }] }], matches: [{ bvid: 'BV1234567890', title: '对方切片', status: 'same_event_unconfirmed', reason: '字幕不完整', url: 'https://www.bilibili.com/video/BV1234567890/' }] }] });
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs }, token);
+  await request(app).get('/peer-coverage/history').expect(403);
+  const result = await request(app).get('/peer-coverage/history?limit=20').set(headers).expect(200);
+  expect(result.body.total).toBe(1);
+  expect(result.body.items[0]).toMatchObject({ id: '1', status: 'needs_review', searchCount: 1, matchCount: 1, searches: [{ query: '岁己', bvids: ['BV1234567890'] }] });
+  expect(JSON.stringify(result.body)).not.toContain('private/source.flv');
+  expect(JSON.stringify(result.body)).not.toContain('不要泄露');
+});
 it('serves authenticated read-only automatic clipping progress without launching queue work', async () => {
   const f = fixture(), directory = path.join(f.root, 'background-queue');
   const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs,
@@ -205,6 +219,16 @@ it('streams registered video ranges and holds operations when the subtitles chan
   await request(f.app).post('/clips/1/actions').set(headers).send({ action: 'approve-review', revision: detail.revision, note: '已核对' }).expect(409);
   expect(f.run).not.toHaveBeenCalled();
   await request(f.app).get('/clips/1/assets/metadata').set(headers).expect(404);
+});
+
+it('filters the clip list by the latest feedback processing status', async () => {
+  const f = fixture();
+  f.jobs.submitOperation('feedback-publish', '1', { note: '失败意见', revision: f.clips.detail('1').revision }, async () => 1);
+  await f.jobs.flush();
+  const failed = await request(f.app).get('/clips').query({ feedbackStatus: 'failed' }).set(headers).expect(200);
+  expect(failed.body).toMatchObject({ total: 1, feedbackCounts: { failed: 1 }, clips: [{ id: 1, feedbackStatus: 'failed' }] });
+  const succeeded = await request(f.app).get('/clips').query({ feedbackStatus: 'succeeded' }).set(headers).expect(200);
+  expect(succeeded.body.total).toBe(0);
 });
 
 it('requires explicit publication and passes exact subtitle replacement text through shell-free argument boundaries', async () => {

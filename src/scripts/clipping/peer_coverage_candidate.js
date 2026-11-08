@@ -54,7 +54,7 @@ async function main() {
     const decisions = await runtime.runPeerCuration({
         candidates: [candidate], settings: rootConfig.clipCuration || {}, cookie: rootConfig.bilibili?.cookie || '',
         evidencePath, statePath: path.join(root, 'data/runtime/clip_peer_support.json'), support: true,
-        skipEditorialAssessment: true
+        skipEditorialAssessment: true, rerankPeers: true
     }, async (phase, prompt) => {
         if (rootConfig.ai?.text?.enabled === false) fail('AI 文本能力已关闭');
         // Keep the manual command compatible with an already activated workflow

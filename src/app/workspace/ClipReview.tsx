@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import { AdminJob, ClipDetail, ClipSummary } from '../../core/admin/contracts';
+import { AdminJob, ClipDetail } from '../../core/admin/contracts';
 import { api, statusText, useResource } from './client';
 import { ActivityRevision } from './StreamWorkflows';
 import { subtitleRows } from '../../core/admin/subtitles';
@@ -9,13 +9,12 @@ import { SourcePlayer } from './SourcePlayer';
 import { CoverEditor } from './CoverEditor';
 import { CancelUpload } from './CancelUpload';
 import { TitleChoiceRef, TitlePicker, TitleStatistics } from './TitlePicker';
-
-interface ClipList { clips: ClipSummary[]; total: number; page: number; counts: Record<string, number>; rooms: string[] }
+import type { ClipList } from '../../core/admin/contracts';
 const feedbackActive = (job?: AdminJob) => !!job && ['queued', 'running'].includes(job.status);
 const feedbackFinished = (job?: AdminJob) => !!job && ['succeeded', 'failed', 'interrupted'].includes(job.status);
 export function ClipReview({ onJobs }: { onJobs: () => void }) {
-  const [search, setSearch] = useState(''), [query, setQuery] = useState(''), [status, setStatus] = useState(''), [room, setRoom] = useState(''), [page, setPage] = useState(1), [selected, setSelected] = useState<number>();
-  const list = useResource<ClipList>(`/clips?${new URLSearchParams({ search: query, status, room, page: String(page) })}`, 5000, true);
+  const [search, setSearch] = useState(''), [query, setQuery] = useState(''), [status, setStatus] = useState(''), [feedbackStatus, setFeedbackStatus] = useState(''), [room, setRoom] = useState(''), [page, setPage] = useState(1), [selected, setSelected] = useState<number>();
+  const list = useResource<ClipList>(`/clips?${new URLSearchParams({ search: query, status, feedbackStatus, room, page: String(page) })}`, 5000, true);
   const operations = useResource<{ jobs: AdminJob[] }>('/jobs', 3000, true);
   const [feedbackJobs, setFeedbackJobs] = useState<Record<string, AdminJob>>({});
   const knownJobs = useRef<Record<string, AdminJob>>({});
@@ -40,16 +39,18 @@ export function ClipReview({ onJobs }: { onJobs: () => void }) {
     <div className="review-layout"><section className="clip-browser">
       <div className="clip-filters"><input aria-label="搜索视频" placeholder="搜索编号、标题或主播" value={search} onChange={event => setSearch(event.target.value)} />
         <div className="filter-row"><select aria-label="审核状态" value={status} onChange={event => { setStatus(event.target.value); setPage(1); }}><option value="">全部状态</option>{Object.keys(list.data?.counts || {}).map(key => <option key={key} value={key}>{statusText(key)} ({list.data?.counts[key]})</option>)}</select>
+          <select aria-label="反馈处理状态" value={feedbackStatus} onChange={event => { setFeedbackStatus(event.target.value); setPage(1); }}><option value="">全部反馈</option>{[['failed', '反馈失败'], ['interrupted', '反馈中断'], ['queued', '反馈排队'], ['running', '反馈处理中'], ['succeeded', '反馈完成'], ['none', '未提交反馈']].map(([key, label]) => <option key={key} value={key}>{label} ({list.data?.feedbackCounts?.[key] || 0})</option>)}</select>
           <select aria-label="房间" value={room} onChange={event => { setRoom(event.target.value); setPage(1); }}><option value="">全部房间</option>{list.data?.rooms.map(id => <option key={id}>{id}</option>)}</select></div>
       </div>
       {list.error && <div className="notice error" role="alert">{list.error}</div>}
       {list.loading && !list.data ? <div className="empty">读取视频…</div> : !list.data?.clips.length ? <div className="empty">没有匹配的视频</div> : <div className="clip-list">{list.data.clips.map(clip => {
-        const job = feedbackJobs[clip.id], active = feedbackActive(job);
+        const job = feedbackJobs[clip.id], currentFeedbackStatus = job?.status || clip.feedbackStatus;
+        const active = feedbackActive(job) || ['queued', 'running'].includes(currentFeedbackStatus || '');
         const label = ['uploaded', 'queued', 'uploading'].includes(clip.status) ? statusText(clip.status)
-          : active ? '已提交反馈，正在处理' : job?.status === 'failed' ? '反馈处理失败' : job?.status === 'interrupted' ? '处理已中断'
+          : active ? '已提交反馈，正在处理' : currentFeedbackStatus === 'failed' ? '反馈处理失败' : currentFeedbackStatus === 'interrupted' ? '处理已中断'
           : statusText(clip.status);
         return <button key={clip.id} className={selected === clip.id ? 'selected' : ''} onClick={() => setSelected(clip.id)}>
-        <div className="clip-row-meta"><span className="mono">#{clip.id}</span><span className={`status status-${active ? 'queued' : clip.status}`}>{label}</span></div>
+        <div className="clip-row-meta"><span className="mono">#{clip.id}</span><span className={`status status-${active ? 'queued' : currentFeedbackStatus === 'failed' || currentFeedbackStatus === 'interrupted' ? currentFeedbackStatus : clip.status}`}>{label}</span></div>
         <strong>{clip.reviewTitle || clip.title || '未命名视频'}</strong><small>{clip.streamerName || clip.roomId || '房间未标记'} <span>·</span> {clip.start && `源 ${clip.start} · `}{clip.duration || '时长待确认'}</small>
         {clip.subtitleExcerpt && <span className="subtitle-excerpt">字幕：{clip.subtitleExcerpt}</span>}
         {active ? <span className="issue-preview">{job?.phase || '等待后台处理，可以继续审核其他切片'}</span> : clip.issues.length > 0 && <span className="issue-preview">{clip.issues[0]}</span>}
@@ -58,6 +59,7 @@ export function ClipReview({ onJobs }: { onJobs: () => void }) {
     </section><section className="review-inspector">{selected ? <ClipInspector key={selected} id={selected} onJobs={onJobs} currentFeedback={feedbackJobs[selected]} onFeedback={updateFeedback} /> : <div className="review-empty"><span>▷</span><h2>选择一个视频开始审核</h2><p>预览画面、核对字幕与文案，再决定制作或投稿。</p></div>}</section></div>
   </>;
 }
+
 
 function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number; onJobs: () => void; currentFeedback?: AdminJob; onFeedback: (job: AdminJob) => void }) {
   const [part, setPart] = useState(1);
@@ -203,7 +205,7 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
       {detail.clip.issues.length > 0 && <div className="review-issues"><strong>待核对</strong>{detail.clip.issues.map((issue, index) => <p key={index}>{issue}</p>)}</div>}
       {detail.category === 'clip' && <PeerCoverageEvidence curation={detail.evidence.curation} preUpload={detail.evidence.preUploadPeerCoverage}
         canCheck={!publicationComplete && !processing && !['excluded', 'cancelled'].includes(detail.clip.status)}
-        onCheck={() => void act('peer-coverage')} compact />}
+        onCheck={() => void act('peer-coverage')} onOpenDetails={() => setTab('evidence')} compact />}
       <div className="tabs">{[['subtitles', '字幕'], ['copy', '文案与封面'], ['evidence', '审核证据'], ['rebuild', '重制与精剪']].map(([key, label]) => <button key={key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>{label}</button>)}</div>
       {tab === 'subtitles' && <section className="inspector-section">
         <div className="section-heading"><h3>{isSource ? '此时间段的原片字幕' : isPreview ? '粗剪字幕' : '候选 / 成片字幕'}</h3>{detail.category === 'clip' && <button onClick={() => void act('subtitles')} disabled={processing}>准备可修改字幕</button>}</div>
@@ -241,17 +243,25 @@ function ClipInspector({ id, onJobs, currentFeedback, onFeedback }: { id: number
   </>;
 }
 
-function PeerCoverageEvidence({ curation, preUpload, canCheck, onCheck, compact = false }: { curation?: Record<string, any>; preUpload?: Record<string, any>; canCheck: boolean; onCheck: () => void; compact?: boolean }) {
-  const matches = Array.isArray(curation?.matches) ? curation.matches : [];
-  const searches = Array.isArray(curation?.searches) ? curation.searches : [];
+function PeerCoverageEvidence({ curation, preUpload, canCheck, onCheck, onOpenDetails, compact = false }: { curation?: Record<string, any>; preUpload?: Record<string, any>; canCheck: boolean; onCheck: () => void; onOpenDetails?: () => void; compact?: boolean }) {
+  const preDecision = preUpload?.decision && typeof preUpload.decision === 'object' ? preUpload.decision as Record<string, any> : undefined;
+  const matches = Array.isArray(curation?.matches) && curation.matches.length > 0 ? curation.matches : Array.isArray(preDecision?.matches) ? preDecision.matches : [];
+  const searches = Array.isArray(curation?.searches) && curation.searches.length > 0 ? curation.searches : Array.isArray(preDecision?.searches) ? preDecision.searches : [];
   const status = (value: string) => ({ covered: '已确认同题', subtitle_unavailable: '搜到但无完整字幕',
-    same_event_unconfirmed: '疑似同题待人工核', read_failed: '读取失败待人工核', different_event: '已排除同题', own_account: '本账号' } as Record<string, string>)[value] || value;
+    same_event_unconfirmed: '疑似同题待人工核', read_failed: '读取失败待人工核', different_event: '已排除同题', irrelevant: 'AI判定无关', own_account: '本账号' } as Record<string, string>)[value] || value;
   const preStatus = preUpload?.status === 'covered' ? '投稿前已确认同题，已暂停投稿' : preUpload?.status === 'original' ? '投稿前已确认暂未发现同题' : preUpload?.status === 'needs_review' ? '投稿前核查待人工复核，投稿已暂停' : '';
+  const indexStatus = preUpload?.searchIndexCheckedAt ? `共享近期索引：${preUpload.searchIndexCheckedAt}（15分钟内复用，滚动保留6小时）` : '';
   if (compact) return <section className="inspector-section peer-coverage-quick">
     <div className="section-heading"><h3>外部同题核查</h3><div className="button-row"><span className="muted">{curation?.status === 'covered' ? '已确认同题，已阻止重复自制' : curation ? status(curation.status) : '尚未检查'}</span><button disabled={!canCheck} onClick={onCheck}>手工检查 B 站同题</button></div></div>
     <p className="muted">用于确认 B 站是否已有相同事件切片；确认后会展示命中视频和已配置的互动回执，不会自动替代人工审核。</p>
     {preStatus && <p className="muted">{preStatus}{preUpload?.cached ? '（缓存）' : ''}：{preUpload?.reason}</p>}
+    {indexStatus && <p className="muted">{indexStatus}</p>}
     {curation?.reason && <p className="muted">最近结果：{curation.reason}</p>}
+    {(curation || preUpload) && <details className="peer-coverage-inline-details"><summary>查看本候选的命中与搜索详情（{matches.length} 条候选）</summary>
+      {matches.length > 0 ? <div className="peer-history-matches">{matches.slice(0, 5).map((match: any) => <a key={`${match.bvid}-${match.status}`} href={match.url || `https://www.bilibili.com/video/${match.bvid}/`} target="_blank" rel="noreferrer"><span className="mono">{match.bvid}</span> {match.title || '未命名视频'}<small>{status(match.status)}{match.reason ? ` · ${match.reason}` : ''}</small></a>)}</div> : <p className="muted">本候选没有可展开的命中视频；完整搜索与判定记录请打开审核证据查看。</p>}
+      {searches.length > 0 && <p className="muted">搜索词：{searches.map((search: any) => `${search.query}（${search.bvids?.length || 0} 条）`).join('、')}</p>}
+      {onOpenDetails && <button className="link-button" onClick={onOpenDetails}>打开完整审核证据</button>}
+    </details>}
   </section>;
   return <section className="inspector-section">
     <div className="section-heading"><h3>外部同题切片核查</h3><div className="button-row"><span className="muted">{curation?.status === 'covered' ? '已阻止重复自制' : '仅作审核线索，未确认前不会自动替代'}</span><button disabled={!canCheck} onClick={onCheck}>手工检查 B 站同题</button></div></div>
@@ -259,6 +269,7 @@ function PeerCoverageEvidence({ curation, preUpload, canCheck, onCheck, compact 
     {curation?.reason && <p className="muted">{curation.reason}</p>}
     {curation?.support && <p className="muted">互动回执：<span className="mono">{JSON.stringify(curation.support)}</span></p>}
     {preStatus && <p className="muted">投稿前自动门禁：{preStatus}{preUpload?.cached ? '（缓存）' : ''}。{preUpload?.reason}</p>}
+    {indexStatus && <p className="muted">{indexStatus}</p>}
     {preUpload?.decision?.support && <p className="muted">投稿前互动回执：<span className="mono">{JSON.stringify(preUpload.decision.support)}</span></p>}
     {matches.length ? <div className="form-stack">{matches.map((match: any) => <div key={`${match.bvid}-${match.status}`}>
       <a href={match.url || `https://www.bilibili.com/video/${match.bvid}/`} target="_blank" rel="noreferrer">{match.bvid} · {match.title || '未命名视频'}</a>

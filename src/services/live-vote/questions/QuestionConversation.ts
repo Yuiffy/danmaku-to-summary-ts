@@ -4,8 +4,14 @@ const HISTORY = /(?:刚才|刚刚|最近|昨天|以前|上次|说过|玩过|舰�
 const SOCIAL = /(?:温情|温暖|暖心|鼓励|安慰|祝福|打.{0,2}招呼|问.{0,2}好|说.{0,3}晚安|道.{0,2}晚安|你好|晚安|加油)/u;
 export function isSocialQuestion(question: string): boolean { return SOCIAL.test(question) && !HISTORY.test(question); }
 export function isRoastQuestion(question: string): boolean { return /(?:黑料|黑点|黑屁|吐槽)/u.test(question); }
+export function needsProductNameLookup(question: string): boolean {
+  return /(?:喜茶|HEYTEA|奶茶|饮品|果茶|茶饮|咖啡|饮料).{0,20}(?:什么口味|哪一款|哪款|具体(?:品名|名称)|产品名|叫什么)|(?:什么口味|哪一款|哪款|具体(?:品名|名称)|产品名|叫什么).{0,20}(?:喜茶|HEYTEA|奶茶|饮品|果茶|茶饮|咖啡|饮料)/iu.test(question);
+}
+export function needsCrossDateSummary(question: string): boolean {
+  return /(?:本月|这个月|近来|近期|最近一段时间|最近|本周|这周|今年|去年)(?!\d+\s*(?:分钟|小时|天)).{0,24}(?:主要|哪些|哪几|多少|几次|盘点|汇总|总结|比较|都有哪些)|(?:主要|哪些|哪几|多少|几次|盘点|汇总|总结|比较|都有哪些).{0,24}(?:本月|这个月|近来|近期|最近一段时间|最近|本周|这周|今年|去年)(?!\d+\s*(?:分钟|小时|天))/iu.test(question);
+}
 export function needsPublicEvidence(question: string): boolean {
-  return /行情|股价|现价|天气|预报|汇率|最新|实时|(?:美股|港股|A股|股票).*(?:多少钱|涨|跌|价格)|(?:今天|现在|当前).*(?:股|价格|气温)/iu.test(question);
+  return /行情|股价|现价|天气|预报|汇率|最新|实时|(?:美股|港股|A股|股票).*(?:多少钱|涨|跌|价格)|(?:今天|现在|当前).*(?:股|价格|气温)/iu.test(question) || needsProductNameLookup(question);
 }
 
 export const PLAYFUL_ROAST_PROMPT = `“找黑料/黑点/黑屁/吐槽”默认是善意调侃：任务是找到可核实的普通趣事，再写成好笑的“小黑料”，不需要证明有真正的丑闻，也不要求原文出现“黑料”。日常小事、无伤大雅的自述也可以作为素材，不必非得翻车出糗；不能由此夸大成长期习惯、人格缺陷或真实恶行。用户明确追问严重指控时仍需直接证据，不能用玩笑暗示指控属实。

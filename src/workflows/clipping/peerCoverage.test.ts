@@ -99,6 +99,32 @@ test('manual coverage can skip editorial rejection and still use deterministic s
     expect(io.request.mock.calls.some(([phase]) => String(phase).startsWith('assess'))).toBe(false);
     expect(io.search).toHaveBeenCalled();
 });
+test('AI relevance rerank filters broad streamer-name hits before subtitle comparison', async () => {
+    const io = adapters();
+    const unrelated = { ...peer, bvid: 'BV9999999999', title: '【影之刃零MOD】岁己角色MOD', description: '只是在简介中提到岁己' };
+    const relevant = { ...peer, bvid: 'BV8888888888', title: candidate.title };
+    io.search.mockResolvedValue([unrelated, relevant]);
+    const [result] = await curateCandidates([candidate], {}, io, {
+        rerankPeers: async (_candidate, peers) => new Map(peers.map(value => [value.bvid, value.bvid === relevant.bvid
+            ? { relevant: true, score: 92, reason: '标题与核心事件高度相关' }
+            : { relevant: false, score: 8, reason: '仅命中主播名，事件和看点不同' }]))
+    });
+    expect(result.status).toBe('covered');
+    expect(io.read).toHaveBeenCalledTimes(1);
+    expect(io.read).toHaveBeenCalledWith(expect.objectContaining({ bvid: relevant.bvid }));
+    expect(result.matches).toEqual(expect.arrayContaining([
+        expect.objectContaining({ bvid: unrelated.bvid, status: 'irrelevant' }),
+        expect.objectContaining({ bvid: relevant.bvid, status: 'covered' })
+    ]));
+});
+test('failed AI relevance rerank stays conservative instead of calling broad hits suspected matches', async () => {
+    const io = adapters();
+    io.search.mockResolvedValue([{ ...peer, title: '【影之刃零MOD】岁己角色MOD' }]);
+    const [result] = await curateCandidates([candidate], {}, io, { rerankPeers: async () => { throw new Error('rerank unavailable'); } });
+    expect(result.status).toBe('needs_review');
+    expect(result.reason).not.toContain('疑似同题成片');
+    expect(io.read).not.toHaveBeenCalled();
+});
 test('a failed like/favorite never converts confirmed coverage back into a duplicate upload', async () => {
     const io = adapters(); io.support.mockRejectedValue(new Error('timeout'));
     expect((await curateCandidates([candidate], {}, io))[0]).toMatchObject({ status: 'covered', support: { status: 'unavailable' } });

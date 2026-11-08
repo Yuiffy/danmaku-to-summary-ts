@@ -158,6 +158,51 @@ describe('LiveSessionManager nearby segment recovery', () => {
     expect(manager.getSession(roomId)?.segments).toHaveLength(1);
   });
 
+  test('refreshes an early recovered segment when its real FileClosed event arrives', () => {
+    jest.useFakeTimers();
+    const roomId = '25788785';
+    const firstOpen = new Date('2026-11-07T20:29:18.084+08:00');
+    const firstClose = new Date('2026-11-07T20:55:45.180+08:00');
+    const secondOpen = new Date('2026-11-07T20:55:46.875+08:00');
+    const recoveredAt = new Date('2026-11-07T20:55:47.200+08:00');
+    const finalClose = new Date('2026-11-07T23:50:21.023+08:00');
+    const first = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20261107-202918-083-live.flv`,
+      firstClose
+    );
+    const second = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20261107-205546-872-live.flv`,
+      recoveredAt
+    );
+
+    jest.setSystemTime(new Date('2026-11-07T20:55:47.300+08:00'));
+    const manager = new LiveSessionManager();
+    manager.createOrGetSession(roomId, '岁己SUI', 'live', firstOpen);
+    addCurrentSegment(manager, roomId, first, firstOpen, firstClose);
+
+    expect(manager.augmentSessionWithNearbySegments(roomId, {
+      maxGapSeconds: 300,
+      minSizeBytes: 0
+    })).toBe(1);
+    jest.setSystemTime(new Date('2026-11-07T23:55:18.537+08:00'));
+    expect(manager.hasValidSegments(roomId, 2)).toBe(false);
+
+    const refreshed = manager.addSegment(
+      roomId,
+      second,
+      second.replace(/\.flv$/, '.xml'),
+      secondOpen,
+      finalClose,
+      finalClose
+    );
+
+    expect(refreshed).toBe(true);
+    expect(manager.hasValidSegments(roomId, 2)).toBe(true);
+    expect(manager.getSession(roomId)?.segments[1].fileCloseTime).toEqual(finalClose);
+  });
+
   test('recovers same-room adjacent recordings despite title changes and bak location', () => {
     const manager = new LiveSessionManager();
     const roomId = '25788785';

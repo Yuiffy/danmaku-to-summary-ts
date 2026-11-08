@@ -5,6 +5,7 @@ import { AgentComplete, AgentCompletionRequest, AgentToolCall, QuestionAgentStep
 import { NO_EVIDENCE } from './QuestionPolicy';
 import { RecordingEvidence } from './RecordingEvidence';
 import { createDaiyuQuestionCompletion, questionProviderSettings } from './DaiyuQuestionClient';
+import { PublicSearchEvidence } from './PublicSearchTools';
 
 let fixture: string;
 const request = { roomId: '100', uid: '10', question: '以前玩过法环吗？' };
@@ -40,6 +41,32 @@ it('follows search and context tools, returning a citation verified against loca
   expect(turns[0].toolChoice).toBe('auto');
   expect(turns[0].messages[0].content).toContain('不可信数据');
   expect(turns[0].messages[1].content).toBe(JSON.stringify({ untrustedQuestion: request.question }));
+});
+
+it('forces a bounded public menu lookup when recording evidence has only a generic drink flavor', async () => {
+  await fs.writeFile(path.join(fixture, '2025-10-17.srt'), '1\n00:12:00,000 --> 00:12:04,000\n在上海喝了喜茶，荔枝口味。\n');
+  const signal = new AbortController().signal;
+  const evidence = new RecordingEvidence([fixture], signal);
+  const publicSearch = new PublicSearchEvidence(jest.fn(), undefined, {
+    search: jest.fn(async () => [{ title: '喜茶满杯红柚菜单', url: 'https://www.heytea.com/menu', snippet: '满杯红柚', summary: '喜茶菜单列有满杯红柚。', siteName: '喜茶', publishedAt: '2025-10-01T00:00:00Z' }]),
+    read: jest.fn(async () => ({ title: '喜茶菜单', content: '满杯红柚' }))
+  });
+  const complete = jest.fn<ReturnType<AgentComplete>, Parameters<AgentComplete>>()
+    .mockResolvedValueOnce({ content: null, tool_calls: [tool('search_recordings', { terms: ['喜茶', '荔枝'], kind: 'subtitle', date: '2025-10' })] })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'answer', certainty: 'supported', rankedEvidenceIds: ['ev1'],
+      answer: '录播只确认荔枝口味。', shortAnswer: '录播：荔枝口味。', evidenceIds: ['ev1'] }) })
+    .mockImplementationOnce(async input => {
+      expect(input.toolChoice).toBe('required');
+      expect(input.messages.some(message => message.role === 'system' && message.content?.includes('公开菜单'))).toBe(true);
+      return { content: null, tool_calls: [tool('search_web', { query: '喜茶 上海 2025 荔枝 菜单' })] };
+    })
+    .mockResolvedValueOnce({ content: JSON.stringify({ action: 'answer', certainty: 'supported', rankedEvidenceIds: ['ev1', 'pub1'],
+      answer: '录播只确认在上海喝了喜茶、荔枝口味；公开菜单显示可能对应满杯红柚，但不能据此确认她实际点的就是这款。',
+      shortAnswer: '录播确认荔枝；款名只能推测。', evidenceIds: ['ev1', 'pub1'] }) });
+  const result = await runQuestionAgent({ ...request, question: '去上海喝的喜茶是什么口味' }, signal, evidence, complete, undefined, publicSearch);
+  expect(result.answer).toContain('可能对应');
+  expect(result.clues).toHaveLength(2);
+  expect(complete).toHaveBeenCalledTimes(4);
 });
 
 it('locates an event then searches the entire anchored multipart session for a distant detail', async () => {
@@ -436,6 +463,13 @@ it('pins daiYu/gpt-6-luna, keeps credentials outside context, prevents redirects
   transport.mockRejectedValue(new Error('provider-secret raw private response'));
   await expect(complete(input, new AbortController().signal)).rejects.toThrow(/^daiYu question request failed$/u);
   expect(() => questionProviderSettings({ ai: { text: { daiYu: { apiKey: 'x', baseUrl: 'http://external.example/v1' } } } })).toThrow('HTTPS');
+});
+
+it('accepts an explicitly configured question model for retrieval quality comparisons', async () => {
+  const settings = questionProviderSettings({ ai: { providers: { daiYu: { apiKey: 'provider-secret', model: 'gpt-6.1-sol' } } } });
+  const transport = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { role: 'assistant', content: '{}' } }] }) });
+  await createDaiyuQuestionCompletion(settings, transport)({ messages: [{ role: 'user', content: '问题' }], toolChoice: 'none', phase: 'review' }, new AbortController().signal);
+  expect(JSON.parse(transport.mock.calls[0][1].body).model).toBe('gpt-6.1-sol');
 });
 
 it('normalizes a daiYu tool-only message with omitted content to null', async () => {

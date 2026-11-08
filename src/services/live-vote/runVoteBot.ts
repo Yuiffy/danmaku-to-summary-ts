@@ -6,7 +6,7 @@ import { VoteConfig, VoteDanmaku, VoteSession } from './VoteSession';
 import { LocalDanmakuClient } from './LocalDanmakuClient';
 import { BilibiliDanmakuClient } from './BilibiliDanmakuClient';
 import { MultiRoomVoteBot } from './MultiRoomVoteBot';
-import { createLiveQuestionAnswerer } from './questions/DaiyuQuestionClient';
+import { createLiveQuestionAnswerer, questionProviderModel } from './questions/DaiyuQuestionClient';
 import { LiveQuestionSession } from './questions/LiveQuestionSession';
 import { LiveQuestionConfig, QuestionAnswerer, QuestionRecordWriter } from './questions/QuestionPolicy';
 import { createQuestionRecordWriter } from '../bilibili/question-records/QuestionRecordPublisher';
@@ -158,8 +158,9 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   console.log(reminderAdapters ? `Live reminders enabled for room ${config.reminders!.roomId} (preset messages).` : 'Live reminders disabled.');
   const answerer = createLiveQuestionAnswerer(config.questions, config.botUid);
   const record = answerer ? createQuestionRecordWriter(config.questions!, config.botUid || '', live, cookie) : undefined;
+  const configuredQuestionModel = typeof questionProviderModel === 'function' ? questionProviderModel(config) : 'gpt-6-luna';
   console.log(answerer
-    ? `Recording questions enabled: provider daiYu, model gpt-6-luna, configured rooms: ${Object.keys(config.questions!.recordingRoots).length}.`
+    ? `Recording questions enabled: provider daiYu, model ${configuredQuestionModel}, configured rooms: ${Object.keys(config.questions!.recordingRoots).length}.`
     : 'Recording questions disabled.');
   if (config.rooms !== undefined) {
     if (config.rooms !== 'auto-record' || config.source !== 'recorder') throw new Error('Multi-room mode requires the recorder source');

@@ -40,21 +40,51 @@ interface GateState {
   version: 1;
   entries: Record<string, CacheEntry>;
   searchIndex?: { query: string; fetchedAt: number; results: any[] };
+  peerDetails?: Record<string, { fetchedAt: number; video: any }>;
   rate: { lastSearchAt?: number; queries: Record<string, number>; daily: Record<string, number> };
 }
 
 const CACHE_VERSION = 1;
 const COVERED_TTL_MS = 24 * 60 * 60 * 1000;
-const ORIGINAL_TTL_MS = 24 * 60 * 60 * 1000;
+// An "original" result is only reusable while it is backed by a fresh shared
+// index. Keep its own TTL short as a second guard when an old state file is
+// restored or the index schema changes.
+const ORIGINAL_TTL_MS = 20 * 60 * 1000;
 const REVIEW_TTL_MS = 30 * 60 * 1000;
-const QUERY_COOLDOWN_MS = 2 * 60 * 1000;
-const GLOBAL_SEARCH_COOLDOWN_MS = 30 * 1000;
-const DAILY_SEARCH_BUDGET = 30;
+// One broad page refresh is shared by every clip. The 15-minute cadence keeps
+// the account from spending its daily budget in a burst, while bounding the
+// window in which a just-posted video can be absent from an original result.
+const QUERY_COOLDOWN_MS = 15 * 60 * 1000;
+const GLOBAL_SEARCH_COOLDOWN_MS = 3 * 60 * 1000;
+const DAILY_SEARCH_BUDGET = 96;
 const MAX_SEARCHES_PER_CHECK = 1;
-const RECENT_INDEX_TTL_MS = 2 * 60 * 1000;
+const RECENT_INDEX_TTL_MS = 15 * 60 * 1000;
+const RECENT_INDEX_RETENTION_MS = 6 * 60 * 60 * 1000;
+const PEER_DETAIL_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_INDEX_RESULTS = 40;
 
 const dayKey = (at: number) => new Date(at).toISOString().slice(0, 10);
 const clone = <T>(value: T): T => structuredClone(value);
+const publishedAtMs = (value: unknown): number => {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+};
+const mergeRecentResults = (previous: any[] | undefined, incoming: any[], now: number): any[] => {
+  const byBvid = new Map<string, any>();
+  for (const row of [...(previous || []), ...incoming]) {
+    if (!row || typeof row.bvid !== 'string' || !/^BV[a-zA-Z0-9]{10}$/u.test(row.bvid)) continue;
+    const old = byBvid.get(row.bvid);
+    byBvid.set(row.bvid, old ? { ...old, ...row } : row);
+  }
+  return [...byBvid.values()]
+    .filter(row => {
+      const published = publishedAtMs(row.publishedAt);
+      return !published || now - published <= RECENT_INDEX_RETENTION_MS;
+    })
+    .sort((a, b) => publishedAtMs(b.publishedAt) - publishedAtMs(a.publishedAt))
+    .slice(0, MAX_INDEX_RESULTS);
+};
 
 export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
   private readonly cachePath: string;
@@ -84,7 +114,7 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
     if (!saved || saved.version !== CACHE_VERSION || !saved.entries || !saved.rate) {
       return { version: CACHE_VERSION, entries: {}, rate: { queries: {}, daily: {} } };
     }
-    return { version: CACHE_VERSION, entries: saved.entries, searchIndex: saved.searchIndex, rate: {
+    return { version: CACHE_VERSION, entries: saved.entries, searchIndex: saved.searchIndex, peerDetails: saved.peerDetails || {}, rate: {
       lastSearchAt: saved.rate.lastSearchAt,
       queries: saved.rate.queries || {}, daily: saved.rate.daily || {}
     } };
@@ -94,6 +124,8 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
     for (const [key, value] of Object.entries(state.entries)) if (value.expiresAt < cutoff) delete state.entries[key];
     for (const [query, at] of Object.entries(state.rate.queries)) if (at < cutoff) delete state.rate.queries[query];
     for (const [day, count] of Object.entries(state.rate.daily)) if (count <= 0 || day < dayKey(cutoff)) delete state.rate.daily[day];
+    const detailCutoff = this.now() - PEER_DETAIL_TTL_MS;
+    for (const [bvid, detail] of Object.entries(state.peerDetails || {})) if (detail.fetchedAt < detailCutoff) delete state.peerDetails![bvid];
     atomicJson(this.cachePath, state);
   }
 
@@ -130,9 +162,10 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
 
   private broadQuery(candidate: CoverageCandidate, raw: CoverageSettings): string {
     const configured = raw.preUploadSearchQuery;
-    if (typeof configured === 'string' && configured.trim().length >= 3) return configured.trim().slice(0, 80);
-    if (/岁己|sui/iu.test(candidate.host)) return candidate.host.slice(0, 80);
-    if (/小岁/iu.test(candidate.host)) return '岁己';
+    if (typeof configured === 'string' && configured.trim().length >= 2) return configured.trim().slice(0, 80);
+    const host = candidate.host.trim().slice(0, 80);
+    if (/岁己|sui/iu.test(host) && host.length >= 2) return host;
+    if (/小岁/iu.test(host)) return '岁己';
     return '岁己';
   }
 
@@ -166,7 +199,18 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
     const evidencePath = path.join(this.evidenceDir, `${id}-${key.slice(0, 16)}.json`);
     const baseApi = this.apiFactory(cookie);
     let searches = 0;
-    const limitedApi: PeerApi = { ...baseApi, search: async (searchQuery, limit) => {
+    const limitedApi: PeerApi = { ...baseApi,
+      read: async video => {
+        const cachedState = this.state(), cached = cachedState.peerDetails?.[video.bvid], at = this.now();
+        if (cached && at - cached.fetchedAt < PEER_DETAIL_TTL_MS) return clone(cached.video) as any;
+        const detail = await baseApi.read(video);
+        if (!detail) return detail;
+        const latest = this.state();
+        latest.peerDetails = { ...(latest.peerDetails || {}), [video.bvid]: { fetchedAt: this.now(), video: clone(detail) } };
+        this.saveState(latest);
+        return detail;
+      },
+      search: async (searchQuery, limit) => {
       const cachedState = this.state(), cachedAt = this.now();
       if (cachedState.searchIndex?.query === query && cachedAt - cachedState.searchIndex.fetchedAt < RECENT_INDEX_TTL_MS) {
         return clone(cachedState.searchIndex.results) as any;
@@ -185,13 +229,14 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
       latest.rate.daily[today] = (latest.rate.daily[today] || 0) + 1;
       searches++;
       const results = await baseApi.search(searchQuery, Math.max(20, limit), { order: 'pubdate', page: 1 });
-      latest.searchIndex = { query, fetchedAt: at, results: clone(results) as any[] };
+      latest.searchIndex = { query, fetchedAt: at,
+        results: mergeRecentResults(latest.searchIndex?.query === query ? latest.searchIndex.results : [], results, at) };
       this.saveState(latest);
-      return results;
+      return clone(latest.searchIndex.results) as any;
     } };
     const decisions = await runPeerCuration({ candidates: [candidate], settings: { ...policy, maxSearchQueries: Math.min(policy.maxSearchQueries, MAX_SEARCHES_PER_CHECK) },
       cookie, evidencePath, statePath: this.supportPath, support: true, skipEditorialAssessment: true,
-      searchQueries: () => [query] },
+      searchQueries: () => [query], rerankPeers: true },
       async (phase, prompt) => { update({ phase: `正在${phase}` }); return this.request(prompt); }, limitedApi);
     const decision = decisions[0] || { candidateId: candidate.id, inputDigest: digest(JSON.stringify(candidate)),
       status: 'needs_review', reason: 'B站同题核查没有返回有效结果' } as CoverageDecision;

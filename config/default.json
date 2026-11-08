@@ -765,7 +765,8 @@
       },
       "persistent_worker": {
         "enabled": true,
-        "startup_timeout_s": 60
+        "startup_timeout_s": 60,
+        "idle_timeout_s": 600
       },
       "resource_guard": {
         "enabled": false,
@@ -1268,27 +1269,93 @@
             },
             {
               "model": "gpt-image-2.6-sunburst",
-              "quality": "low"
+              "quality": "low",
+              "complexity": "low"
             },
             {
               "model": "gpt-image-2.6-sunburst",
-              "quality": "medium"
+              "quality": "low",
+              "complexity": "medium"
             },
             {
               "model": "gpt-image-2.6-sunburst",
-              "quality": "high"
+              "quality": "low",
+              "complexity": "high"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "medium",
+              "complexity": "low"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "medium",
+              "complexity": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "medium",
+              "complexity": "high"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "high",
+              "complexity": "low"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "high",
+              "complexity": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-sunburst",
+              "quality": "high",
+              "complexity": "high"
             },
             {
               "model": "gpt-image-2.6-flare",
-              "quality": "low"
+              "quality": "low",
+              "complexity": "low"
             },
             {
               "model": "gpt-image-2.6-flare",
-              "quality": "medium"
+              "quality": "low",
+              "complexity": "medium"
             },
             {
               "model": "gpt-image-2.6-flare",
-              "quality": "high"
+              "quality": "low",
+              "complexity": "high"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "medium",
+              "complexity": "low"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "medium",
+              "complexity": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "medium",
+              "complexity": "high"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "high",
+              "complexity": "low"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "high",
+              "complexity": "medium"
+            },
+            {
+              "model": "gpt-image-2.6-flare",
+              "quality": "high",
+              "complexity": "high"
             }
           ]
         }

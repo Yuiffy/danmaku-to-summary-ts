@@ -547,9 +547,21 @@ export class RecorderStallDiagnostics {
       this.collectLogFilesFromDirectory(directory, files);
     }
 
-    return Array.from(files.entries())
+    const ordered = Array.from(files.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([filePath]) => filePath);
+    // An explicitly configured recorder log directory is authoritative for this
+    // diagnostic. Prefer its files before the bounded global search so a stale
+    // mtime or unrelated log cannot crowd out the requested source.
+    if (runtime.logDirectory) {
+      const preferredRoot = path.resolve(runtime.logDirectory).toLowerCase();
+      ordered.sort((a, b) => {
+        const aPreferred = a.toLowerCase().startsWith(preferredRoot + path.sep) || a.toLowerCase() === preferredRoot;
+        const bPreferred = b.toLowerCase().startsWith(preferredRoot + path.sep) || b.toLowerCase() === preferredRoot;
+        return Number(bPreferred) - Number(aPreferred);
+      });
+    }
+    return ordered;
   }
 
   private collectLogFilesFromDirectory(directory: string, files: Map<string, number>): void {

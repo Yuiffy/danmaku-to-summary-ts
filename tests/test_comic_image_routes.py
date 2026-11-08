@@ -93,22 +93,39 @@ class ImageRoutesTest(unittest.TestCase):
         self.assertGreaterEqual(self.metadata['elapsedMs'], 0)
         self.assertEqual(self.metadata['rolloutVariant'], 'gpt-image-2.5-flare:xhigh')
 
+    def test_gpt_image_26_rollout_passes_complexity_and_reports_both_parameters(self):
+        variant = {'model': 'gpt-image-2.6-flare', 'quality': 'high', 'complexity': 'medium'}
+        self.config['ai']['comic'] = {'imageGeneration': {'rollout': {'enabled': True, 'variants': [variant]}}}
+        self.io.images.return_value = 'result.png'
+        with patch('comic.image_routes.random.choice', return_value=variant) as choose:
+            self.assertEqual(generate_image('prompt', room_id='123', config=self.config, io=self.io), 'result.png')
+        choose.assert_called_once()
+        call = self.io.images.call_args.kwargs
+        self.assertEqual(call['model'], 'gpt-image-2.6-flare')
+        self.assertEqual(call['quality'], 'high')
+        self.assertEqual(call['complexity'], 'medium')
+        self.assertEqual(self.metadata['quality'], 'high')
+        self.assertEqual(self.metadata['complexity'], 'medium')
+        self.assertEqual(self.metadata['rolloutVariant'], 'gpt-image-2.6-flare:high:medium')
+
     def test_real_configs_draw_variants_then_retry_image_2_and_preserve_sui(self):
         import json
         root = Path(__file__).resolve().parents[1]
-        expected = {('gpt-image-2', 'high')} | {
-            (model, quality) for model in ('gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
-                                           'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst')
-            for quality in (('low', 'medium', 'high') if model.startswith('gpt-image-2.6-')
-                            else ('low', 'medium', 'high', 'xhigh', 'max'))}
+        expected = {('gpt-image-2', 'high', None)} | {
+            (model, quality, None) for model in ('gpt-image-2.5-flare', 'gpt-image-2.5-sunburst')
+            for quality in ('low', 'medium', 'high', 'xhigh', 'max')} | {
+            (model, quality, complexity)
+            for model in ('gpt-image-2.6-flare', 'gpt-image-2.6-sunburst')
+            for quality in ('low', 'medium', 'high')
+            for complexity in ('low', 'medium', 'high')}
         modes = json.loads((root / 'config' / 'generation-modes.json').read_text(encoding='utf-8'))['modes']
         for name in ('default', 'production'):
             config = resolve_generation_modes(json.loads((root / 'config' / f'{name}.json').read_text(encoding='utf-8')), modes)
             policy = config['ai']['comic']['imageGeneration']
             self.assertTrue(policy['rollout']['enabled'])
             variants = policy['rollout']['variants']
-            self.assertEqual({(v['model'], v['quality']) for v in variants}, expected)
-            self.assertEqual(len(variants), 17)
+            self.assertEqual({(v['model'], v['quality'], v.get('complexity')) for v in variants}, expected)
+            self.assertEqual(len(variants), 29)
             with patch('comic.image_routes.random.choice') as choose:
                 routes = _get_image_generation_routes(config, {}, '25788785')
                 choose.assert_not_called()
@@ -128,7 +145,13 @@ class ImageRoutesTest(unittest.TestCase):
                         with patch('comic.image_routes.random.choice', return_value=variant) as choose:
                             routes = _get_image_generation_routes(config, {}, room)
                             choose.assert_called_once()
-                        self.assertEqual((routes[0]['model'], routes[0]['quality']), (variant['model'], variant['quality']))
+                        self.assertEqual((routes[0]['model'], routes[0]['quality'], routes[0].get('complexity')),
+                                         (variant['model'], variant['quality'], variant.get('complexity')))
+                        if variant['model'].startswith('gpt-image-2.6-'):
+                            self.assertEqual(routes[0]['rolloutVariant'],
+                                             f"{variant['model']}:{variant['quality']}:{variant['complexity']}")
+                        else:
+                            self.assertEqual(routes[0]['rolloutVariant'], f"{variant['model']}:{variant['quality']}")
                         retry = routes[1]
                         self.assertEqual((retry['provider'], retry['flow']), ('daiYu', 'openaiImages'))
                         self.assertEqual((retry['model'], retry['quality']), ('gpt-image-2', 'high'))
@@ -146,6 +169,7 @@ class ImageRoutesTest(unittest.TestCase):
         variants = [
             {'model': 'gpt-image-2.5-sunburst', 'quality': 'max'},
             {'model': 'gpt-image-2.5-flare', 'quality': 'low'},
+            {'model': 'gpt-image-2.6-flare', 'quality': 'high', 'complexity': 'low'},
             {'model': 'gpt-image-2', 'quality': 'high'},
         ]
         self.config['ai']['comic'] = {'imageGeneration': {
@@ -172,6 +196,7 @@ class ImageRoutesTest(unittest.TestCase):
                     calls = self.io.images.call_args_list
                     self.assertEqual((calls[0].kwargs['model'], calls[0].kwargs['quality']),
                                      (variant['model'], variant['quality']))
+                    self.assertEqual(calls[0].kwargs.get('complexity'), variant.get('complexity'))
                     for call in calls:
                         self.assertEqual(call.kwargs['prompt'], 'original comic script')
                         self.assertIs(call.kwargs['reference_image_path'], references)
@@ -181,7 +206,10 @@ class ImageRoutesTest(unittest.TestCase):
                         self.assertFalse(calls[1].kwargs['use_tuzi_retry'])
                     self.assertEqual([a['status'] for a in self.metadata['routeAttempts']],
                                      ['success' if value else 'failure' for value in responses])
-                    self.assertEqual(self.metadata['rolloutVariant'], f"{variant['model']}:{variant['quality']}")
+                    expected_variant = f"{variant['model']}:{variant['quality']}"
+                    if variant['model'].startswith('gpt-image-2.6-'):
+                        expected_variant += f":{variant['complexity']}"
+                    self.assertEqual(self.metadata['rolloutVariant'], expected_variant)
 
     def test_sui_502_reaches_backup_and_keeps_original_request(self):
         import json

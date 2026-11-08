@@ -412,6 +412,7 @@ export class ConfigValidator {
           persistent_worker: {
             enabled: true,
             startup_timeout_s: 60,
+            idle_timeout_s: 600,
           },
           resource_guard: {
             enabled: false,

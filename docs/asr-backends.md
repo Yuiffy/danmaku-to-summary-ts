@@ -45,6 +45,10 @@ CPU 档生产保持 60 / 60，并使用 4 个 PyTorch 线程、1 个 interop 线
 实际批量仍受窗口长度和 VAD 分句限制，不保证恢复整场批处理吞吐。当前本机实测记录为：30 秒样本的 2 线程运行约
 84.4 秒（模型加载约 38 秒），60 秒样本的 4 线程运行约 63.3 秒（模型加载约 33.5 秒）。两次样本和批长不同，
 不能当作严格 A/B；4 线程在较长窗口上已接近实时，且冷启动更短，因此作为生产折中值。
+另外，对同一 30 秒样本在同一常驻进程内重复调用的专项测量显示：首次冷启动约 54.7 秒（模型加载约 22.8 秒），
+模型复用后的第二次调用约 2.642 秒，约 11.4× 实时；其中 VAD 约 0.102 秒、Paraformer 约 1.713 秒、标点约
+0.067 秒，其余时间是音频准备和协议开销。这个 11.4× 是“常驻模型热运行”结果，不能用于承诺首次任务延迟；
+因此 CPU fallback 必须复用常驻 worker，不能每个窗口重新加载 Paraformer、VAD 和标点模型。
 同设备连续窗口复用已加载的模型进程，不按窗口或 batch 释放模型。CPU 中断升档已经满足的
 空闲观察期须保留到 GPU 准入完成，不能提前清零后再次判定不满足而立即退回 CPU。
 再次繁忙则先释放 GPU 模型；`asr.cpu_fallback.enabled=false` 时等待 GPU 恢复，
@@ -428,7 +432,7 @@ node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend p
 - `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；Paraformer 和标点仍在主 CUDA device，CAM++ 是独立模型。
 - 当前 JS adapter 不向 Paraformer `generate()` 传入 `hotword`；配置词条由 `phoneme_correction` 和统一 corrections 处理。Fun-ASR-Nano / vLLM 路径当前才会在推理时传入 `hotwords`。
 
-中央 Mikufans 队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。连续任务复用主模型、标点和独立 CAM++ cache；队列清空或父队列检测到 GPU 繁忙时终止 worker并释放显存。单独运行 `enhanced_auto_summary.js` 时会先尝试 worker，连接不可用则回退到一次性 Python 进程。
+中央 Mikufans 队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。连续任务复用主模型、标点和独立 CAM++ cache；队列暂时清空时按 `asr.paraformer.persistent_worker.idle_timeout_s`（默认/生产 600 秒）保留队列和模型，空闲超时后才释放显存。新任务入队会立即唤醒等待中的队列循环并复用原 worker。显式停止、异常退出、受管 MOSS GPU handoff 和资源保护仍会主动终止 worker。单独运行 `enhanced_auto_summary.js` 时会先尝试 worker，连接不可用则回退到一次性 Python 进程。
 
 启用 `asr.device_handoff` 的接力路线也通过同一个常驻 worker 管理独立模型进程，
 每次只允许一个协调器租用。协调器仍独立持有断点、资源采样和进度输出；中断窗口、
@@ -1294,8 +1298,8 @@ CAM++ 嵌入按精确音频样本长度分桶后批量推理，再恢复原始�
 前端虽然计算了长度，但统计池化没有使用补齐掩码；混合长度批次会让同一声音的分数随其他窗口
 长度变化。等长分桶不裁剪音频、不改变说话人边界，也不修改匹配阈值。固定八秒参考仍可批量处理；
 实际对白长短不同，可能退化成较多单条推理，所以必须同时记录 speaker 阶段耗时与拒识变化。
-对无效返回数不向后错位分配嵌入，保持对应窗口未知。常驻 worker 在队列清空后释放，下次新 worker
-才载入新的 Python 实现，运行中的转写不会热替换算法。
+对无效返回数不向后错位分配嵌入，保持对应窗口未知。常驻 worker 在配置的空闲保留窗口到期后才释放，
+下次新 worker 才载入新的 Python 实现；运行中的转写不会热替换算法。
 
 ASR结果的 `speaker_evidence` 保留原始声学窗口、逐窗口label/score/margin、
 threshold、参考数量、cluster、scope和policy，经JS规范化写入与普通SRT哈希绑定的

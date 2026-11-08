@@ -491,6 +491,7 @@ export interface AsrConfig {
     persistent_worker?: {
       enabled?: boolean;
       startup_timeout_s?: number;
+      idle_timeout_s?: number;
     };
     gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
@@ -571,6 +572,7 @@ export interface ImageGenerationRouteConfig {
   timeoutSec?: number;
   size?: string;
   quality?: string;
+  complexity?: 'low' | 'medium' | 'high';
   outputFormat?: string;
   responseFormat?: string;
   useTuziRetry?: boolean;
@@ -581,7 +583,11 @@ export interface ImageGenerationConfig {
   routes: ImageGenerationRouteConfig[];
   rollout?: {
     enabled: boolean;
-    variants?: Array<{ model: string; quality: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto' }>;
+    variants?: Array<{
+      model: string;
+      quality: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto';
+      complexity?: 'low' | 'medium' | 'high';
+    }>;
   };
 }
   export interface TextRetryConfig {

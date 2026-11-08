@@ -102,7 +102,7 @@ describe('MikufansSummaryQueueWorker', () => {
     // The finalizer performs one last race check for a task added while the
     // worker was releasing its ASR resources.
     expect(queue.getNextPendingTask).toHaveBeenCalledTimes(2);
-    expect(resources.stopPersistentWorker).toHaveBeenCalledWith('ASR 队列已清空');
+    expect(resources.stopPersistentWorker).toHaveBeenCalledWith('队列 worker 退出');
   });
 
   it('owns durable queue insertion for callers outside the legacy queue module', () => {
@@ -145,6 +145,71 @@ describe('MikufansSummaryQueueWorker', () => {
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }), true);
     expect(resources.ensurePersistentWorker).toHaveBeenCalledTimes(1);
     expect(worker.isRunning()).toBe(false);
+  });
+
+  it('keeps the queue and resident worker alive during the configured idle window', async () => {
+    (ConfigProvider.getConfig as jest.Mock).mockReturnValue({
+      asr: {
+        paraformer: { persistent_worker: { idle_timeout_s: 0.05 } },
+        default_backend: 'paraformer',
+        cpu_fallback: { enabled: true, min_available_memory_gb: 4 }
+      },
+      whisper: { gpuDetection: { checkIntervalSeconds: 0.005 } },
+      webhook: { timeouts: { processTimeout: 1000 } }
+    });
+    const task = createTask();
+    const queue = createQueue(jest.fn()
+      .mockReturnValueOnce(task)
+      .mockReturnValue(null));
+    const resources = createResources();
+    const worker = new MikufansSummaryQueueWorker(createCallbacks(), resources, queue, createSpeakerRegistry());
+    jest.spyOn(worker as any, 'executeTask').mockResolvedValue(undefined);
+
+    worker.ensureRunning();
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(worker.isRunning()).toBe(true);
+    expect(resources.stopPersistentWorker).not.toHaveBeenCalled();
+
+    await new Promise(resolve => setTimeout(resolve, 70));
+    await settleWorker(worker);
+    expect(worker.isRunning()).toBe(false);
+    expect(resources.stopPersistentWorker).toHaveBeenCalledWith('队列 worker 退出');
+  });
+
+  it('wakes an idle loop when a new task is enqueued and keeps the same worker alive', async () => {
+    (ConfigProvider.getConfig as jest.Mock).mockReturnValue({
+      asr: {
+        paraformer: { persistent_worker: { idle_timeout_s: 1 } },
+        default_backend: 'paraformer',
+        cpu_fallback: { enabled: true, min_available_memory_gb: 4 }
+      },
+      whisper: { gpuDetection: { checkIntervalSeconds: 30 } },
+      webhook: { timeouts: { processTimeout: 1000 } }
+    });
+    let pending: QueuedSummaryTask | null = null;
+    const queue = createQueue(jest.fn().mockImplementation(() => pending));
+    (queue.addTask as jest.Mock).mockImplementation(() => pending);
+    const resources = createResources();
+    const worker = new MikufansSummaryQueueWorker(createCallbacks(), resources, queue, createSpeakerRegistry());
+    const execute = jest.spyOn(worker as any, 'executeTask').mockImplementation(async () => {
+      pending = null;
+    });
+
+    worker.ensureRunning();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(worker.isRunning()).toBe(true);
+
+    pending = createTask({ id: 'task-2' });
+    worker.enqueueTask('recording-2.flv', 'room-1');
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-2' }));
+    expect(resources.stopPersistentWorker).not.toHaveBeenCalled();
+
+    worker.requestStop();
+    await settleWorker(worker);
   });
 
   it('honors requestStop and does not restart during cleanup', async () => {

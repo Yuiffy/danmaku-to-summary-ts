@@ -14,7 +14,9 @@ test('own facade preserves all candidates, prioritizes model scores, and creates
         const sourceSrt = path.join(root, 'source.srt'); await fs.writeFile(sourceSrt, 'source evidence');
         const clips = [89, 95, 94].map((score, index) => ({ title: `事件${index}`, start: index * 10, end: index * 10 + 8,
             score, selectionSource: 'model_global_rerank' }));
-        const api = apiFixture(), request = jest.fn(async () => JSON.stringify({ worthPublishing: true, score: 95, reason: '完整独立事件', queries: ['岁己 具体事件'] }));
+        const api = apiFixture(), request = jest.fn(async phase => phase.startsWith('rerank-')
+            ? JSON.stringify({ items: [] })
+            : JSON.stringify({ worthPublishing: true, score: 95, reason: '完整独立事件', queries: ['岁己 具体事件'] }));
         const input = { kind: 'own' as const, config: { clipCuration: { enabled: true, roomIds: ['25788785'], maxStandalone: 1 } },
             info: { roomId: '25788785' }, sourceSrt, sourceMedia: 'source.mp4', outputRoot: root,
             statePath: path.join(root, 'support.json'), planOnly: true,
@@ -38,7 +40,8 @@ test('topic facade checks unresolved preflight drafts when the source window is 
         const sourceSrt = path.join(root, 'source.srt'); await fs.writeFile(sourceSrt, 'evidence');
         const clips = [{ window: { start: 0, end: 10 }, preflight: { status: 'needs_review' } }], api = apiFixture();
         const request = jest.fn(async phase => JSON.stringify(phase.startsWith('assess')
-            ? { worthPublishing: true, score: 95, reason: '完整事件', queries: ['具体事件'] } : {}));
+            ? { worthPublishing: true, score: 95, reason: '完整事件', queries: ['具体事件'] }
+            : phase.startsWith('rerank-') ? { items: [] } : {}));
         const result = await curateClipWindows(clips, { kind: 'topic', config: { clipCuration: { enabled: true, includeKeywordTopics: true } },
             info: { roomId: '2' }, sourceSrt, sourceMedia: 'source.mp4', outputRoot: root, statePath: path.join(root, 'support.json'),
             segments: [{ start: 0, end: 5, text: '完整的源台词' }] }, request, api);
@@ -60,7 +63,9 @@ test('keyword topics in another room use the same covered decision and explicit 
             anchors: segments.slice(0, 2).map((cue, i) => ({ sourceId: `S${i + 1}`, peerId: `P${i + 1}`, quote: cue.text })),
             beats: Object.fromEntries(['setup', 'development', 'payoff'].map((key, i) => [key, { sourceId: `S${i + 1}`, peerId: `P${i + 1}` }])) };
         const request = jest.fn(async phase => JSON.stringify(phase.startsWith('assess')
-            ? { worthPublishing: true, score: 95, reason: '完整问答', queries: ['小栞 小岁 机箱'] } : comparison));
+            ? { worthPublishing: true, score: 95, reason: '完整问答', queries: ['小栞 小岁 机箱'] }
+            : phase.startsWith('rerank-') ? { items: [{ bvid: peer.bvid, relevant: true, score: 95, reason: '标题与源字幕均指向同一机箱问答' }] }
+            : comparison));
         const [result] = await curateClipWindows([{ window: { start: 0, end: 30 }, preflight: { status: 'ready' } }], {
             kind: 'topic', config: { clipCuration: { enabled: true, roomIds: ['25788785'], includeKeywordTopics: true,
                 supportActions: ['like', 'favorite', 'repost'] } }, info: { roomId: '26966466' },

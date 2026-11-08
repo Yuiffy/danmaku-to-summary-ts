@@ -16,6 +16,7 @@ export interface ClipSummary {
   id: number;
   title: string;
   status: string;
+  feedbackStatus?: string;
   reviewTitle?: string;
   subtitleExcerpt?: string;
   roomId: string;
@@ -25,6 +26,14 @@ export interface ClipSummary {
   issues: string[];
   pendingCut: boolean;
   updatedAt: string;
+}
+export interface ClipList {
+  clips: ClipSummary[];
+  total: number;
+  page: number;
+  counts: Record<string, number>;
+  feedbackCounts: Record<string, number>;
+  rooms: string[];
 }
 export const campaignCandidateSorts = ['session', 'score-desc', 'score-asc', 'number-asc', 'number-desc'] as const;
 export type CampaignCandidateSort = typeof campaignCandidateSorts[number];
@@ -71,6 +80,22 @@ export interface ClipDetail {
   preview: boolean;
   cover: boolean;
   evidence: Record<string, any>;
+}
+export interface PeerCoverageHistoryItem {
+  id: string;
+  checkedAt: string;
+  status: string;
+  reason: string;
+  cached: boolean;
+  searchIndexCheckedAt?: string;
+  title: string;
+  host: string;
+  sourceWindow?: { start: number; end: number };
+  searches: { query: string; bvids: string[]; results: Record<string, any>[] }[];
+  matches: Record<string, any>[];
+  matchCount: number;
+  searchCount: number;
+  evidenceSha256?: string;
 }
 export interface AdminJob {
   id: string;

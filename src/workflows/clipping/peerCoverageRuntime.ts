@@ -1,4 +1,5 @@
-import { CoverageCandidate, CoverageDecision, CoverageSettings, curateCandidates, coverageSettings } from './peerCoverage';
+import { CoverageCandidate, CoverageDecision, CoverageSettings, curateCandidates, coverageSettings, PeerVideo, relevanceRerankPrompt } from './peerCoverage';
+import { parseModelJson } from '../text/json';
 import { createPeerApi, PeerApi } from './peerCoverageApi';
 import { supportPeer, writeCoverageJson } from './peerSupport';
 import { coverageDigest } from './peerCoverage';
@@ -12,6 +13,7 @@ export async function runPeerCuration(input: {
     candidates: CoverageCandidate[]; settings: CoverageSettings; cookie: string;
     evidencePath: string; statePath: string; support: boolean; skipEditorialAssessment?: boolean;
     searchQueries?: (candidate: CoverageCandidate, modelQueries: unknown, limit: number) => string[];
+    rerankPeers?: boolean;
 }, request: (phase: string, prompt: string) => Promise<string>, api: PeerApi = createPeerApi(input.cookie)): Promise<CoverageDecision[]> {
     const save = (decisions: CoverageDecision[]) => writeCoverageJson(input.evidencePath, { version: 1,
         checkedAt: new Date().toISOString(), scope: 'bounded_platform_subtitle_comparison',
@@ -33,7 +35,22 @@ export async function runPeerCuration(input: {
         },
         support: video => input.support ? supportPeer(video, input.settings, api, input.statePath)
             : Promise.resolve({ status: 'disabled', reason: '仅规划或只读核查，没有执行互动' })
-    }, { skipEditorialAssessment: input.skipEditorialAssessment, searchQueries: input.searchQueries });
+    }, { skipEditorialAssessment: input.skipEditorialAssessment, searchQueries: input.searchQueries,
+        rerankPeers: input.rerankPeers ? async (candidate: CoverageCandidate, peers: PeerVideo[]) => {
+            const value = parseModelJson(await request(`rerank-${candidate.id}`, relevanceRerankPrompt(candidate, peers)));
+            const rows = Array.isArray(value) ? value : value?.items;
+            if (!Array.isArray(rows)) throw new Error('invalid_peer_relevance_rerank');
+            const ranked = new Map<string, { relevant: boolean; score: number; reason: string }>();
+            for (const row of rows) {
+                if (!row || typeof row.bvid !== 'string' || !peers.some(peer => peer.bvid === row.bvid)) continue;
+                const score = Number(row.score);
+                if (typeof row.relevant !== 'boolean' || !Number.isInteger(score) || score < 0 || score > 100
+                    || typeof row.reason !== 'string' || !row.reason.trim()) continue;
+                ranked.set(row.bvid, { relevant: row.relevant && score >= 60, score, reason: row.reason.trim().slice(0, 300) });
+            }
+            if (ranked.size !== peers.length) throw new Error('invalid_peer_relevance_rerank');
+            return ranked;
+        } : undefined });
 }
 
 /** Source-CLI facade: both producers supply parsed original speech and the existing stage-request adapter. */
@@ -67,7 +84,7 @@ export async function curateClipWindows<T extends Record<string, any>>(clips: T[
     const evidencePath = path.join(input.outputRoot, 'peer_coverage', `${input.kind}-${randomUUID()}.json`);
     const decisions = await runPeerCuration({ candidates, settings: policy, cookie: input.config.bilibili?.cookie || '', evidencePath,
         statePath: input.statePath,
-        support: !input.planOnly }, request, api);
+        support: !input.planOnly, rerankPeers: true }, request, api);
     if (await hashFile(input.sourceSrt) !== sourceSrtSha256) throw new Error('Source subtitles changed during peer coverage check');
     const evidenceSha256 = await hashFile(evidencePath);
     const byIndex = new Map(eligible.map(({ index }, position) => [index, position]));

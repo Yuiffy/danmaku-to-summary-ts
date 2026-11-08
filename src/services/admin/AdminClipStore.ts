@@ -25,19 +25,24 @@ export class AdminClipStore {
       issues: [...(clip.reviewIssues || []), ...(clip.failureReason ? [String(clip.failureReason).split('\n').filter(Boolean).slice(-1).join('').slice(0, 500)] : [])], updatedAt: clip.updatedAt || clip.createdAt || ''
     };
   }
-  list(query: { search?: string; status?: string; room?: string; page?: string }): any {
+  list(query: { search?: string; status?: string; room?: string; page?: string; feedbackStatus?: string }, feedbackStatusFor?: (id: string) => string | undefined): any {
     const records = this.records();
     const all = Object.values(records).map(clip => this.summary(clip));
     const counts: Record<string, number> = {};
     for (const clip of all) counts[clip.status] = (counts[clip.status] || 0) + 1;
+    const feedbackStatuses = new Map(all.map(clip => [String(clip.id), feedbackStatusFor?.(String(clip.id))]));
+    const feedbackCounts: Record<string, number> = { none: 0 };
+    for (const status of feedbackStatuses.values()) feedbackCounts[status || 'none'] = (feedbackCounts[status || 'none'] || 0) + 1;
     const filtered = all.filter(clip => (!query.status || clip.status === query.status) && (!query.room || clip.roomId === query.room) &&
+      (!query.feedbackStatus || (query.feedbackStatus === 'none' ? !feedbackStatuses.get(String(clip.id)) : feedbackStatuses.get(String(clip.id)) === query.feedbackStatus)) &&
       (!query.search || `${clip.id} ${clip.title} ${clip.streamerName}`.toLowerCase().includes(query.search.toLowerCase()))).sort((a, b) => b.id - a.id);
     const page = Math.max(1, Math.min(10000, Number(query.page) || 1));
     return { clips: filtered.slice((page - 1) * 40, page * 40).map(summary => {
       // Only load evidence for the visible page, never every recording in the registry.
-      try { const clip = records[String(summary.id)]; return this.presentation(clip, this.metadata(clip)); }
+      try { const clip = records[String(summary.id)]; return { ...this.presentation(clip, this.metadata(clip)),
+        ...(feedbackStatuses.get(String(summary.id)) ? { feedbackStatus: feedbackStatuses.get(String(summary.id)) } : {}) }; }
       catch { return summary; }
-    }), total: filtered.length, page, counts,
+    }), total: filtered.length, page, counts, feedbackCounts,
       rooms: [...new Set(all.map(clip => clip.roomId).filter(Boolean))] };
   }
   private checkedPath(file: unknown): string | undefined {
@@ -196,6 +201,64 @@ export class AdminClipStore {
   preUploadPeerCoverage(id: string): any {
     const value = readJson(path.join(this.root, 'data/runtime/admin/peer-coverage', `${id}.json`), null);
     return value && typeof value === 'object' ? value : undefined;
+  }
+  peerCoverageHistory(limit = 80): { items: any[]; total: number } {
+    const directory = path.join(this.root, 'data/runtime/peer_coverage/pre-upload');
+    if (!fs.existsSync(directory)) return { items: [], total: 0 };
+    const files = fs.readdirSync(directory, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => {
+        const file = path.join(directory, entry.name);
+        try { return { file, value: readJson(file, null), mtime: fs.statSync(file).mtimeMs }; }
+        catch { return { file, value: null, mtime: 0 }; }
+      });
+    const compactMatch = (match: any) => match && typeof match === 'object' ? {
+      bvid: typeof match.bvid === 'string' ? match.bvid : undefined,
+      title: typeof match.title === 'string' ? match.title.slice(0, 200) : '',
+      url: typeof match.url === 'string' ? match.url : undefined,
+      status: typeof match.status === 'string' ? match.status : 'needs_review',
+      reason: typeof match.reason === 'string' ? match.reason.slice(0, 500) : undefined,
+      publishedAt: Number.isFinite(Number(match.publishedAt)) ? Number(match.publishedAt) : undefined
+    } : undefined;
+    const items: any[] = [];
+    for (const entry of files) {
+      const evidence = entry.value;
+      if (!evidence || !Array.isArray(evidence.decisions)) continue;
+      const candidates = Array.isArray(evidence.candidates) ? evidence.candidates : [];
+      for (const decision of evidence.decisions) {
+        if (!decision || typeof decision !== 'object') continue;
+        const id = String(decision.candidateId || candidates.find((candidate: any) => String(candidate?.id) === String(decision.candidateId))?.id || '');
+        if (!/^[1-9]\d{0,8}$/u.test(id)) continue;
+        const candidate = candidates.find((value: any) => String(value?.id) === id) || {};
+        const saved = this.preUploadPeerCoverage(id);
+        const selected = saved?.evidencePath === entry.file ? saved : undefined;
+        const source = selected?.decision || decision;
+        const matches = Array.isArray(source.matches) ? source.matches.map(compactMatch).filter(Boolean) : [];
+        const searches = Array.isArray(source.searches) ? source.searches.map((search: any) => ({
+          query: typeof search?.query === 'string' ? search.query.slice(0, 80) : '',
+          bvids: Array.isArray(search?.bvids) ? search.bvids.filter((bvid: any) => typeof bvid === 'string').slice(0, 100) : [],
+          results: Array.isArray(search?.results) ? search.results.map(compactMatch).filter(Boolean) : []
+        })).filter((search: any) => search.query) : [];
+        items.push({
+          id, checkedAt: typeof evidence.checkedAt === 'string' ? evidence.checkedAt : new Date(entry.mtime || 0).toISOString(),
+          status: selected?.status || source.status || 'needs_review',
+          reason: String(selected?.reason || source.reason || '未记录原因').slice(0, 500),
+          cached: !!selected?.cached,
+          searchIndexCheckedAt: selected?.searchIndexCheckedAt,
+          title: typeof candidate.title === 'string' ? candidate.title.slice(0, 240) : '',
+          host: typeof candidate.host === 'string' ? candidate.host.slice(0, 80) : '',
+          sourceWindow: Number.isFinite(Number(candidate.start)) && Number.isFinite(Number(candidate.end))
+            ? { start: Number(candidate.start), end: Number(candidate.end) } : undefined,
+          searches, matches,
+          matchCount: matches.length,
+          searchCount: searches.length,
+          evidenceSha256: selected?.evidenceSha256
+        });
+      }
+    }
+    items.sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt));
+    const bounded = Math.max(1, Math.min(200, Math.floor(limit)) || 80);
+    return { items: items.slice(0, bounded), total: items.length };
   }
   savePreUploadPeerCoverage(id: string, value: unknown): void {
     atomicJson(path.join(this.root, 'data/runtime/admin/peer-coverage', `${id}.json`), value);

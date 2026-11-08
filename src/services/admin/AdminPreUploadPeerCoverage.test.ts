@@ -20,7 +20,12 @@ function fixture(api: any, now: number | (() => number) = 1_800_000_000_000) {
   const clips = new AdminClipStore(root, () => [assets]);
   const config = { clipCuration: { enabled: true, maxSearchResults: 5, maxSearchQueries: 4, supportActions: ['like', 'favorite', 'repost'], maxSupportPerDay: 10, supportIntervalSeconds: 30 },
     bilibili: { cookie: 'SESSDATA=x; bili_jct=y; DedeUserID=99' } };
-  const gate = new AdminPreUploadPeerCoverage(root, clips, () => config, async () => JSON.stringify({}), { apiFactory: () => api, now: typeof now === 'function' ? now : () => now });
+  const gate = new AdminPreUploadPeerCoverage(root, clips, () => config, async (_prompt) => {
+    const resultsLine = _prompt.split('\n').find(line => line.startsWith('RESULTS '));
+    let rows: any[] = [];
+    try { rows = resultsLine ? JSON.parse(resultsLine.slice('RESULTS '.length)) : []; } catch { rows = []; }
+    return JSON.stringify({ items: rows.map(row => ({ bvid: row.bvid, relevant: true, score: 90, reason: '测试候选，继续字幕核验' })) });
+  }, { apiFactory: () => api, now: typeof now === 'function' ? now : () => now });
   return { root, clips, gate, detail: clips.detail('3354') };
 }
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
@@ -38,6 +43,7 @@ it('uses the persistent original cache without searching again', async () => {
   expect(first.status).toBe('original');
   expect(second).toMatchObject({ status: 'original', cached: true });
   expect(api.search).toHaveBeenCalledTimes(1);
+  expect(api.search).toHaveBeenCalledWith('岁己', 20, { order: 'pubdate', page: 1 });
   expect(f.clips.detail('3354').evidence.preUploadPeerCoverage.status).toBe('original');
 });
 
@@ -56,19 +62,45 @@ it('refreshes the shared recent index after its short freshness window', async (
   let now = 1_800_000_000_000;
   const api = apiWithSearch(), f = fixture(api, () => now);
   await f.gate.check('3354', f.detail, jest.fn(), jest.fn());
-  now += 2 * 60 * 1000 + 1;
+  now += 15 * 60 * 1000 + 1;
   await f.gate.check('3354', { ...f.detail, title: '稍后同一事件' }, jest.fn(), jest.fn());
   expect(api.search).toHaveBeenCalledTimes(2);
 });
 
+it('keeps newly fetched videos in the shared six-hour rolling index', async () => {
+  let now = 1_800_000_000_000;
+  const recent = { bvid: 'BV1abcdefgh1', aid: '123', ownerId: '88', title: '刚刚发布的切片', description: '',
+    publishedAt: Math.floor(now / 1000), duration: 0, complete: false, cues: [] };
+  const api = apiWithSearch();
+  api.search.mockImplementationOnce(async () => []).mockImplementationOnce(async () => [recent]);
+  const f = fixture(api, () => now);
+  await f.gate.check('3354', f.detail, jest.fn(), jest.fn());
+  now += 15 * 60 * 1000 + 1;
+  await f.gate.check('3354', { ...f.detail, title: '第二条切片' }, jest.fn(), jest.fn());
+  const state = JSON.parse(fs.readFileSync(path.join(f.root, 'data/runtime/clip_peer_coverage_cache.json'), 'utf8'));
+  expect(state.searchIndex.results.map((row: any) => row.bvid)).toContain(recent.bvid);
+});
+
+it('reuses peer subtitle details across clips while the rolling index is fresh', async () => {
+  const peer = { bvid: 'BV1abcdefgh1', aid: '123', ownerId: '88', title: '待核字幕', description: '',
+    publishedAt: 1_800_000_000, duration: 3, complete: true, cues: [
+      { id: 'P1', start: 0, end: 1, text: '完全不同的话题' }, { id: 'P2', start: 1, end: 2, text: '另一段发展' }, { id: 'P3', start: 2, end: 3, text: '结束' }
+    ] };
+  const api = apiWithSearch([peer]); api.read.mockResolvedValue(peer);
+  const f = fixture(api);
+  await f.gate.check('3354', f.detail, jest.fn(), jest.fn());
+  await f.gate.check('3354', { ...f.detail, title: '第二条切片' }, jest.fn(), jest.fn());
+  expect(api.read).toHaveBeenCalledTimes(1);
+});
+
 it('supports and blocks a confirmed duplicate', async () => {
-  const peer = { bvid: 'BV1abcdefgh1', aid: '123', ownerId: '88', title: '同题成片', description: '', publishedAt: 1,
+  const peer = { bvid: 'BV1abcdefgh1', aid: '123', ownerId: '88', title: '同题成片', description: '', publishedAt: 1_800_000_000,
     duration: 3, complete: true, cues: [
       { id: 'P1', start: 0, end: 1, text: '起因突然出现' }, { id: 'P2', start: 1, end: 2, text: '事情继续发展' }, { id: 'P3', start: 2, end: 3, text: '结果完成收尾' }
     ] };
   const api = apiWithSearch([peer]); api.read.mockResolvedValue(peer);
   const f = fixture(api);
-  (f.gate as any).request = async () => JSON.stringify({ sameEvent: true, complete: true, quality: true, reason: '对方完整覆盖同一事件',
+  (f.gate as any).request = async (prompt: string) => prompt.startsWith('你是B站切片查重') ? JSON.stringify({ items: [{ bvid: peer.bvid, relevant: true, score: 95, reason: '测试同题候选' }] }) : JSON.stringify({ sameEvent: true, complete: true, quality: true, reason: '对方完整覆盖同一事件',
     anchors: [{ sourceId: 'S1', peerId: 'P1', quote: '起因突然出现' }, { sourceId: 'S2', peerId: 'P2', quote: '事情继续发展' }],
     beats: { setup: { sourceId: 'S1', peerId: 'P1' }, development: { sourceId: 'S2', peerId: 'P2' }, payoff: { sourceId: 'S3', peerId: 'P3' } } });
   const result = await f.gate.check('3354', f.detail, jest.fn(), jest.fn());

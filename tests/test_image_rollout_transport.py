@@ -48,3 +48,29 @@ class ImageTransportTests(unittest.TestCase):
             self.assertTrue(post.call_args.args[0].endswith('/images/edits'))
             self.assertEqual(post.call_args.kwargs['data']['quality'], 'max')
             self.assertEqual(api.get_last_image_generation_meta()['usage'], usage)
+
+    def test_gpt_image_26_generation_sends_complexity(self):
+        response = Mock(status_code=200, headers={}, elapsed=Mock(total_seconds=lambda: 1))
+        response.json.return_value = {'data': [], 'usage': {}}
+        with patch.object(api.requests, 'post', return_value=response) as post, \
+             patch.object(api, 'check_image_api_rate_limit', return_value=True), \
+             patch.object(api, 'record_successful_image_api_call'):
+            api.call_tuzi_images_generations(
+                'prompt', model='gpt-image-2.6-flare', quality='high', complexity='low', use_tuzi_retry=False)
+        self.assertEqual(post.call_args.kwargs['json']['quality'], 'high')
+        self.assertEqual(post.call_args.kwargs['json']['complexity'], 'low')
+
+    def test_gpt_image_26_edits_sends_complexity(self):
+        response = Mock(status_code=200, headers={}, elapsed=Mock(total_seconds=lambda: 1))
+        response.json.return_value = {'data': [], 'usage': {}}
+        with tempfile.TemporaryDirectory() as folder:
+            reference = Path(folder) / 'reference.png'
+            reference.write_bytes(b'reference')
+            with patch.object(api.requests, 'post', return_value=response) as post, \
+                 patch.object(api, 'check_image_api_rate_limit', return_value=True), \
+                 patch.object(api, 'record_successful_image_api_call'):
+                api.call_tuzi_images_generations(
+                    'prompt', str(reference), model='gpt-image-2.6-sunburst', quality='medium',
+                    complexity='high', use_tuzi_retry=False)
+        self.assertEqual(post.call_args.kwargs['data']['quality'], 'medium')
+        self.assertEqual(post.call_args.kwargs['data']['complexity'], 'high')

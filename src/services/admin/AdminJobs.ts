@@ -54,6 +54,9 @@ export class AdminJobs {
     return [...this.jobs.values()].reverse().filter(job => job.action === action && job.target === target)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   }
+  feedbackStatus(target: string): AdminJob['status'] | undefined {
+    return this.latest('feedback-publish', target)?.status;
+  }
   titleDecisions(): Pick<AdminJob, 'id' | 'status' | 'titleChoice'>[] {
     return [...this.jobs.values()].filter(job => job.titleChoice)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.updatedAt.localeCompare(b.updatedAt))

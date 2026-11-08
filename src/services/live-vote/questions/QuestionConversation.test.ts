@@ -1,4 +1,16 @@
-import { generalQuestionAnswer } from './QuestionConversation';
+import { generalQuestionAnswer, needsCrossDateSummary, needsProductNameLookup } from './QuestionConversation';
+
+it.each([
+  '去上海喝的喜茶是什么口味',
+  '这杯奶茶具体是哪一款',
+  '饮品产品名叫什么'
+])('recognizes product-name questions that need menu mapping: %s', question => {
+  expect(needsProductNameLookup(question)).toBe(true);
+});
+
+it.each(['本月主要喝什么', '最近喝过哪些奶茶'])('recognizes multi-date beverage summaries: %s', question => {
+  expect(needsCrossDateSummary(question)).toBe(true);
+});
 
 const response = (answer = '岁己，愿你今晚被温柔以待，累了就好好休息。') => JSON.stringify({
   action: 'general', answer, shortAnswer: '岁己，愿你今晚被温柔以待。'

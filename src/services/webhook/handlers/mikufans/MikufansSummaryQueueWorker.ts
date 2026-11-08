@@ -85,6 +85,7 @@ export class MikufansSummaryQueueWorker {
   private queueWorkerProcess: ChildProcess | null = null;
   private queueWorkerShouldStop = false;
   private asrGamePaused = false;
+  private queueWakeResolver: (() => void) | null = null;
 
   constructor(
     private readonly callbacks: MikufansSummaryQueueWorkerCallbacks,
@@ -122,6 +123,7 @@ export class MikufansSummaryQueueWorker {
         this.queueWorkerPromise = null;
         this.queueWorkerProcess = null;
         this.asrGamePaused = false;
+        this.queueWakeResolver = null;
         if (!shouldRestart || this.queueWorkerShouldStop) {
           return;
         }
@@ -140,6 +142,7 @@ export class MikufansSummaryQueueWorker {
   /** Request a graceful stop; the current child is allowed to finish its ASR phase. */
   requestStop(): void {
     this.queueWorkerShouldStop = true;
+    this.wakeQueueWorker();
   }
 
   isRunning(): boolean {
@@ -157,7 +160,9 @@ export class MikufansSummaryQueueWorker {
     roomId?: string | number | null,
     options?: Record<string, unknown>
   ): QueuedSummaryTask {
-    return this.queueManager.addTask(mediaPath, roomId, options);
+    const task = this.queueManager.addTask(mediaPath, roomId, options);
+    this.wakeQueueWorker();
+    return task;
   }
 
   private async runLoop(): Promise<void> {
@@ -166,6 +171,8 @@ export class MikufansSummaryQueueWorker {
     const idleWaitMs = config.whisper?.gpuDetection?.checkIntervalSeconds
       ? config.whisper.gpuDetection.checkIntervalSeconds * 1000
       : 30000;
+    const persistentWorkerIdleTimeoutMs = this.getPersistentWorkerIdleTimeoutMs(config);
+    let queueIdleSince: number | null = null;
 
     const recoveredCount = this.queueManager.recoverInterruptedTasks();
     if (recoveredCount > 0) {
@@ -183,10 +190,22 @@ export class MikufansSummaryQueueWorker {
 
       const nextTask = this.queueManager.getNextPendingTask({ reload: true });
       if (!nextTask) {
-        await this.asrResources.stopPersistentWorker('ASR 队列已清空');
-        this.logger.info('Mikufans队列Worker空闲，退出等待下次唤醒');
-        return;
+        queueIdleSince ??= Date.now();
+        const idleElapsedMs = Date.now() - queueIdleSince;
+        if (persistentWorkerIdleTimeoutMs <= 0 || idleElapsedMs >= persistentWorkerIdleTimeoutMs) {
+          this.logger.info(
+            persistentWorkerIdleTimeoutMs > 0
+              ? `Mikufans队列Worker空闲 ${Math.round(idleElapsedMs / 1000)} 秒，释放常驻 ASR worker`
+              : 'Mikufans队列Worker空闲，释放常驻 ASR worker'
+          );
+          return;
+        }
+
+        const remainingMs = persistentWorkerIdleTimeoutMs - idleElapsedMs;
+        await this.waitForQueueWake(Math.min(idleWaitMs, remainingMs));
+        continue;
       }
+      queueIdleSince = null;
 
       const gameStatus = await this.asrResources.isGameRunning();
       const gpuStatus = gameStatus.busy ? { busy: false, reason: '' } : await this.asrResources.isLegacyGpuBusy();
@@ -229,6 +248,45 @@ export class MikufansSummaryQueueWorker {
       await this.asrResources.ensurePersistentWorker();
       await this.executeTask(nextTask);
     }
+  }
+
+  private getPersistentWorkerIdleTimeoutMs(config: any): number {
+    const timeoutSeconds = Number(config.asr?.paraformer?.persistent_worker?.idle_timeout_s ?? 0);
+    if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+      return 0;
+    }
+    return timeoutSeconds * 1000;
+  }
+
+  private wakeQueueWorker(): void {
+    const resolver = this.queueWakeResolver;
+    this.queueWakeResolver = null;
+    resolver?.();
+  }
+
+  private async waitForQueueWake(timeoutMs: number): Promise<void> {
+    if (this.queueWorkerShouldStop || timeoutMs <= 0) {
+      return;
+    }
+    await new Promise<void>(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (this.queueWakeResolver === finish) {
+          this.queueWakeResolver = null;
+        }
+        clearTimeout(timeoutId);
+        resolve();
+      };
+      const timeoutId = setTimeout(finish, timeoutMs);
+      this.queueWakeResolver = finish;
+      if (this.queueWorkerShouldStop) {
+        finish();
+      }
+    });
   }
 
   private async executeTask(task: QueuedSummaryTask, useCpu = false): Promise<void> {

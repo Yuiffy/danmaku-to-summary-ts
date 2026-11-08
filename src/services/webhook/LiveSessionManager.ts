@@ -132,7 +132,30 @@ export class LiveSessionManager {
     }
 
     const videoPathKey = this.normalizePathKey(videoPath);
-    if (session.segments.some(segment => this.normalizePathKey(segment.videoPath) === videoPathKey)) {
+    const existingSegment = session.segments.find(segment => this.normalizePathKey(segment.videoPath) === videoPathKey);
+    if (existingSegment) {
+      // Nearby recovery can discover a file while it is still being recorded.
+      // When the recorder later emits the real FileClosed event, refresh the
+      // recovered segment's close timestamp so finalization does not discard a
+      // live segment as stale. Completed/processing sessions remain idempotent.
+      if (session.status === 'collecting') {
+        const previousCloseTime = existingSegment.fileCloseTime;
+        if (fileCloseTime.getTime() > previousCloseTime.getTime()) {
+          existingSegment.fileCloseTime = fileCloseTime;
+        }
+        if (eventTimestamp.getTime() > existingSegment.eventTimestamp.getTime()) {
+          existingSegment.eventTimestamp = eventTimestamp;
+        }
+        existingSegment.xmlPath = xmlPath;
+        this.logger.info(`更新已收集片段的关闭时间: ${roomId}`, {
+          roomId,
+          videoPath: path.basename(videoPath),
+          previousCloseTime: previousCloseTime.toISOString(),
+          fileCloseTime: existingSegment.fileCloseTime.toISOString()
+        });
+        return true;
+      }
+
       this.logger.info(`忽略重复 FileClosed 片段: ${roomId}`, {
         roomId,
         videoPath: path.basename(videoPath),

@@ -144,8 +144,11 @@ running pinned worker can use the new compiled policy.
 ## Goodnight Image Model Policy
 
 New image requests outside Sui's room draw one equally weighted variant through
-daiYu: `gpt-image-2/high`, or `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` at
-`low`, `medium`, `high`, `xhigh`, or `max`. If that attempt fails, the next route
+daiYu: `gpt-image-2/high`, `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` at
+`low`, `medium`, `high`, `xhigh`, or `max`, or `gpt-image-2.6-sunburst` /
+`gpt-image-2.6-flare` with each `quality` × `complexity` combination from
+`low`, `medium`, and `high`. GPT Image 2.6 sends both fields to Sub2API. If that
+attempt fails, the next route
 tries `gpt-image-2/high` once, including when the initial draw was image-2/high.
 A successful first attempt skips the fallback; the fallback does not draw again.
 After both daiYu attempts fail, the global route list continues to tuZi's
@@ -180,16 +183,19 @@ usable scene content: it leaves script generation failed for recovery instead
 of reporting a successful generic image script.
 
 The rollout mechanism selects the primary `model` / `quality` variant once per
-image and leaves fallback routes fixed. Room rollout settings override the global
-policy. Distinguish the drawn
-`rolloutVariant` from the final model when reviewing a fallback result.
+image and leaves fallback routes fixed. For GPT Image 2.6, it also selects and
+records `complexity`; its `rolloutVariant` is `model:quality:complexity` while
+older models keep `model:quality`. Room rollout settings override the global
+policy. Distinguish the drawn `rolloutVariant` from the final model when reviewing
+a fallback result.
 
 `[IMAGE_EXPERIMENT]` logs and `*_COMIC_FACTORY_META.json` retain model, quality,
 provider, request IDs, raw usage and timing, including failed route attempts.
 `elapsedMs` at the top level measures the whole image stage including retries;
 each route attempt also has its own duration. Missing usage is unknown, never zero.
 WeCom goodnight/supplemental-image notifications display the final model, quality,
-usage and duration. `poststream:usage` exports the variant and quality for comparison.
+GPT Image 2.6 complexity when present, usage and duration. `poststream:usage`
+exports the variant and quality for comparison.
 To end the experiment, disable `rollout.enabled` and set the primary route's model
 and quality; room overrides must be updated separately.
 

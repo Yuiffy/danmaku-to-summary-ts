@@ -952,7 +952,6 @@ function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 't
         });
     });
 }
-
 function runJsonPython(scriptPath, payload, label = 'ASR backend') {
     const cpuAdmission = process.env.ASR_CPU_FALLBACK === '1';
     if (payload?.backend === 'paraformer' && (cpuAdmission || !payload?.device_handoff?.enabled)) {
@@ -972,7 +971,6 @@ function runJsonPython(scriptPath, payload, label = 'ASR backend') {
     }
     return runJsonPythonProcess(scriptPath, payload, label);
 }
-
 function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -1051,7 +1049,6 @@ function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
         child.stdin.end(JSON.stringify(translatePythonPayloadPaths(payload, payload)));
     });
 }
-
 function buildHotwordWords(runtimeOptions = {}) {
     if (Array.isArray(runtimeOptions.hotwordWords)) {
         return runtimeOptions.hotwordWords.map(word => String(word || '').trim()).filter(Boolean);
@@ -1064,7 +1061,6 @@ function buildHotwordWords(runtimeOptions = {}) {
     }
     return [];
 }
-
 function resolveParaformerModelOption(options = {}) {
     const profile = String(options.model_profile || '').trim().toLowerCase();
     if (profile === 'default') {

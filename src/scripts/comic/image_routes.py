@@ -136,9 +136,16 @@ def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, 
         selected = random.choice(variants)
         if not selected.get("model") or selected.get("quality") not in ("low", "medium", "high", "xhigh", "max", "auto"):
             raise ValueError("Invalid image rollout model/quality")
-        routes = [dict(routes[0], model=selected["model"], quality=selected["quality"],
-                       flow="openaiImages", useTuziRetry=False,
-                       rolloutVariant=f"{selected['model']}:{selected['quality']}")] + routes[1:]
+        is_gpt_image_26 = selected["model"] in ("gpt-image-2.6-flare", "gpt-image-2.6-sunburst")
+        complexity = selected.get("complexity")
+        if is_gpt_image_26 and complexity not in ("low", "medium", "high"):
+            raise ValueError("GPT Image 2.6 rollout requires a valid complexity")
+        route_fields = dict(model=selected["model"], quality=selected["quality"],
+                            complexity=complexity if is_gpt_image_26 else None,
+                            flow="openaiImages", useTuziRetry=False,
+                            rolloutVariant=(f"{selected['model']}:{selected['quality']}:{complexity}"
+                                             if is_gpt_image_26 else f"{selected['model']}:{selected['quality']}"))
+        routes = [dict(routes[0], **route_fields)] + routes[1:]
     return routes
 
 
@@ -196,6 +203,7 @@ def _call_image_generation_route(
         n=_int_config(route.get("n"), 1, 1),
         response_format=route.get("responseFormat", "b64_json"),
         quality=route.get("quality", "high"),
+        complexity=route.get("complexity"),
         output_format=route.get("outputFormat", "png"),
         use_tuzi_retry=bool(route.get("useTuziRetry", False)),
         provider_label=str(provider_name),
@@ -276,6 +284,7 @@ def generate_image(
             quality = route.get("quality", "high") if route.get("flow", "openaiImages") == "openaiImages" else (
                 "high" if last_meta.get("endpoint") in ("images/edits", "images/generations") else None
             )
+            complexity = route.get("complexity") or last_meta.get("complexity")
             failure_reason = None if result else _summarize_image_generation_failure(
                 last_meta,
                 f"{provider_name}:{model} returned no image",
@@ -289,6 +298,7 @@ def generate_image(
                 "model": last_meta.get("model") or model,
                 "requestedModel": model,
                 "quality": quality,
+                "complexity": complexity,
                 "size": route.get("size", "1:1"),
                 "rolloutVariant": route.get("rolloutVariant"),
                 "elapsedMs": elapsed_ms,
@@ -306,7 +316,7 @@ def generate_image(
             io.annotate_metadata(
                 provider=provider_name,
                 generationId=generation_id, roomId=record["roomId"],
-                model=record["model"], quality=quality,
+                model=record["model"], quality=quality, complexity=complexity,
                 size=record["size"], rolloutVariant=routes[0].get("rolloutVariant"),
                 elapsedMs=round((time.monotonic() - started) * 1000),
                 attempts=all_attempts, routeAttempts=route_attempts,

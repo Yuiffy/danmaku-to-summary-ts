@@ -1478,6 +1478,7 @@ def call_tuzi_images_edits(
     output_format: str = "png",
     use_tuzi_retry: bool = True,
     provider_label: str = "tuZi",
+    complexity: Optional[str] = None,
 ) -> Optional[str]:
     """
     调用 /v1/images/edits 端点生成参考图编辑/多图融合结果。
@@ -1522,6 +1523,8 @@ def call_tuzi_images_edits(
             "quality": quality,
             "output_format": output_format,
         }
+        if complexity is not None:
+            data["complexity"] = complexity
 
         logged_reference_files = False
 
@@ -1556,7 +1559,8 @@ def call_tuzi_images_edits(
 
             if not logged_reference_files:
                 logged_reference_files = True
-                print(f"[INFO] [images/edits] 调用 {model}, size={data['size']}, quality={quality}, output_format={output_format}, prompt长度={len(prompt)}")
+                complexity_info = f", complexity={complexity}" if complexity is not None else ""
+                print(f"[INFO] [images/edits] 调用 {model}, size={data['size']}, quality={quality}{complexity_info}, output_format={output_format}, prompt长度={len(prompt)}")
 
             try:
                 return requests.post(api_url, headers=headers, data=data, files=files, timeout=timeout, proxies=proxies)
@@ -1646,6 +1650,7 @@ def call_tuzi_images_generations(
     output_format: str = "png",
     use_tuzi_retry: bool = True,
     provider_label: str = "tuZi",
+    complexity: Optional[str] = None,
 ) -> Optional[str]:
     """
     调用 /v1/images/generations 端点生成图像（OpenAI DALL-E 兼容格式）
@@ -1695,6 +1700,7 @@ def call_tuzi_images_generations(
                     timeout=timeout,
                     size=size,
                     quality=quality,
+                    complexity=complexity,
                     output_format=output_format,
                     use_tuzi_retry=use_tuzi_retry,
                     provider_label=provider_label,
@@ -1712,12 +1718,15 @@ def call_tuzi_images_generations(
             "quality": quality,
             "output_format": output_format,
         }
+        if complexity is not None:
+            payload["complexity"] = complexity
 
         if not model.startswith("gpt-image-"):
             payload["response_format"] = response_format
 
         print(f"[INFO] [images/generations] 调用 {model}, size={payload['size']}, prompt长度={len(prompt)}")
-        print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
+        complexity_info = f", complexity={complexity}" if complexity is not None else ""
+        print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}{complexity_info}, output_format={output_format}")
 
         if use_tuzi_retry:
             resp = request_tuzi_with_retry(

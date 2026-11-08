@@ -11,12 +11,13 @@ describe('image rollout operator diagnostics', () => {
   it('reports model, max quality, tokens and generation duration', () => {
     const image = path.join(directory, 'test.png');
     fs.writeFileSync(path.join(directory, 'test_META.json'), JSON.stringify({
-      status: 'success', model: 'gpt-image-2.5-sunburst', quality: 'max', elapsedMs: 125600,
+      status: 'success', model: 'gpt-image-2.6-sunburst', quality: 'max', complexity: 'medium', elapsedMs: 125600,
       usage: { input_tokens: 123, output_tokens: 456, input_tokens_details: { image_tokens: 100, text_tokens: 23 } }
     }));
     const info = new DelayedReplyDiagnostics().getComicGenerationInfo(image);
-    expect(info).toContain('gpt-image-2.5-sunburst');
+    expect(info).toContain('gpt-image-2.6-sunburst');
     expect(info).toContain('质量: max');
+    expect(info).toContain('复杂度: medium');
     expect(info).toContain('输入 123，图片 100，文字 23，输出 456 tokens');
     expect(info).toContain('125.6s（含重试）');
   });

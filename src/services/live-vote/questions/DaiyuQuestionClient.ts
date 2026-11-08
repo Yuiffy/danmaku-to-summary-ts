@@ -9,9 +9,15 @@ import { createLocalEmbedder } from './LocalEmbedding';
 import { getProjectRoot } from '../../../core/config/ProjectPaths';
 import { createPublicSearchFactory, PublicSearchFactory } from './PublicSearchRuntime';
 
-interface DaiyuSettings { apiKey: string; url: string; proxy?: string }
+interface DaiyuSettings { apiKey: string; url: string; model: string; proxy?: string }
 function object(value: unknown): ConfigObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as ConfigObject : {};
+}
+
+export function questionProviderModel(config: unknown): string {
+  const root = object(config), ai = object(root.ai), text = object(object(ai.text).daiYu), provider = object(object(ai.providers).daiYu);
+  const model = text.model || provider.model || 'gpt-6-luna';
+  return typeof model === 'string' && model.trim() ? model.trim() : 'gpt-6-luna';
 }
 
 export function questionProviderSettings(config: ConfigObject): DaiyuSettings {
@@ -20,9 +26,11 @@ export function questionProviderSettings(config: ConfigObject): DaiyuSettings {
   const provider = object(object(ai.providers).daiYu);
   const key = text.apiKey || provider.apiKey;
   const base = text.baseUrl || provider.baseURL || provider.baseUrl || 'http://localhost:8080';
+  const model = questionProviderModel(config);
   const proxy = text.proxy ?? provider.proxy;
   if (text.enabled === false || provider.enabled === false || typeof key !== 'string' || !key.trim() ||
-      typeof base !== 'string' || proxy !== undefined && typeof proxy !== 'string') {
+      typeof base !== 'string' || typeof model !== 'string' || !model.trim() || model.length > 120 ||
+      /[\p{Cc}\p{Cf}]/u.test(model) || proxy !== undefined && typeof proxy !== 'string') {
     throw new Error('Configure daiYu question provider credentials in the explicit provider config');
   }
   let url: URL;
@@ -32,10 +40,10 @@ export function questionProviderSettings(config: ConfigObject): DaiyuSettings {
     throw new Error('daiYu questions require HTTPS or a loopback HTTP endpoint');
   }
   url.pathname = url.pathname.replace(/\/$/u, '').replace(/\/v1$/u, '') + '/v1/chat/completions';
-  return { apiKey: key, url: url.toString(), proxy: proxy as string | undefined };
+  return { apiKey: key, url: url.toString(), model: model.trim(), proxy: proxy as string | undefined };
 }
 
-/** Fixed provider/model; neither endpoint nor credentials are ever placed in model context. */
+/** Fixed provider endpoint; configured model, endpoint and credentials are never placed in model context. */
 export function createDaiyuQuestionCompletion(settings: DaiyuSettings, transport = fetch): AgentComplete {
   const agent = settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined;
   return async (request, signal) => {
@@ -45,7 +53,7 @@ export function createDaiyuQuestionCompletion(settings: DaiyuSettings, transport
         method: 'POST', redirect: 'error', signal: signal as any, timeout: 45000, size: 128 * 1024, agent,
         headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'gpt-6-luna', messages: request.messages,
+          model: settings.model, messages: request.messages,
           tools: QUESTION_TOOLS,
           ...(request.phase === 'review' ? { response_format: { type: 'json_object' } } : {}),
           tool_choice: request.toolChoice, parallel_tool_calls: false, max_tokens: 2048
