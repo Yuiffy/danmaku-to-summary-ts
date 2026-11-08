@@ -97,6 +97,19 @@ it('rejects stale selections, unknown options, invalid IDs, and titles on upload
   }
 });
 
+it('keeps title drafts editable while a read-only peer coverage check is queued', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture();
+  f.jobs.submitOperation('fixture', 'other', {}, async () => { await gate; return 0; });
+  f.jobs.submitOperation('peer-coverage', '1', {}, async () => { await gate; return 0; });
+  await Promise.resolve();
+  expect(f.jobs.latest('peer-coverage', '1')?.status).toBe('queued');
+  expect(() => f.titles.select('1', { ...f.ref(), title: '核查期间仍可修改标题' })).not.toThrow();
+  release();
+  await f.jobs.flush();
+});
+
 it('deduplicates async generation and rejects evidence changes during model work', async () => {
   let resolve!: (value: string) => void;
   const f = fixture(() => new Promise(done => { resolve = done; }));

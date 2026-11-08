@@ -154,6 +154,22 @@ AI 可建议原词的局部人名 patch，但仅限该已确认出现位置，�
 
 ## 关键词切片最终审核后自动投稿
 
+### 关键词切片投稿标签
+
+关键词切片默认使用 `AI切片`、`虚拟主播`、`直播切片` 三个通用标签。主播专属标签按
+来源 `roomId` 从 `ai.streamerRegistry` 读取，但 AI 切片只允许 `aiClipName`、
+`uploadPrefix` 或显式 `aiUploadTags` 这类小名/安全投稿名；不会把 `displayName`、
+`searchTags`、`mentionLabels`、`speakerLabels` 等真名直接写入投稿。旧 registry 没有
+小名配置时，只会保留不包含正式名的安全 `uploadTags` 或短别名，否则不补主播标签。
+主播所属组织只有在 registry 明确配置 `agency`/`organization` 为 `VirtuaReal` 时才加入
+`VirtuaReal`，不会从房间、ASR 热词或片内提及推断组织归属。
+
+片内引流标签来自受控内容标签：直播标题和片内字幕/命中关键词中的白名单游戏名，以及
+有明确证据时的 `搞笑`、`可爱`、`萌宠`、`高能`、`温情`、`翻唱`。不会把任意 AI 标题、
+简介或弹幕自由变成 tag。`clipTopics.extraTags` 与这些片内内容标签仍会在此基础上合并
+并去重。历史候选会保留已经写入的标签，需要在审核页通过人工标签编辑修正，不会因重新
+部署自动改写。
+
 `clipTopics.automaticPublication` 将关键词切片的最终审核与现有上传队列连接起来：
 `mode: "auto"`、`scope: "configured_keywords"`、`policyVersion: "topic-v1"` 表示
 用户授权现有关键词流程的新成片在明确通过最终审核后自动入队。默认配置保持

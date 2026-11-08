@@ -6,7 +6,9 @@ import { dateText, statusText, useResource } from './client';
 const time = (seconds?: number) => seconds === undefined ? '未记录' : seconds < 60 ? `${seconds.toFixed(1)} 秒`
   : `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
 const speed = (value?: number) => value === undefined ? '未记录' : `${value.toFixed(1)}×`;
-const names = { cpu_background: 'CPU 后台', gpu_ultra_low_impact: 'GPU 超低占用', gpu_low_impact: 'GPU 低占用', gpu_throughput: 'GPU 高吞吐', gpu_unknown: 'GPU（未细分）' };
+const names = { cpu_background: 'CPU 后台', gpu_ultra_low_impact: 'GPU 超低占用', gpu_low_impact: 'GPU 低占用', gpu_throughput: 'GPU 高吞吐', gpu_unknown: 'GPU（未细分）', unrecorded: '档位未记录' };
+const percent = (value: number) => `${value.toFixed(1)}%`;
+const count = (value: number | undefined, legacy: boolean) => value === undefined ? legacy ? '未写入（旧路线）' : '未记录' : `${value} 次`;
 
 export function AsrHistory() {
   const [page, setPage] = useState(1);
@@ -18,11 +20,15 @@ export function AsrHistory() {
     {resource.error && <p role="alert" className="upload-stale">历史读取失败：{resource.error}</p>}
     <button onClick={resource.refresh}>刷新历史</button>
     {!data ? <p>{resource.loading ? '正在读取处理历史…' : '暂无可用数据'}</p> : <>
+      {data.summary.totalAudioSeconds > 0 && <div className="upload-expanded">
+        <b>当前筛选历史的档位占比</b><small>按已记录的新增转写音频秒数统计，共 {time(data.summary.totalAudioSeconds)}；旧路线只有录播时长的场次暂归入“档位未记录”。</small>
+        <p>{data.summary.tiers.map(tier => <span key={tier.tier} style={{ marginRight: '1rem' }}>{names[tier.tier]} {percent(tier.percent)}</span>)}</p>
+      </div>}
       <div className="table-scroll asr-queue-table"><table><thead><tr><th>主播 / 场次</th><th>档位组合</th><th>转写速度 / 耗时</th><th>ASR 总耗时 / 其他阶段</th></tr></thead>
         <tbody>{data.items.map(row => <tr key={row.id}>
           <td><b>{row.streamerName}</b><p>{row.title}</p><small>{row.status === 'asr_completed' ? '字幕已生成' : statusText(row.status)} · {dateText(row.generatedAt)}</small></td>
-          <td>{row.tiers.length ? row.tiers.map(tier => <p key={tier.tier}><b>{names[tier.tier]}</b>{tier.batchSeconds !== undefined && <small>批量上限 {tier.batchSeconds} 秒</small>}<small>音频 {time(tier.audioSeconds)} · 窗口用时 {time(tier.windowSeconds)} · {speed(tier.speedX)}</small></p>) : '档位未记录'}
-            <small>设备切换 {row.switches ?? '未记录'} 次 · 中断 {row.interruptions ?? '未记录'} 次</small></td>
+          <td>{row.tiers.length ? row.tiers.map(tier => <p key={tier.tier}><b>{names[tier.tier]}</b>{tier.batchSeconds !== undefined && <small>批量上限 {tier.batchSeconds} 秒</small>}<small>音频 {time(tier.audioSeconds)} · 窗口用时 {time(tier.windowSeconds)} · {speed(tier.speedX)}</small></p>) : <b>档位未记录（旧路线）</b>}
+            <small>设备切换：{count(row.switches, !row.tiers.length)} · 中断：{count(row.interruptions, !row.tiers.length)}</small></td>
           <td><b>{speed(row.speedX)}</b><p>文字转写 {time(row.transcriptionSeconds)}</p><small>录播时长 {time(row.mediaSeconds)}</small><small>断点复用 {time(row.reusedSeconds)}</small></td>
           <td><b>{time(row.elapsedSeconds)}</b><small>模型加载 {time(row.modelLoadSeconds)}</small><small>说话人：{row.speakerState === 'skipped' ? '已跳过' : row.speakerState === 'processed' ? time(row.speakerSeconds) : '未记录'}</small>
             {row.metadata !== 'available' && <small>{row.metadata === 'missing' ? '未找到该场 ASR 统计文件' : '该场 ASR 统计暂不可读'}</small>}</td>

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AsrHistory, AsrHistoryItem } from '../../core/admin/asrHistory';
+import { AsrHistory, AsrHistoryItem, summarizeAsrHistory } from '../../core/admin/asrHistory';
 import { AdminError, digest } from './AdminFiles';
 
 type Value = string | number;
@@ -64,10 +64,11 @@ export function queryAsrHistory(file: string, pageInput?: unknown, sizeInput?: u
     if (filter.streamer) { conditions.push('instr(streamer,?)>0'); values.push(String(filter.streamer)); }
     if (filter.date) { conditions.push("date(sort_at,'+8 hours')=?"); values.push(String(filter.date)); }
     const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
-    const total = db.prepare(`SELECT COUNT(*) AS count FROM asr_history_v1${where}`).get(...values).count;
-    const items = db.prepare(`SELECT payload FROM asr_history_v1${where} ORDER BY sort_at DESC,recording_key LIMIT ? OFFSET ?`)
-      .all(...values, pageSize, (page - 1) * pageSize).map(row => JSON.parse(row.payload) as AsrHistoryItem);
-    return { observedAt: new Date().toISOString(), page, pageSize, total, items };
+    const payloads = db.prepare(`SELECT payload FROM asr_history_v1${where} ORDER BY sort_at DESC,recording_key`)
+      .all(...values).map(row => JSON.parse(row.payload) as AsrHistoryItem);
+    const total = payloads.length;
+    const items = payloads.slice((page - 1) * pageSize, page * pageSize);
+    return { observedAt: new Date().toISOString(), page, pageSize, total, items, summary: summarizeAsrHistory(payloads) };
   } catch { throw new AdminError('字幕历史索引暂不可读', 503); }
   finally { db?.close(); }
 }

@@ -6,8 +6,9 @@
  * Bilibili tags only carry search weight when the tag already exists on the
  * platform, so every mood/game tag below is a deliberately small whitelist of
  * tags that were verified to exist before being added here. Game names are
- * extracted from 《...》 in the stream title plus an alias table; mood tags
- * only fire when the clip's own transcript/keywords contain explicit cues.
+ * extracted from 《...》 in the stream title plus an alias table; mood and
+ * discovery tags only fire when the clip's own transcript/keywords contain
+ * explicit cues.
  */
 
 const GAME_ALIASES = [
@@ -38,6 +39,8 @@ const GAME_ALIASES = [
 // would tag almost every clip as 搞笑.
 const MOOD_RULES = [
     { tag: '搞笑', pattern: /(笑死|笑不活|乐死|太逗了|绷不住|哈哈哈哈|整活|搞笑|沙雕)/u },
+    { tag: '可爱', pattern: /(可爱|好萌|萌死|萌萌|好乖|好软|好甜|卡哇伊|萌)/u },
+    { tag: '萌宠', pattern: /(猫猫|小猫|猫咪|喵|狗狗|小狗|汪|兔兔|小兔|宠物|萌宠|毛茸茸|獭獭)/u },
     { tag: '高能', pattern: /(高能|名场面|天秀|封神|神仙操作)/u },
     { tag: '温情', pattern: /(温情|温馨|感动|泪目|治愈|暖心|破防)/u },
     { tag: '翻唱', pattern: /(翻唱|唱歌|歌回|清唱)/u }
@@ -90,9 +93,12 @@ function deriveMoodTags(text = '') {
 function deriveContentTags({ streamTitle = '', matchedKeywords = [], text = '' } = {}) {
     const keywords = (Array.isArray(matchedKeywords) ? matchedKeywords : [])
         .map(keyword => String(keyword || '')).join('\n');
+    const evidenceText = [keywords, text].filter(Boolean).join('\n');
     return Array.from(new Set([
-        ...extractGameTags(streamTitle),
-        ...deriveMoodTags([keywords, text].join('\n'))
+        // A game mentioned in the clip is useful discovery evidence too, but
+        // only aliases from the maintained whitelist may become a tag.
+        ...extractGameTags(streamTitle, evidenceText),
+        ...deriveMoodTags(evidenceText)
     ]));
 }
 

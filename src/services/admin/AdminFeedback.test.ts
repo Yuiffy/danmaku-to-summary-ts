@@ -11,9 +11,11 @@ import { AdminConfigStore } from './AdminConfigStore';
 import { createAdminServer } from './AdminServer';
 import { createFeedbackAgent, FeedbackCompletion, FeedbackToolCall } from './AdminFeedbackAgent';
 import { createFeedbackCompletion } from './AdminFeedbackClient';
+import { PreUploadPeerCoverageGate } from './AdminPreUploadPeerCoverage';
 
 const roots: string[] = [];
-function fixture(plan: any = {}, complete?: FeedbackCompletion, directFeedback = false) {
+function fixture(plan: any = {}, complete?: FeedbackCompletion, directFeedback = false,
+  peerCoverageGate?: PreUploadPeerCoverageGate) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-feedback-')); roots.push(root);
   const assets = path.join(root, 'recordings'); fs.mkdirSync(assets);
   const media = path.join(assets, 'clip.mp4'), cover = path.join(assets, 'cover.jpg'), srt = path.join(assets, 'clip.srt');
@@ -45,7 +47,7 @@ function fixture(plan: any = {}, complete?: FeedbackCompletion, directFeedback =
     return 0;
   });
   const jobs = new AdminJobs(path.join(root, 'jobs'), run), planner = jest.fn(async () => JSON.stringify(plan));
-  const feedback = new AdminFeedback(clips, jobs, run, planner, complete && createFeedbackAgent(complete), directFeedback);
+  const feedback = new AdminFeedback(clips, jobs, run, planner, complete && createFeedbackAgent(complete), directFeedback, peerCoverageGate);
   const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
   const app = createAdminServer({ clips, jobs, feedback, configs: new AdminConfigStore(root) }, token);
   const input = (note = '把“建功”改成“建构”，小岁本人发言，按原窗口制作') => ({ action: 'feedback-publish', note, publishApproved: true, revision: clips.detail('3354').revision });
@@ -221,6 +223,49 @@ it('resumes a ready revision by retrying only enqueue after the first enqueue at
   expect(retry.id).not.toBeUndefined();
   expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded', phase: '已加入投稿队列' });
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'enqueue']);
+});
+
+it('reprocesses the current ready copy when a failed retry has a stale saved plan', async () => {
+  const f = fixture({}, undefined, true);
+  let enqueueAttempts = 0;
+  f.run.mockImplementation(async (command, output) => {
+    output(`${command.action} 完成\n`);
+    const registry = readJson(f.registryPath), clip = registry.clips['3354'];
+    if (command.action === 'approve-review') {
+      const metadata = readJson(f.metadataPath);
+      for (const [field, flag] of [['title', '--title'], ['description', '--description'], ['coverText', '--cover-text']]) {
+        const at = command.args.indexOf(flag);
+        if (at >= 0) { metadata.copy[field] = command.args[at + 1]; if (field !== 'coverText') clip[field] = command.args[at + 1]; }
+      }
+      clip.reviewPending = false; clip.status = 'review';
+      atomicJson(f.metadataPath, metadata);
+    }
+    if (command.action === 'enqueue') {
+      enqueueAttempts++;
+      if (enqueueAttempts > 1) clip.status = 'queued';
+    }
+    atomicJson(f.registryPath, registry);
+    return command.action === 'enqueue' && enqueueAttempts === 1 ? 2 : 0;
+  });
+  f.feedback.submit('3354', { ...f.input('投'), title: '第一版标题' }); await f.jobs.flush();
+  const registry = readJson(f.registryPath), metadata = readJson(f.metadataPath);
+  registry.clips['3354'].title = '当前成片标题'; metadata.copy.title = '当前成片标题';
+  atomicJson(f.registryPath, registry); atomicJson(f.metadataPath, metadata);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded' });
+  expect(f.jobs.latest('feedback-publish', '3354')?.output).toContain('按当前版本重新处理反馈');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'approve-review', 'enqueue']);
+});
+
+it('lets an explicitly human-reviewed feedback publication bypass an unresolved peer-coverage check', async () => {
+  const peerCoverageGate: PreUploadPeerCoverageGate = {
+    check: jest.fn(async () => ({ status: 'needs_review' as const, reason: '证据不足', cached: false }))
+  };
+  const f = fixture({}, undefined, true, peerCoverageGate);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded' });
+  expect(peerCoverageGate.check).not.toHaveBeenCalled();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
 });
 
 it('keeps queued feedback valid when another clip refreshes the batch registration timestamp', async () => {

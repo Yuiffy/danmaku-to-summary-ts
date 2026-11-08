@@ -65,9 +65,10 @@ export class AdminFeedback {
         () => this.assertEditable(id), this.directFeedback, this.peerCoverageGate);
       if (resumeFrom && ['failed', 'interrupted'].includes(resumeFrom.status) && resumeFrom.note === note
         && resumeFrom.plan && initial.category === 'clip') {
-        session.resumeReviewed(resumeFrom.plan as FeedbackPlan);
-        await session.enqueue();
-        return 0;
+        if (session.resumeReviewed(resumeFrom.plan as FeedbackPlan)) {
+          await session.enqueue();
+          return 0;
+        }
       }
       if (this.agent && !unchangedReview && !publishCurrent) {
         await this.agent(session, initial, edits, (phase, detail) => { update({ phase }); output(`\n${phase}${detail ? `：${detail}` : ''}\n`); });

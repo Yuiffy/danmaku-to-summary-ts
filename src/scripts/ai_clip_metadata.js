@@ -30,7 +30,14 @@ function postProcessAiClipMetadata({ title = '', tags = [] } = {}, config = {}) 
     for (const entry of registryEntries(config)) {
         const replacement = preferredName(entry);
         const names = officialNames(entry).sort((a, b) => b.length - a.length);
-        names.forEach(name => blockedTags.add(name.toLocaleLowerCase()));
+        names.forEach(name => {
+            // The configured AI clip name may also appear in mentionLabels;
+            // keep that safe nickname available as a tag while blocking the
+            // formal/ASR names from automatic AI uploads.
+            if (!replacement || name !== replacement) {
+                blockedTags.add(name.toLocaleLowerCase());
+            }
+        });
         explicitUploadTags(entry).forEach(tag => allowedUploadTags.add(tag.toLocaleLowerCase()));
         if (replacement) {
             for (const name of names) {

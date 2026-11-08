@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AsrHistory, AsrHistoryItem, AsrHistoryTier } from '../../core/admin/asrHistory';
+import { AsrHistory, AsrHistoryItem, AsrHistoryTier, summarizeAsrHistory } from '../../core/admin/asrHistory';
 import { AdminError, readText } from './AdminFiles';
 
 type Data = Record<string, any>;
@@ -77,6 +77,7 @@ export function readAsrHistory(queueFile: string, roots: string[], pageInput: un
   const page = Number(pageInput), pageSize = Number(sizeInput);
   if (!Number.isInteger(page) || page < 1 || page > 10000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) throw new AdminError('历史分页参数无效');
   const tasks = loadAsrHistoryTasks(queueFile), trusted = trustedAsrHistoryRoots(roots);
-  const items = tasks.slice((page - 1) * pageSize, page * pageSize).map(task => readAsrHistoryItem(task, trusted));
-  return { observedAt: new Date(now).toISOString(), page, pageSize, total: tasks.length, items };
+  const allItems = tasks.map(task => readAsrHistoryItem(task, trusted));
+  const items = allItems.slice((page - 1) * pageSize, page * pageSize);
+  return { observedAt: new Date(now).toISOString(), page, pageSize, total: tasks.length, items, summary: summarizeAsrHistory(allItems) };
 }

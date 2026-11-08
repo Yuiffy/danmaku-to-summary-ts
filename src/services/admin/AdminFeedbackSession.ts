@@ -109,21 +109,24 @@ export class AdminFeedbackSession {
       && (!this.requestedTitle || detail.title === this.requestedTitle));
   }
   /** Resume a failed feedback attempt when the saved revision is already review-ready. */
-  resumeReviewed(plan: FeedbackPlan): void {
+  resumeReviewed(plan: FeedbackPlan): boolean {
     this.validate();
     const detail = this.clips.feedbackDetail(this.id), record = this.clips.record(this.id);
     if (detail.category !== 'clip' || !detail.media || !detail.cover || detail.pendingRebuild || record.pendingCut
       || record.reviewPending || record.editorialExclusion) throw new AdminError('当前版本尚未达到可恢复投稿状态，请重新按意见处理');
-    const expected = { title: plan.title || detail.title, description: plan.description || detail.description,
-      coverText: plan.coverText || detail.coverText,
-      tags: Array.isArray((plan as any).tags) ? (plan as any).tags : detail.tags };
+    const savedPlan = plan && typeof plan === 'object' ? plan : {};
+    const expected = { title: savedPlan.title || detail.title, description: savedPlan.description || detail.description,
+      coverText: savedPlan.coverText || detail.coverText,
+      tags: Array.isArray((savedPlan as any).tags) ? (savedPlan as any).tags : detail.tags };
     if (detail.title !== expected.title || detail.description !== expected.description || detail.coverText !== expected.coverText
       || JSON.stringify(detail.tags) !== JSON.stringify(expected.tags)) {
-      throw new AdminError('上次修改后的文案与当前成片不一致，请刷新后按最新意见重试');
+      this.output('\n当前成片文案与上次保存的修改计划不一致，按当前版本重新处理反馈。\n');
+      return false;
     }
     this.requestedTitle = expected.title;
     this.reviewed = true;
-    this.update({ phase: '正在恢复已复核版本', plan: { ...plan, resume: true } });
+    this.update({ phase: '正在恢复已复核版本', plan: { ...savedPlan, resume: true } });
+    return true;
   }
   private async step(phase: string, command: OperatorCommand): Promise<void> {
     this.validate(); this.update({ phase }); this.output(`\n${phase}\n`);
@@ -225,7 +228,11 @@ export class AdminFeedbackSession {
     if (this.queued) throw new AdminError('本次已加入投稿队列');
     if (!this.ready()) throw new AdminError(`成片复核尚未通过，未入队：${this.clips.detail(this.id).clip.issues.join('；') || '尚未完成当前版本复核或标题与修改计划不一致'}`);
     const final = this.clips.record(this.id), detail = this.clips.detail(this.id);
-    if (detail.category === 'clip' && this.peerCoverageGate) {
+    // A direct Web feedback submission is an explicit human review and
+    // publication authorization. The peer-coverage check remains useful for
+    // automatic/ordinary flows, but must not re-gate an operator-confirmed
+    // feedback correction after the current media has passed review.
+    if (detail.category === 'clip' && !this.directFeedback && this.peerCoverageGate) {
       const peer = await this.peerCoverageGate.check(this.id, detail, this.output, value => this.update(value));
       if (peer.status === 'covered') {
         throw new AdminError(`已确认 B 站存在同题成片，已执行支持并暂停投稿：${peer.reason}`);

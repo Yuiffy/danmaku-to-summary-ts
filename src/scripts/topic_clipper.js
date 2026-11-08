@@ -31,6 +31,7 @@ const {
 const fs = require('fs');
 const path = require('path');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const DEFAULT_TOPIC_UPLOAD_TAGS = ['虚拟主播', '直播切片'];
 const { deriveContentTags } = require('./content_tags');
 const childProcess = require('child_process');
 const xml2js = require('xml2js');
@@ -265,53 +266,56 @@ function resolveStreamerName(config = {}, roomId = null, context = {}) {
     }
     return '主播';
 }
-
-/**
- * 根据 roomId 从 streamerRegistry 解析主播的正式标签(用于 B站投稿 tag)
- * 返回 searchTags(如有)或 displayName + speakerLabels。
- */
-function resolveStreamerTags(config = {}, roomId = null) {
+function resolveStreamerEntry(config = {}, roomId = null) {
     const roomKey = roomId ? String(roomId) : null;
-    if (!roomKey) return [];
-
-    for (const entry of Object.values(config.ai?.streamerRegistry || {})) {
-        const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
-        if (!roomIds.includes(roomKey)) continue;
-
-        // 投稿标签使用主播在 B 站的投稿名/标签,不要把 ASR 说话人别名
-        // (例如"瑞娅""Rhea")直接带入真人切片投稿。
-        if (Array.isArray(entry.uploadTags) && entry.uploadTags.length > 0) {
-            return entry.uploadTags.map(t => String(t).trim()).filter(Boolean);
-        }
-
-        // 优先使用显式配置的 searchTags
-        if (Array.isArray(entry.searchTags) && entry.searchTags.length > 0) {
-            return entry.searchTags.map(t => String(t).trim()).filter(Boolean);
-        }
-
-        // 退退:displayName + speakerLabels
-        const tags = new Set();
-        if (entry.displayName) tags.add(entry.displayName);
-        (entry.speakerLabels || []).forEach(label => {
-            const s = String(label).trim();
-            if (s && s.length >= 2) tags.add(s);
-        });
-        return Array.from(tags);
-    }
-    return [];
+    if (!roomKey) return null;
+    return Object.values(config.ai?.streamerRegistry || {}).find(entry =>
+        Array.isArray(entry.roomIds) && entry.roomIds.map(value => String(value)).includes(roomKey)) || null;
 }
-
+function normalizedRegistryNames(entry = {}) {
+    return new Set([entry.displayName, ...(Array.isArray(entry.searchTags) ? entry.searchTags : []), ...(Array.isArray(entry.speakerLabels) ? entry.speakerLabels : [])]
+        .map(value => String(value || '').trim().toLocaleLowerCase()).filter(Boolean));
+}
+function resolveAiStreamerTags(config = {}, roomId = null) {
+    const entry = resolveStreamerEntry(config, roomId);
+    if (!entry) return [];
+    const officialNames = normalizedRegistryNames(entry);
+    const candidates = [entry.aiClipName, entry.uploadPrefix].concat(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []).map(value => String(value || '').trim()).filter(Boolean);
+    const safeCandidates = candidates.filter(tag => !officialNames.has(tag.toLocaleLowerCase()));
+    if (safeCandidates.length > 0) return Array.from(new Set(safeCandidates));
+    const safeUploadTags = (Array.isArray(entry.uploadTags) ? entry.uploadTags : []).map(value => String(value || '').trim()).filter(Boolean)
+        .filter(tag => !Array.from(officialNames).some(name => name === tag.toLocaleLowerCase() || name.includes(tag.toLocaleLowerCase())));
+    if (safeUploadTags.length > 0) return Array.from(new Set(safeUploadTags));
+    const nickname = (Array.isArray(entry.aliases) ? entry.aliases : []).map(value => String(value || '').trim()).filter(Boolean)
+        .find(tag => !officialNames.has(tag.toLocaleLowerCase()) && Array.from(tag).length <= 4);
+    return nickname ? [nickname] : [];
+}
+function resolveStreamerTags(config = {}, roomId = null) {
+    const entry = resolveStreamerEntry(config, roomId);
+    if (!entry) return [];
+    const configured = Array.isArray(entry.uploadTags) && entry.uploadTags.length > 0 ? entry.uploadTags : entry.searchTags;
+    if (Array.isArray(configured) && configured.length > 0) return configured.map(tag => String(tag || '').trim()).filter(Boolean);
+    return Array.from(new Set([entry.displayName, ...(entry.speakerLabels || [])]
+        .map(value => String(value || '').trim()).filter(value => value.length >= 2)));
+}
+function resolveStreamerOrganizationTags(config = {}, roomId = null) {
+    const entry = resolveStreamerEntry(config, roomId);
+    if (!entry) return [];
+    const organizations = [entry.agency, entry.organization].concat(Array.isArray(entry.agencies) ? entry.agencies : []).map(value => String(value || '').trim().toLocaleLowerCase());
+    return organizations.includes('virtuareal') ? ['VirtuaReal'] : [];
+}
+function buildTopicUploadTags(config = {}, roomId = null, extraTagList = null) {
+    const baseTags = Array.isArray(config.tags) ? config.tags : DEFAULT_TOPIC_UPLOAD_TAGS;
+    const streamerTags = Array.isArray(extraTagList) ? extraTagList : resolveAiStreamerTags(config, roomId);
+    const organizationTags = resolveStreamerOrganizationTags(config, roomId);
+    return ['AI切片', ...baseTags, ...streamerTags, ...organizationTags, ...(Array.isArray(config.extraTags) ? config.extraTags : [])];
+}
 function isIgnoredRoom(roomId, config = {}) {
     const roomKey = roomId ? String(roomId) : null;
-    if (!roomKey) {
-        return false;
-    }
-    const ignoredRoomIds = Array.isArray(config.ignoredRoomIds)
-        ? config.ignoredRoomIds.map(value => String(value)).filter(Boolean)
-        : [];
+    if (!roomKey) return false;
+    const ignoredRoomIds = Array.isArray(config.ignoredRoomIds) ? config.ignoredRoomIds.map(value => String(value)).filter(Boolean) : [];
     return ignoredRoomIds.includes(roomKey);
 }
-
 function sanitizeFileName(value, fallback = 'clip') {
     const safe = String(value || fallback)
         .replace(/[\\/:*?"<>|]/g, '_')
@@ -394,7 +398,6 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
         }
     }
 
-    const configuredTags = Array.isArray(config.tags) ? config.tags : null;
     // 内容自动标签:游戏名(来自直播标题《》) + 情绪标签(白名单,依据片内文本/触发关键词)
     const contentTagList = deriveContentTags({
         streamTitle: info.streamTitle,
@@ -402,10 +405,7 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
         text: sampleText
     });
     const tags = Array.from(new Set([
-        'AI切片',
-        ...(configuredTags || [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']),
-        ...(Array.isArray(config.extraTags) ? config.extraTags : []),
-        ...(Array.isArray(extraTagList) ? extraTagList : []),
+        ...buildTopicUploadTags(config, info.roomId, extraTagList),
         ...contentTagList
     ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
 
@@ -1127,7 +1127,7 @@ function buildTopicUploadSettings(metadata, copy = {}) {
     const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
     const tags = Array.isArray(copy.tags) && copy.tags.length
         ? copy.tags
-        : ['岁己', '虚拟主播', '直播切片', 'AI切片'];
+        : buildTopicUploadTags(metadata.config || {}, metadata.roomId);
     return {
         source,
         tags: Array.from(new Set(tags.map(tag => String(tag || '').trim()).filter(Boolean))),
@@ -1547,7 +1547,7 @@ async function generateTopicClips(options = {}) {
                 ? async () => clip.aiDescription
                 : (useEditorial ? null : options.descriptionGenerator);
             // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
-            const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
+            const registryTags = resolveAiStreamerTags(options.config || {}, info.roomId);
             const metadataConfig = { ...config, ai: options.config?.ai };
             copy = await buildClipCopy(window, info, streamerName, metadataConfig, titleGen, descGen, registryTags, clip.aiCoverText);
             if (!usePreflight) aiReview = await runTopicShadowReview({ ...clip, copy, streamerName }, parsed.segments, config, aiConfig, info, diagnostics);
@@ -1761,6 +1761,10 @@ module.exports = {
     parseRecordingInfo,
     resolveStreamerName,
     resolveStreamerTags,
+    resolveAiStreamerTags,
+    resolveStreamerOrganizationTags,
+    buildTopicUploadTags,
+    buildTopicUploadSettings,
     deriveUploadPrefix,
     resolveUploadPrefix,
     isIgnoredRoom,

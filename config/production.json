@@ -583,6 +583,7 @@
     "streamerRegistry": {
       "azusa": {
         "displayName": "阿梓从小就很可爱",
+        "agency": "VirtuaReal",
         "roomIds": [
           "80397"
         ],
@@ -597,6 +598,7 @@
       },
       "mit3uri": {
         "displayName": "三理Mit3uri",
+        "agency": "VirtuaReal",
         "uid": "2030198123",
         "roomIds": [
           "1967216004"
@@ -621,6 +623,7 @@
       "mofu": {
         "uid": "1125641408",
         "displayName": "犬绒Mofu",
+        "agency": "VirtuaReal",
         "aiClipName": "小绒",
         "roomIds": [
           "1791260716"
@@ -651,6 +654,7 @@
       },
       "sui": {
         "displayName": "岁己SUI",
+        "agency": "VirtuaReal",
         "aiClipName": "小岁",
         "roomIds": [
           "25788785"
@@ -688,6 +692,7 @@
       },
       "shiori": {
         "displayName": "栞栞",
+        "agency": "VirtuaReal",
         "aiClipName": "小栞",
         "roomIds": [
           "26966466"
@@ -720,6 +725,7 @@
       },
       "rhea": {
         "displayName": "瑞娅",
+        "agency": "VirtuaReal",
         "roomIds": [
           "23260993"
         ],
@@ -772,6 +778,7 @@
       },
       "mizuki": {
         "displayName": "弥月Mizuki",
+        "agency": "VirtuaReal",
         "uid": "1789460279",
         "roomIds": [
           "30655190"
@@ -809,6 +816,7 @@
       },
       "miting": {
         "displayName": "米汀",
+        "agency": "VirtuaReal",
         "roomIds": [
           "31368705"
         ],
@@ -831,6 +839,7 @@
       },
       "harei": {
         "displayName": "花礼Harei",
+        "agency": "VirtuaReal",
         "roomIds": [
           "1820703922"
         ],
@@ -893,6 +902,7 @@
       },
       "hazel": {
         "displayName": "灰泽满Hazel",
+        "agency": "VirtuaReal",
         "roomIds": [
           "1713546334"
         ],
@@ -929,6 +939,7 @@
       },
       "liko": {
         "displayName": "莉蔻Liko",
+        "agency": "VirtuaReal",
         "roomIds": [
           "1713548468"
         ],
@@ -959,6 +970,7 @@
       },
       "kloa": {
         "displayName": "克罗雅Kloa",
+        "agency": "VirtuaReal",
         "roomIds": [
           "1986461465"
         ],
@@ -989,6 +1001,7 @@
       },
       "izayoi": {
         "displayName": "十六萤Izayoi",
+        "agency": "VirtuaReal",
         "roomIds": [
           "1741667419"
         ],
@@ -1018,6 +1031,7 @@
       },
       "komichi": {
         "displayName": "四时小路Komichi",
+        "agency": "VirtuaReal",
         "aiClipName": "小路",
         "roomIds": [
           "1700301235"
@@ -1037,6 +1051,7 @@
       },
       "viridis": {
         "displayName": "小松绿Viridis",
+        "agency": "VirtuaReal",
         "aiClipName": "小松",
         "roomIds": [
           "1727071052"
@@ -1055,6 +1070,7 @@
       },
       "chu2u": {
         "displayName": "羽啾chu2u",
+        "agency": "VirtuaReal",
         "aiClipName": "小羽",
         "roomIds": [
           "1727074031"
@@ -1098,6 +1114,7 @@
       },
       "sumire": {
         "displayName": "枝堇Sumire",
+        "agency": "VirtuaReal",
         "aiClipName": "小枝",
         "roomIds": [
           "1727076670"

@@ -43,7 +43,11 @@ export class AdminTitles {
   private editable(id: string, detail: ClipDetail): void {
     if (detail.category !== 'clip') throw new AdminError('完整包请使用专用包装流程');
     if (['queued', 'uploading', 'uploaded', 'excluded', 'cancelled'].includes(detail.clip.status) || this.clips.hasActiveUpload(id)) throw new AdminError('请在未入队的待审核切片中选择标题', 409);
-    if (this.jobs.list().some(job => job.target === id && job.action !== 'title-options' && ['queued', 'running'].includes(job.status))) throw new AdminError('此切片正在处理，请完成后再选择标题', 409);
+    // Peer coverage only reads the candidate and writes its separate evidence
+    // record. It can be queued behind a long media job without changing the
+    // title evidence or the clip revision, so it must not freeze title drafts.
+    if (this.jobs.list().some(job => job.target === id && !['title-options', 'peer-coverage'].includes(job.action)
+      && ['queued', 'running'].includes(job.status))) throw new AdminError('此切片正在处理，请完成后再选择标题', 409);
   }
   private checked(id: string, body: { setId?: string; revision?: string }) {
     const current = this.current(id);

@@ -11,6 +11,8 @@ afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: tru
 const row = (id: string): AsrHistoryItem => ({ id, title: id, streamerName: '测试主播', status: 'completed',
   metadata: 'available', tiers: [], speakerState: 'unknown', elapsedSeconds: 10, generatedAt: '2026-10-24T20:00:00Z' });
 
+const tier = (name: AsrHistoryItem['tiers'][number]['tier'], audioSeconds: number) => ({ tier: name, audioSeconds });
+
 it('persists history independently of queue retention, deduplicates sidecars and supports Shanghai date filtering', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-sqlite-')); roots.push(root);
   const file = path.join(root, 'history.sqlite'), writer = new AdminAsrHistoryIndex(file);
@@ -26,6 +28,28 @@ it('persists history independently of queue retention, deduplicates sidecars and
   expect(queryAsrHistory(file, 1, 20, { streamer: "' OR 1=1 --" }).total).toBe(0);
   expect(() => queryAsrHistory(file, 0)).toThrow('历史分页参数无效');
   expect(() => queryAsrHistory(file, 1, 20, { date: 'yesterday' })).toThrow('历史筛选参数无效');
+});
+
+it('summarizes all filtered history rows independently of the current page', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-summary-')); roots.push(root);
+  const file = path.join(root, 'history.sqlite'), writer = new AdminAsrHistoryIndex(file);
+  try {
+    writer.upsert(path.join(root, 'cpu'), { ...row('cpu'), tiers: [tier('cpu_background', 100)] });
+    writer.upsert(path.join(root, 'gpu'), { ...row('gpu'), tiers: [tier('gpu_ultra_low_impact', 50), tier('gpu_low_impact', 50)] });
+    writer.upsert(path.join(root, 'legacy'), { ...row('legacy'), mediaSeconds: 100, tiers: [] });
+  } finally { writer.close(); }
+  const firstPage = queryAsrHistory(file, 1, 1);
+  expect(firstPage.total).toBe(3);
+  expect(firstPage.items).toHaveLength(1);
+  expect(firstPage.summary.totalAudioSeconds).toBe(300);
+  expect(firstPage.summary.recordedAudioSeconds).toBe(200);
+  expect(firstPage.summary.tiers).toEqual(expect.arrayContaining([
+    expect.objectContaining({ tier: 'cpu_background', audioSeconds: 100, percent: 33.33333333333333 }),
+    expect.objectContaining({ tier: 'gpu_ultra_low_impact', audioSeconds: 50, percent: 16.666666666666664 }),
+    expect.objectContaining({ tier: 'gpu_low_impact', audioSeconds: 50, percent: 16.666666666666664 }),
+    expect.objectContaining({ tier: 'unrecorded', audioSeconds: 100, percent: 33.33333333333333 })
+  ]));
+  expect(queryAsrHistory(file, 1, 20, { streamer: '不存在' }).summary.totalAudioSeconds).toBe(0);
 });
 
 it('imports old sidecars without modifying them and stops discovery when closed', async () => {

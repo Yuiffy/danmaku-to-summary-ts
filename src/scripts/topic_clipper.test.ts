@@ -5,6 +5,7 @@ const topicClipper = require('./topic_clipper');
 const aiTextGenerator = require('./ai_text_generator');
 const defaultConfig = require('../../config/default.json');
 const productionConfig = require('../../config/production.json');
+const contentTags = require('./content_tags');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'topic-clipper-'));
@@ -147,9 +148,9 @@ describe('topic_clipper', () => {
     };
 
     expect(topicClipper.resolveUploadPrefix(config, '1700301235', '四时小路Komichi')).toBe('【小路】');
-    expect(topicClipper.resolveStreamerTags(config, '1700301235')).toEqual(['小路边']);
+    expect(topicClipper.resolveAiStreamerTags(config, '1700301235')).toEqual(['小路']);
     expect(topicClipper.resolveUploadPrefix(config, '1727071052', '小松绿Viridis')).toBe('【小松】');
-    expect(topicClipper.resolveStreamerTags(config, '1727071052')).toEqual(['Viridis']);
+    expect(topicClipper.resolveAiStreamerTags(config, '1727071052')).toEqual(['小松']);
   });
 
   test('always includes AI切片 in generated topic clip tags', async () => {
@@ -177,8 +178,62 @@ describe('topic_clipper', () => {
     }, null, null, ['Viridis']);
 
     expect(copy.tags).toContain('AI切片');
+    expect(copy.tags).toContain('虚拟主播');
+    expect(copy.tags).toContain('直播切片');
     expect(copy.tags).toContain('Viridis');
+    expect(copy.tags).not.toContain('岁己');
+    expect(copy.tags).not.toContain('小岁');
     expect(copy.tags).not.toContain('小松绿Viridis');
+  });
+
+  test('uses AI clip nicknames without leaking formal names across rooms', () => {
+    const config = {
+      ai: {
+        streamerRegistry: {
+          sui: { roomIds: ['25788785'], displayName: '岁己SUI', aiClipName: '小岁', searchTags: ['岁己', '岁己SUI'] },
+          shiori: { roomIds: ['26966466'], displayName: '栞栞', aiClipName: '小栞', searchTags: ['栞栞', '栞栞Shiori'] }
+        }
+      }
+    };
+
+    expect(topicClipper.buildTopicUploadTags(config, '26966466')).toEqual([
+      'AI切片', '虚拟主播', '直播切片', '小栞'
+    ]);
+    expect(topicClipper.buildTopicUploadTags(config, '26966466')).not.toContain('岁己');
+    expect(topicClipper.buildTopicUploadTags(config, '26966466')).not.toContain('栞栞');
+    expect(topicClipper.buildTopicUploadTags(config, '25788785')).toEqual([
+      'AI切片', '虚拟主播', '直播切片', '小岁'
+    ]);
+
+    expect(topicClipper.buildTopicUploadSettings({
+      config,
+      roomId: '26966466',
+      streamerName: '小栞',
+      streamTitle: '测试直播'
+    }, {}).tags).toEqual([
+      'AI切片', '虚拟主播', '直播切片', '小栞'
+    ]);
+  });
+
+  test('adds VirtuaReal only when the registry explicitly marks the streamer', () => {
+    const config = { ai: { streamerRegistry: {
+      vr: { roomIds: ['1'], aiClipName: '小岁', agency: 'VirtuaReal' },
+      indie: { roomIds: ['2'], aiClipName: '小栞' }
+    } } };
+    expect(topicClipper.buildTopicUploadTags(config, '1')).toContain('VirtuaReal');
+    expect(topicClipper.buildTopicUploadTags(config, '2')).not.toContain('VirtuaReal');
+  });
+
+  test('derives controlled discovery tags from clip evidence and mentioned games', () => {
+    expect(contentTags.deriveContentTags({
+      streamTitle: '今晚聊天',
+      matchedKeywords: ['小岁'],
+      text: '这只猫猫也太可爱了，玩原神的时候笑死我了'
+    })).toEqual(expect.arrayContaining(['原神', '可爱', '萌宠', '搞笑']));
+    expect(contentTags.deriveContentTags({
+      streamTitle: '普通聊天',
+      text: '今天聊工作安排'
+    })).toEqual([]);
   });
 
   test('finds keyword matches and ignores unrelated segments', () => {
