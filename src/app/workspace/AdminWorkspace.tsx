@@ -58,7 +58,7 @@ export function AdminWorkspace() {
     <main className="admin-main">
       <header className="workspace-heading"><div><div className="eyebrow">SHIKAMOCHI / WORKSPACE</div><h1>{current.name}</h1></div><span className="local-label">本机工作区</span></header>
       {health.error && <div className="notice error" role="alert">{health.error}<button onClick={health.refresh}>重新连接</button></div>}
-      {view === 'operations' && <div className="upload-global-wrap"><ClipProgress /><UploadQueue /><AsrQueue /></div>}
+      {(view === 'review' || view === 'operations') && <div className="upload-global-wrap"><ClipProgress /><UploadQueue /><AsrQueue /></div>}
       <div className="workspace-body" key={view}>
         {view === 'review' && <ClipReview onJobs={() => navigate('operations')} />}
         {view === 'fuya' && <CampaignCandidates />}
