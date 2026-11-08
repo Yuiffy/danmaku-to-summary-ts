@@ -13,7 +13,7 @@
 | 总结评论、动态详情 | `BilibiliAPIService.ts`、`scripts/bilibili_comment.py`、`bilibili_dynamic_api.py` | Node 服务及 Python SDK 桥；保留 CLI / stdout / 线程契约 |
 | 投稿、封面、稿件编辑 | `scripts/batch_upload.py`、`bilibili_upload.py`、`clip_media_replace.py`、`update_cover.py` | Python `bilibili-api-python`；部分依赖上传器私有接口 |
 | 合集编辑、账号投稿权限 | `scripts/bilibili_collection_edit.py`、`bilibili_upload_capabilities.py` | 独立网页接口适配器，沿用现有回执和权限预检 |
-| 同题检索、平台字幕与点赞/收藏/转发动态 | `workflows/clipping/peerCoverageApi.ts` | 固定网页接口适配器；WBI 搜索/播放器、aid/cid/UP 身份绑定、字幕 CDN 不带账号 Cookie；转发绑定原作者/BV/aid，保存字符串动态回执；风险码停后续请求，不重放未知写入 |
+| 同题检索、平台字幕与点赞/收藏/转发动态 | `workflows/clipping/peerCoverageApi.ts` | 固定网页接口适配器；WBI 搜索/播放器、aid/cid/UP 身份绑定、字幕 CDN 不带账号 Cookie；视频转发使用 `/x/dynamic/feed/create/dyn` 的 JSON `scene=5` + `web_repost_src.revs_id={dyn_type:8,rid:aid}`，绑定原作者/BV/aid并保存字符串动态回执；风险码停后续请求，不重放未知写入 |
 | 直播房间 / 弹幕信息 | `scripts/bilibili_room_info.py`、`bilibili_danmu_info.py` | Python SDK；另有本项目直播服务的 HTTP/WebSocket 适配器 |
 
 ## 上游索引
@@ -29,6 +29,7 @@
 | [bronyacccxz/dsh-bilibili-reply](https://github.com/bronyacccxz/dsh-bilibili-reply) | [85a9241](https://github.com/bronyacccxz/dsh-bilibili-reply/commit/85a92410e41b2110920f7510446b79a9106b985b)，2026-10-20 | 浏览器发评上下文、`@` 处理和匿名可见性复查；见 [tools/README](https://github.com/bronyacccxz/dsh-bilibili-reply/blob/85a92410e41b2110920f7510446b79a9106b985b/tools/README.md) | 是技能/脚本参考，不是已接入依赖；其成功气泡及经验不能替代我们的线上核对 |
 | [SK-415/bilireq](https://github.com/SK-415/bilireq) | [1389482](https://github.com/SK-415/bilireq/commit/1389482b34d3dc67c71c8ea6c0e450ac12030a29)，2026-10-13 | Python 请求、认证、签名基础 | 所查范围未提供可直接替换的发评能力 |
 | [Nemo2011/bilibili-api](https://github.com/Nemo2011/bilibili-api) / [bilibili-api-python](https://pypi.org/project/bilibili-api-python/) | 仓库于 2026-07-06 归档；本机 17.4.1，查阅 PyPI 17.4.2 于 2026-06-19 发布 | 解释现有 Python 调用与兼容问题 | 属于现有存量依赖，不能再把原仓库当作活跃维护的唯一上游 |
+| [nuko777/bilibili-mcp](https://github.com/nuko777/bilibili-mcp) | `0.1.0-beta.6`，2026-11-03 | `post_dynamic(video=...)` 的网页视频转发请求结构与回归测试 | 仅作协议参考；发布前仍须在本项目账号上查重、单次写入并读取动态详情确认 |
 
 补充协议资料：[通知消息结构](https://github.com/huang3292/bilibili-API-collect-save/blob/master/docs/message/msg.md)。
 网页当前实现可从实际页面加载的官方静态资源核对，例如评论组件
@@ -49,6 +50,13 @@ key URL 仅用于解析字符串，不请求图片。核对返回 `mid` 后，�
 文字／转发动态的上下文使用现有 polymer detail GET，并带 `features=itemOpusStyle`。
 2026-10-22 对照核对该参数前后的响应：转发原文文字可位于 `orig.modules.module_dynamic.major.opus.summary`，
 不能只读 `desc`，也不能把只有图片的旧响应当作原帖确实没有文字；不下载图片或跟转发 URL。
+2026-11-08 复核网页视频转发：旧的 `api.vc.bilibili.com/dynamic_repost/...` 已返回 404；
+当前可用请求为 `POST /x/dynamic/feed/create/dyn?csrf=...`，JSON body 中
+`dyn_req.content.contents=[{raw_text,type:1,biz_id:''}]`、`dyn_req.scene=5`、
+`dyn_req.upload_id=<uid>_<unix_seconds>_<random>`，并以
+`web_repost_src.revs_id={dyn_type:8,rid:<aid>}` 指定视频；请求来源使用 `https://t.bilibili.com/`。
+该结构参考 `nuko777/bilibili-mcp` 的 `post_dynamic(video=...)` 实现，并已在本项目账号上返回 `code=0`，
+再通过 polymer detail GET 核对 `DYNAMIC_TYPE_FORWARD`、账号 UID、原动态和 BV。
 
 ## 依赖选择与新增能力
 

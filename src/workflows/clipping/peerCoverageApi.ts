@@ -25,13 +25,16 @@ export interface PeerApi {
 export function createPeerApi(cookie: string, transport: (url: string, init: RequestInit) => Promise<Response> = (...args) => require('node-fetch')(...args), now = Date.now): PeerApi {
     const csrf = /(?:^|;\s*)bili_jct=([^;]+)/u.exec(cookie)?.[1] || '';
     let nav: any, key: string | undefined, stopped = false;
-    const readJson = async (url: string, body?: URLSearchParams, cdn = false): Promise<any> => {
+    const readJson = async (url: string, body?: URLSearchParams | string, cdn = false,
+        extraHeaders: Record<string, string> = {}): Promise<any> => {
         if (stopped) throw new PeerPlatformUnavailable(true);
         const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
         try {
+            const headers: Record<string, string> = { 'User-Agent': UA, Referer: 'https://www.bilibili.com/',
+                ...(!cdn && cookie ? { Cookie: cookie } : {}), ...extraHeaders };
+            if (typeof body === 'string' && !headers['Content-Type']) headers['Content-Type'] = 'application/json; charset=UTF-8';
             const options: RequestInit = { method: body ? 'POST' : 'GET', body, redirect: 'error', signal: controller.signal as any,
-                size: 2 * 1024 * 1024, headers: { 'User-Agent': UA, Referer: 'https://www.bilibili.com/',
-                    ...(!cdn && cookie ? { Cookie: cookie } : {}) } };
+                size: 2 * 1024 * 1024, headers };
             const response = await transport(url, options);
             if ([401,403,412,429].includes(response.status)) { stopped = true; throw new PeerPlatformUnavailable(true); }
             if (!response.ok) throw new PeerPlatformUnavailable();
@@ -88,7 +91,7 @@ export function createPeerApi(cookie: string, transport: (url: string, init: Req
         accountId: async () => id((await navigation()).mid),
         search: async (query, limit, options = {}) => {
             const page = options.page || 1, order = options.order || 'totalrank';
-            if (query.length < 3 || query.length > 80 || limit < 1 || limit > 20 || !Number.isInteger(page) || page < 1 || page > 5) throw new Error('Invalid bounded peer search');
+            if (query.length < 2 || query.length > 80 || limit < 1 || limit > 20 || !Number.isInteger(page) || page < 1 || page > 5) throw new Error('Invalid bounded peer search');
             const params = await signed({ keyword: query, search_type: 'video', page: String(page), page_size: String(limit), order });
             const data = await readJson(`${API}/x/web-interface/wbi/search/type?${params}`);
             if (!Array.isArray(data?.result)) {
@@ -163,13 +166,24 @@ export function createPeerApi(cookie: string, transport: (url: string, init: Req
             if (!cookie || !csrf) throw new PeerPlatformUnavailable();
             if (video.ownerId === id((await navigation()).mid)) throw new Error('Peer support cannot target our own account');
             if (action === 'repost') {
-                const dynamicId = await findDynamic(video.ownerId, item => archiveMatches(item, video));
-                if (!dynamicId) throw new PeerPlatformUnavailable();
-                const result = await readJson('https://api.vc.bilibili.com/dynamic_repost/v1/dynamic_repost/repost',
-                    new URLSearchParams({ dynamic_id: dynamicId, content: '转发动态', extension: '{"emoji_type":1}', csrf }));
-                const receipt = result?.dynamic_id_str;
+                const originalDynamicId = await findDynamic(video.ownerId, item => archiveMatches(item, video));
+                if (!originalDynamicId) throw new PeerPlatformUnavailable();
+                const body = {
+                    dyn_req: {
+                        content: { contents: [{ raw_text: '分享视频', type: 1, biz_id: '' }] },
+                        meta: { app_meta: { from: 'create.dynamic.web', mobi_app: 'web' } },
+                        scene: 5,
+                        upload_id: `${id((await navigation()).mid)}_${Math.floor(now() / 1000)}_${Math.floor(Math.random() * 9000 + 1000)}`,
+                    },
+                    web_repost_src: { revs_id: { dyn_type: 8, rid: Number(video.aid) } },
+                };
+                const result = await readJson(`${API}/x/dynamic/feed/create/dyn?csrf=${encodeURIComponent(csrf)}`,
+                    JSON.stringify(body), false,
+                    { Origin: 'https://t.bilibili.com', Referer: 'https://t.bilibili.com/',
+                        'Content-Type': 'application/json; charset=UTF-8' });
+                const receipt = id(result?.dyn_id_str || result?.dyn_id || result?.dynamic_id_str);
                 if (typeof receipt !== 'string' || !id(receipt)) throw new PeerPlatformUnavailable();
-                return { dynamicId: receipt, originalDynamicId: dynamicId };
+                return { dynamicId: receipt, originalDynamicId };
             }
             if (action === 'favorite' && !id(folder)) throw new Error('A verified favorite folder is required');
             const body = new URLSearchParams(action === 'like' ? { aid: video.aid, like: '1', csrf }

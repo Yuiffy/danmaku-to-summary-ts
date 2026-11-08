@@ -76,10 +76,16 @@ test('repost binds the original author and archive, preserves string IDs and sav
             target.searchParams.get('host_mid') === '22' ? [original] : posted ? [{ id_str: repostId,
                 type: 'DYNAMIC_TYPE_FORWARD', modules: { module_author: { mid: 33 } }, orig: original }] : [] };
         else {
-            expect(target.href).toBe('https://api.vc.bilibili.com/dynamic_repost/v1/dynamic_repost/repost');
-            expect(request.body.get('dynamic_id')).toBe(originalId);
-            expect(request.body.get('csrf')).toBe('test');
-            posted = true; data = { dynamic_id_str: repostId };
+            expect(target.pathname).toBe('/x/dynamic/feed/create/dyn');
+            expect(target.searchParams.get('csrf')).toBe('test');
+            const body = JSON.parse(String(request.body));
+            expect(body.dyn_req.scene).toBe(5);
+            expect(body.dyn_req.content.contents[0]).toEqual({ raw_text: '分享视频', type: 1, biz_id: '' });
+            expect(body.web_repost_src.revs_id).toEqual({ dyn_type: 8, rid: 11 });
+            expect(request.headers.Origin).toBe('https://t.bilibili.com');
+            expect(request.headers.Referer).toBe('https://t.bilibili.com/');
+            expect(request.headers['Content-Type']).toBe('application/json; charset=UTF-8');
+            posted = true; data = { dyn_id_str: repostId };
         }
         return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, data }) };
     });
