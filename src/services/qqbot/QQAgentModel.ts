@@ -10,6 +10,7 @@ import { QQ_IMAGE_PREVIEW_ALLOWANCE, QQ_IMAGE_PREVIEW_BYTES } from './QQImageVis
 
 type ChatPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail: 'high' } };
 type ChatMessage = { role: string; content: string | null | ChatPart[]; tool_calls?: unknown[]; tool_call_id?: string };
+export interface QQModelBudget { reserved: number; turns: number }
 function chatMessages(request: ModelRequest): ChatMessage[] {
   const messages: ChatMessage[] = [{ role: 'system', content: request.systemInstructions || '' }];
   if (typeof request.input === 'string') return [...messages, { role: 'user', content: request.input }];
@@ -34,14 +35,14 @@ function chatMessages(request: ModelRequest): ChatMessage[] {
 export function createQQAgentModel(settings: ReturnType<typeof questionProviderSettings>, signal: AbortSignal,
   transport = fetch, observe?: (delta: Pick<Usage, 'requests' | 'inputTokens' | 'outputTokens'>) => void,
   recordCall?: (call: QQModelCall) => void | Promise<void>, allowEvidenceBytes?: (bytes: number) => void,
-  imagePreviews?: () => readonly Buffer[]): Model {
+  imagePreviews?: () => readonly Buffer[], sharedBudget?: QQModelBudget): Model {
   const agent = settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined;
-  let reserved = 0, turns = 0;
+  const budget = sharedBudget || { reserved: 0, turns: 0 };
   return {
     async getResponse(request): Promise<ModelResponse> {
       let stage: QQDiagnostic['stage'] = 'model_prepare';
-      const call: QQModelCall = { turn: turns + 1, at: Date.now(), elapsedMs: 0, status: 'failed',
-        requestBytes: 0, budgetBefore: reserved, charge: 0, budgetLimit: QQ_LIMITS.reservation };
+      const call: QQModelCall = { turn: budget.turns + 1, at: Date.now(), elapsedMs: 0, status: 'failed',
+        requestBytes: 0, budgetBefore: budget.reserved, charge: 0, budgetLimit: QQ_LIMITS.reservation };
       try {
         signal.throwIfAborted();
         const messages = chatMessages(request);
@@ -64,7 +65,7 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
             parameters: definition.parameters, strict: true } };
         });
         let body = { model: QQ_MODEL, messages, max_tokens: 768,
-          ...(tools.length ? { tools, tool_choice: turns >= QQ_LIMITS.agentTurns - 1 ? 'none' : 'auto', parallel_tool_calls: false } : {}),
+          ...(tools.length ? { tools, tool_choice: budget.turns >= QQ_LIMITS.agentTurns - 1 ? 'none' : 'auto', parallel_tool_calls: false } : {}),
           ...(request.outputType !== 'text' ? { response_format: { type: 'json_schema', json_schema: {
             name: request.outputType.name, schema: request.outputType.schema, strict: true } } } : {}) };
         // Reserve all turns before provider IO. Include schemas/framing and output, not only user text.
@@ -74,17 +75,17 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
         const answerBody = { ...body, tools: undefined, tool_choice: tools.length ? 'none' : undefined, parallel_tool_calls: undefined,
           messages: [...messages, { role: 'system', content: '本轮请据已有工具资料完成最终JSON；资料不足就说明具体缺口，不能编造或继续调用工具。' }] };
         const answerCharge = chargedBytes(answerBody) + body.max_tokens + 256;
-        if (tools.length && (turns >= QQ_LIMITS.agentTurns - 1 || reserved + charge + answerCharge + 2048 > QQ_LIMITS.reservation)) {
+        if (tools.length && (budget.turns >= QQ_LIMITS.agentTurns - 1 || budget.reserved + charge + answerCharge + 2048 > QQ_LIMITS.reservation)) {
           body = answerBody;
           charge = chargedBytes(body) + body.max_tokens + 256;
         }
         call.requestBytes = Buffer.byteLength(JSON.stringify(body), 'utf8'); call.charge = charge;
         stage = 'model_budget';
-        if (reserved + charge > QQ_LIMITS.reservation || ++turns > QQ_LIMITS.agentTurns) {
+        if (budget.reserved + charge > QQ_LIMITS.reservation || ++budget.turns > QQ_LIMITS.agentTurns) {
           call.status = 'blocked';
-          throw qqFailure(stage, reserved + charge > QQ_LIMITS.reservation ? 'budget_exceeded' : 'turn_limit');
+          throw qqFailure(stage, budget.reserved + charge > QQ_LIMITS.reservation ? 'budget_exceeded' : 'turn_limit');
         }
-        reserved += charge;
+        budget.reserved += charge;
         observe?.({ requests: 1, inputTokens: charge - body.max_tokens, outputTokens: body.max_tokens });
         call.status = 'running';
         await recordCall?.(call);
@@ -108,7 +109,7 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
         const calls = message.tool_calls;
         const output: ModelResponse['output'] = [];
         if (calls !== undefined) {
-          if (!Array.isArray(calls) || calls.length !== 1 || turns >= QQ_LIMITS.agentTurns || body.tool_choice === 'none') throw qqFailure(stage, 'invalid_tool');
+          if (!Array.isArray(calls) || calls.length !== 1 || budget.turns >= QQ_LIMITS.agentTurns || body.tool_choice === 'none') throw qqFailure(stage, 'invalid_tool');
           const call = calls[0];
           if (call.type !== 'function' || typeof call.id !== 'string' || !/^[\w-]{1,100}$/u.test(call.id) ||
               !tools.some(tool => tool.function.name === call.function?.name) ||
@@ -118,7 +119,7 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
             { role: 'tool', tool_call_id: call.id, content: '' }, answerBody.messages.at(-1)!];
           const finalCharge = chargedBytes({ ...answerBody, messages: finalMessages }) + body.max_tokens + 256;
           // Tool JSON becomes a JSON string in the next HTTP body: quotes/backslashes can double its size.
-          const evidenceBytes = Math.min(6000, Math.floor((QQ_LIMITS.reservation - reserved - finalCharge - 128) / 2));
+          const evidenceBytes = Math.min(6000, Math.floor((QQ_LIMITS.reservation - budget.reserved - finalCharge - 128) / 2));
           if (evidenceBytes < 256) throw qqFailure('model_budget', 'budget_exceeded');
           allowEvidenceBytes?.(evidenceBytes);
           output.push({ type: 'function_call', callId: call.id, name: call.function.name, arguments: call.function.arguments });

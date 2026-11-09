@@ -3,7 +3,7 @@ import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_R
 import { QQState } from './QQState';
 import { QQRecordUpdate } from './QQRecords';
 import { QQ_MODEL } from './QQPolicy';
-import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, qqImageFailureReply, qqImageCommandReply, qqImageQuota } from './QQImagePolicy';
+import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_LIMITS, qqImageFailureReply, qqImageCommandForRequest, qqImageCommandReply, qqImageQuota } from './QQImagePolicy';
 import { QQAgentTrace } from '../../core/admin/qqRecords';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure } from './QQDiagnostics';
@@ -138,7 +138,8 @@ export class QQWorker {
           const timer = setTimeout(() => controller.abort(qqFailure('agent_run', 'timeout')), remaining);
           try {
             let imageAttempted = false;
-            const executeImage: QQExecuteImage = async command => {
+            const executeImage: QQExecuteImage = async requestedCommand => {
+              const command = qqImageCommandForRequest(request, requestedCommand);
               controller.signal.throwIfAborted();
               const options = this.config.images;
               const blocked = (message: string): QQImageToolResult => ({ status: 'blocked', message });

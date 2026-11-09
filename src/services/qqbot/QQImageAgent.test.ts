@@ -155,6 +155,17 @@ test('missing source, invented names and create-on-quote cannot spend image budg
   expect(render).not.toHaveBeenCalled();
 });
 
+test('a clear addition to a quoted source is corrected to edit before rendering', async () => {
+  const request = qqRequest({ ...inbound, content: '加入一个饼干人作为老公' }, at)!;
+  const load = jest.fn(async () => [png]);
+  const render = jest.fn<Promise<QQImageToolResult>, any[]>(async () => ({ status: 'generated', message: 'done' }));
+  const generate = createQQImageTools(request, config, load, render).tools.find(tool => tool.name === 'generate_image')!;
+  expect(await generate.execute({ mode: 'create', instruction: request.text, characters: [] }))
+    .toEqual({ status: 'generated', message: 'done' });
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(render).toHaveBeenCalledWith({ mode: 'edit', instruction: request.text, characters: [] });
+});
+
 test('image tool observers receive the concrete blocked message for the QQ reply layer', async () => {
   const request = qqRequest(inbound, at)!;
   const observed: QQImageToolResult[] = [];

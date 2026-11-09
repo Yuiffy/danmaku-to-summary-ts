@@ -22,8 +22,26 @@ import { QQImageJobs } from '../../services/qqbot/QQImageJobs';
 import { qqDiagnostic } from '../../services/qqbot/QQDiagnostics';
 import { QQChatArchive } from '../../services/qqbot/QQChatArchive';
 import { QQKnowledgeBase, qqKnowledgeFile } from '../../services/qqbot/QQKnowledgeBase';
+import type { QQBot, SendMessageOptions } from '@tencent-connect/qqbot-nodejs';
+import type { MediaFileType, MessageResponse } from '@tencent-connect/qqbot-nodejs';
+import type { QQImageResult } from '../../services/qqbot/QQImagePolicy';
+import type { QQRequest } from '../../services/qqbot/QQPolicy';
 
 type QQMode = 'check' | 'live' | 'status' | 'resume';
+
+/** Send a reply bound to, and visibly quoting, the exact inbound message. */
+export async function sendQQReply(bot: Pick<QQBot, 'send' | 'uploadMedia'>, request: QQRequest,
+  answer: string, image?: QQImageResult): Promise<MessageResponse> {
+  const target = { scope: request.scope, targetId: request.targetId, msgId: request.msgId };
+  const reference = { message_id: request.msgId };
+  if (image) {
+    const upload = await bot.uploadMedia({ target, fileType: 1 as MediaFileType, localPath: image.file, srvSendMsg: false });
+    const options: SendMessageOptions = { target, msgType: 7, media: { file_info: upload.file_info }, content: answer,
+      messageReference: reference };
+    return bot.send(options);
+  }
+  return bot.send({ target, msgType: 0, content: answer, messageReference: reference });
+}
 export function parseQQArgs(args: string[]): { config: string; mode: QQMode } {
   let config = path.join(getProjectRoot(), 'config/qqbot.example.json');
   let mode: QQMode = 'check', chosen = false;
@@ -134,8 +152,7 @@ export async function runQQBot(args: string[]): Promise<void> {
       enqueueImage: imageJobs ? (request, command) => imageJobs!.enqueue(request, command) : undefined,
       waitImage: imageJobs ? (request, signal, waitMs) => imageJobs!.wait(request, signal, waitMs) : undefined,
       send: async (request, answer, image) => {
-        const target = { scope: request.scope, targetId: request.targetId, msgId: request.msgId };
-        const result = image ? (await bot!.sendImage(target, { localPath: image.file }, { content: answer })).message : await bot!.sendText(target, answer);
+        const result = await sendQQReply(bot!, request, answer, image);
         if (!result?.id) throw new Error('QQ send receipt missing');
         await imageJobs?.delivered(request);
         if (image) await imageInputs.remember(request, image, result);

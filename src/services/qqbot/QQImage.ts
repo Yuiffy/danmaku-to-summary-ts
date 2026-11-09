@@ -7,7 +7,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { questionProviderSettings } from '../live-vote/questions/DaiyuQuestionClient';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 import { QQRequest, qqDigest } from './QQPolicy';
-import { QQImageCommand, QQImageConfig, QQImageResult, qqImageCommandPlan, qqImageCommandReply, qqImageConfirmationReply, qqImagePlan } from './QQImagePolicy';
+import { QQImageCommand, QQImageConfig, QQImageResult, qqImageCommandForRequest, qqImageCommandPlan, qqImageCommandReply, qqImageConfirmationReply, qqImagePlan } from './QQImagePolicy';
 import { QQImageInputs } from './QQImageInputs';
 import { qqImageCharacters } from './QQImageCatalog';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
@@ -60,6 +60,7 @@ export function createQQImageGenerator(root: string, appId: string, config: QQIm
     try {
       if (request.scope !== 'group' || !config.enabled) throw new Error('QQ images require a group mention');
       const options = { ...config, characters: qqImageCharacters(root, config) };
+      command = command ? qqImageCommandForRequest(request, command) : command;
       if (command ? qqImageCommandReply(request, command, options) : qqImageConfirmationReply(request, options)) throw new Error('QQ image confirmation required');
       const sources = request.imageInput ? await inputs.load(request, signal) : [];
       const { prompt, references } = command ? qqImageCommandPlan(request, command, options, sources.length) : qqImagePlan(request, options, sources.length);

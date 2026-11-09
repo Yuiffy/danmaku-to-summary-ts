@@ -223,7 +223,7 @@ function imageAgent(mode: 'create' | 'edit' = 'create', overrides: Partial<QQCon
   return fixture;
 }
 
-test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', '人物的位置照这个要求调整', '变岁己', '把图里的角色换成栞栞，改成水彩风格'])
+test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', '人物的位置照这个要求调整', '变岁己', '加入一个饼干人作为老公', '把图里的角色换成栞栞，改成水彩风格'])
 ('the agent selects editing independently of keyword routing: %s', async content => {
   const { worker, message, io, state } = imageAgent('edit');
   worker.receive(message('edit', { content, msgType: 103, msgElements: [{ msg_idx: 'own-image-index' }] })); await worker.idle();
@@ -232,6 +232,18 @@ test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', 
   expect(io.image.mock.calls[0][2]).toMatchObject({ mode: 'edit' });
   expect(state.images).toBe(1); expect(state.tokens).toBe(100);
   expect(io.send).toHaveBeenCalledWith(expect.anything(), '给你改好啦～', expect.objectContaining({ file: 'image.png' }));
+});
+
+test('the worker corrects a mislabeled addition to a quoted image before validation', async () => {
+  const { worker, message, io } = setup({ images });
+  io.answer.mockImplementation(async (request, _signal, execute) => {
+    const result = await execute!({ mode: 'create', instruction: request.text, characters: [] });
+    return { text: result.message, tokens: 100 };
+  });
+  worker.receive(message('add-edit', { content: '加入一个饼干人作为老公', msgType: 103, msgElements: [{ msg_idx: 'own-image-index' }] }));
+  await worker.idle();
+  expect(io.image).toHaveBeenCalledTimes(1);
+  expect(io.image.mock.calls[0][2]).toMatchObject({ mode: 'edit', instruction: '加入一个饼干人作为老公' });
 });
 
 test('the agent can answer image-related words or quoted chatter without executing any image tool', async () => {
