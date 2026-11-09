@@ -46,6 +46,16 @@ const MOOD_RULES = [
     { tag: '翻唱', pattern: /(翻唱|唱歌|歌回|清唱)/u }
 ];
 
+// Topic-specific nouns are kept in a small controlled list so a single ASR
+// mistake or an arbitrary phrase cannot become a public Bilibili tag.  The
+// alias "割追追" is an observed ASR spelling of the intended topic "假追追".
+const CONTENT_TAG_RULES = [
+    { tags: ['4i', '四爱'], pattern: /4i/iu },
+    { tags: ['四爱'], pattern: /四爱/u },
+    { tags: ['假追追'], pattern: /假追追|割追追/u },
+    { tags: ['饼干岁'], pattern: /饼干岁|\bbgs\b/iu }
+];
+
 function normalizeTagList(value) {
     return Array.from(new Set(String(value || '')
         .split(/[,，、;；\s]+/u)
@@ -82,6 +92,12 @@ function deriveMoodTags(text = '') {
         .map(rule => rule.tag);
 }
 
+function deriveContentTopicTags(text = '') {
+    const haystack = String(text || '');
+    if (!haystack) return [];
+    return CONTENT_TAG_RULES.flatMap(rule => rule.pattern.test(haystack) ? rule.tags : []);
+}
+
 /**
  * Derive content tags for one clip.
  * @param {object} input
@@ -98,8 +114,18 @@ function deriveContentTags({ streamTitle = '', matchedKeywords = [], text = '' }
         // A game mentioned in the clip is useful discovery evidence too, but
         // only aliases from the maintained whitelist may become a tag.
         ...extractGameTags(streamTitle, evidenceText),
-        ...deriveMoodTags(evidenceText)
+        ...deriveMoodTags(evidenceText),
+        ...deriveContentTopicTags(evidenceText)
     ]));
 }
 
-module.exports = { normalizeTagList, extractGameTags, deriveMoodTags, deriveContentTags, GAME_ALIASES, MOOD_RULES };
+module.exports = {
+    normalizeTagList,
+    extractGameTags,
+    deriveMoodTags,
+    deriveContentTopicTags,
+    deriveContentTags,
+    GAME_ALIASES,
+    MOOD_RULES,
+    CONTENT_TAG_RULES
+};

@@ -317,6 +317,13 @@ def load_upload_manifest(
                 "roomId": room_id,
                 "streamerName": streamer_name,
                 "description": str(copy.get("description") or "").strip(),
+                "commentSuggestions": (
+                    wrapper.get("commentSuggestions")
+                    if isinstance(wrapper.get("commentSuggestions"), list)
+                    else copy.get("commentSuggestions")
+                    if isinstance(copy.get("commentSuggestions"), list)
+                    else []
+                ),
             }
         )
     return clips

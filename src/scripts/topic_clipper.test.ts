@@ -6,6 +6,7 @@ const aiTextGenerator = require('./ai_text_generator');
 const defaultConfig = require('../../config/default.json');
 const productionConfig = require('../../config/production.json');
 const contentTags = require('./content_tags');
+const timelineComments = require('./clipping/timeline_comments');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'topic-clipper-'));
@@ -186,6 +187,20 @@ describe('topic_clipper', () => {
     expect(copy.tags).not.toContain('小松绿Viridis');
   });
 
+  test('generates coordinate comment candidates from clip cues', async () => {
+    const copy = await topicClipper.buildClipCopy({
+      start: 100,
+      end: 320,
+      matchSegments: [{ index: 2636, start: 365, end: 368, text: '饼干岁吃太好了', matchedKeywords: ['饼干岁'] }],
+      allSegments: [{ id: 'G2636', index: 2636, start: 365, end: 368, text: '饼干岁吃太好了' }],
+      allSegmentTexts: ['饼干岁吃太好了'],
+      preContext: [],
+      postContext: [],
+      matchedKeywords: ['饼干岁']
+    }, { recordedAt: '2026-08-11', streamTitle: '测试直播' }, '小莉', {}, null, null, []);
+    expect(copy.commentSuggestions).toEqual([{ timestamp: '04:25', content: '饼干岁吃太好了', sourceCueId: 'G2636' }]);
+  });
+
   test('uses AI clip nicknames without leaking formal names across rooms', () => {
     const config = {
       ai: {
@@ -213,6 +228,15 @@ describe('topic_clipper', () => {
     }, {}).tags).toEqual([
       'AI切片', '虚拟主播', '直播切片', '小栞'
     ]);
+
+    expect(topicClipper.buildTopicUploadSettings({
+      config,
+      roomId: '25788785',
+      streamerName: '岁己SUI',
+      streamTitle: '测试直播'
+    }, { tags: ['岁己', '小岁', '4i', '四爱'] }).tags).toEqual([
+      '小岁', '4i', '四爱'
+    ]);
   });
 
   test('adds VirtuaReal only when the registry explicitly marks the streamer', () => {
@@ -234,6 +258,15 @@ describe('topic_clipper', () => {
       streamTitle: '普通聊天',
       text: '今天聊工作安排'
     })).toEqual([]);
+  });
+
+  test('derives topic tags and a relative coordinate comment from explicit evidence', async () => {
+    expect(contentTags.deriveContentTags({ text: '聊到4i和假追追，最后说饼干岁' }))
+      .toEqual(expect.arrayContaining(['4i', '四爱', '假追追', '饼干岁']));
+    expect(timelineComments.buildTimelineCommentSuggestions({
+      clipStart: 6711.81,
+      cues: [{ id: 'G2636', start: 6997.369, text: '饼干岁吃太好我不行啊' }]
+    })).toEqual([{ timestamp: '04:45', content: '饼干岁吃太好了', sourceCueId: 'G2636' }]);
   });
 
   test('finds keyword matches and ignores unrelated segments', () => {
@@ -468,7 +501,7 @@ describe('topic_clipper', () => {
       recordedAt: '2026-06-03 20:15:30',
       streamTitle: '聊天回'
     });
-    expect(title).toBe('提到岁己的小片段 06-03 20:15');
+    expect(title).toBe('提到主播的小片段 06-03 20:15');
   });
 
   test('writes shifted clip srt for overlapping segments', () => {

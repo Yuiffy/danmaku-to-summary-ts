@@ -128,6 +128,9 @@ export class AdminClipStore {
     const subtitles = subtitlesPath ? readText(subtitlesPath, 2 * 1024 * 1024) : '';
     const previewSubtitles = previewPath ? readText(previewPath, 2 * 1024 * 1024) : '';
     const copy = { ...metadata.upload, ...metadata.candidate, ...metadata.copy };
+    const commentSuggestions = Array.isArray(clip.commentSuggestions)
+      ? clip.commentSuggestions
+      : Array.isArray(copy.commentSuggestions) ? copy.commentSuggestions : [];
     const parts = metadata.output?.parts || clip.parts || [];
     const partSubtitlesPath = this.resolveAsset(clip, metadata, 'media-subtitles', part);
     const partSubtitles = partSubtitlesPath ? readText(partSubtitlesPath, 2 * 1024 * 1024) : '';
@@ -151,6 +154,9 @@ export class AdminClipStore {
       coverSelection: metadata.coverSelection,
       tags: Array.isArray(clip.tags) ? clip.tags : Array.isArray(copy.tags) ? copy.tags
         : Array.isArray(metadata.upload?.tags) ? metadata.upload.tags : [], subtitles, previewSubtitles, partSubtitles, source,
+      commentSuggestions: commentSuggestions
+        .filter((item: any) => item && typeof item === 'object' && String(item.content || '').trim())
+        .map((item: any) => ({ timestamp: String(item.timestamp || '').trim(), content: String(item.content).trim(), ...(item.sourceCueId ? { sourceCueId: String(item.sourceCueId) } : {}) })),
       pendingRebuild: !!(clip.pendingRebuild || metadata.rebuildRequired), mediaSubtitles: !!this.resolveAsset(clip, metadata, 'media-subtitles'),
       category: metadata.type === 'stream_activity_submission' ? 'activity' : metadata.type === 'stream_game_submission' ? 'game' : 'clip',
       parts: parts.map((part: any) => ({ title: part.title || '', duration: part.duration || part.actualDuration || 0, subtitles: !!part.srtPath })),

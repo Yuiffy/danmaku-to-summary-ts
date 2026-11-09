@@ -66,6 +66,7 @@ export interface ClipDetail {
   coverText: string;
   coverSelection?: CoverSelection;
   tags: string[];
+  commentSuggestions: { timestamp: string; content: string; sourceCueId?: string }[];
   subtitles: string;
   previewSubtitles: string;
   source: { available: boolean; start: number; end: number; subtitles: string };

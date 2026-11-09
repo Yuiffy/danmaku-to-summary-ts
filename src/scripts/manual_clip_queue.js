@@ -33,13 +33,13 @@ const QUEUE_PROFILES = {
     old_sui: {
         name: 'old_sui',
         titlePrefix: '【老岁片】',
-        tags: ['老岁片', '岁己SUI', '虚拟主播', '直播切片', 'AI切片'],
+        tags: ['老岁片', '小岁', '虚拟主播', '直播切片', 'AI切片'],
         label: '老岁片手工队列'
     },
     shiori: {
         name: 'shiori',
         titlePrefix: '【小栞】',
-        tags: ['AI切片', '小岁', '虚拟主播', '直播切片'],
+        tags: ['AI切片', '小栞', '虚拟主播', '直播切片'],
         label: '栞栞手工队列'
     },
     izayoi: {

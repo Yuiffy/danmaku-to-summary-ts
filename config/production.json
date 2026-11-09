@@ -940,6 +940,7 @@
       "liko": {
         "displayName": "莉蔻Liko",
         "agency": "VirtuaReal",
+        "aiClipName": "小莉",
         "roomIds": [
           "1713548468"
         ],
@@ -2098,6 +2099,12 @@
       "activatedAt": "2026-10-04T01:17:26Z",
       "authorizationNote": "用户授权关键词切片通过最终审核后自动入队投稿；沿用现有关键词与忽略房间配置，仅在现有企微列表汇总状态，不单发成功或BV通知。",
       "concurrency": 2
+    },
+    "coordinateComments": {
+      "enabled": true,
+      "mode": "auto",
+      "scope": "automatic_keyword_topic",
+      "authorizationNote": "用户授权关键词切片自动投稿成功后，按成片内已审核的坐标评论候选发布一次；评论失败不重投视频。"
     },
     "notify": {
       "enabled": true,

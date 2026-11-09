@@ -253,6 +253,62 @@ class ClipUploadRegistryTests(unittest.TestCase):
                 self.assertEqual(clip["tags"], ["花礼 Harei", "#芙娅之魂"])
                 self.assertEqual(registry.validate_groups([[clip]]), [])
 
+    def test_json_manifest_tags_win_over_stale_cli_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            registry_path = runtime / "registry.json"
+            metadata_path = root / "clip.json"
+            manifest_path = root / "UPLOAD_MANIFEST.json"
+            media_path = root / "clip.mp4"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "upload": {
+                            "source": "莉蔻Liko 直播《测试》",
+                            "prefix": "【小莉】",
+                            "tags": ["4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"],
+                            "roomId": "1713548468",
+                            "streamerName": "莉蔻Liko",
+                        },
+                        "window": {"start": 10, "duration": 30},
+                        "copy": {"title": "JSON 标题", "description": "JSON 简介"},
+                        "output": {"mediaPath": str(media_path), "metadataPath": str(metadata_path)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {"version": 1, "type": "bilibili_clip_upload_manifest",
+                     "clips": [{"reviewIndex": 1, "metadataPath": str(metadata_path)}]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "manifest": str(manifest_path), "review": "", "source": "",
+                    "tags": "岁己,虚拟主播,直播切片,AI切片", "prefix": "", "tid": 21,
+                    "state": None, "label": "", "batch_id": "stale-batch",
+                    "include_pending": False,
+                },
+            )()
+            with patch.object(registry, "RUNTIME_DIR", runtime), patch.object(
+                registry, "REGISTRY_PATH", registry_path
+            ), patch.object(registry, "QUEUE_PATH", runtime / "clip_upload_queue.json"):
+                self.assertEqual(registry.import_json(args), 0)
+                saved = registry.load_json(registry_path, {})
+                self.assertEqual(saved["clips"]["1"]["tags"], [
+                    "4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"
+                ])
+                self.assertEqual(saved["batches"]["stale-batch"]["tags"], [
+                    "4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"
+                ])
+
     def test_worker_uses_json_manifest_instead_of_review_path(self):
         clip = {
             "id": 1,

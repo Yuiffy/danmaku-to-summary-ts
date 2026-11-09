@@ -81,6 +81,7 @@ from clip_upload_input import load_queued_upload_clips
 from clip_upload_description import (
     clean_generated_description, split_source_description, build_clip_time_range, build_desc, resolve_upload_prefix,
 )
+from clip_coordinate_comments import publish_coordinate_comments
 import requests
 from clip_submission_recovery import (find_intent, clear_intent, intent_key, reconcile_intent,
     validate_queue_submission, SubmissionRecoveryPending, SubmissionRecoveryConflict)
@@ -712,6 +713,19 @@ async def upload_one_guarded(
                 credential,
                 collection_section_id=collection_section_id,
             )
+            # Coordinate comments are a separate, opt-in side effect.  They
+            # run only after the archive has a confirmed aid and their own
+            # journal makes each suggestion idempotent across worker restarts.
+            try:
+                result['coordinateComments'] = await publish_coordinate_comments(
+                    clip, result, credential, get_config()
+                )
+            except Exception as error:
+                # A comment failure must never turn a successful video upload
+                # into a media retry.  Keep a visible outcome in upload state.
+                result['coordinateComments'] = {
+                    'status': 'failed', 'items': [], 'error': str(error)[:300]
+                }
             if clip.get('externalSubtitles'):
                 from game_subtitle_upload import after_upload
                 try:
@@ -1066,6 +1080,7 @@ async def main():
                 'collectionSectionId': result.get('collectionSectionId'),
                 'collectionStatus': result.get('collectionStatus'),
                 'collectionError': result.get('collectionError'),
+                'coordinateComments': result.get('coordinateComments'),
                 'subtitleStatus': result.get('subtitleStatus'),
                 'subtitleTaskPath': result.get('subtitleTaskPath'),
                 'subtitleError': result.get('subtitleError'),

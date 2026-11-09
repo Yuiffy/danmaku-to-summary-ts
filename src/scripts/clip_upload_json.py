@@ -28,7 +28,13 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
 
     first = clips[0]
     source = str(args.source or first.get("source") or "").strip()
-    tags = api.parse_tags(args.tags) if args.tags else api.parse_tags(first.get("tags") or [])
+    # A generated JSON manifest is the source of truth for its reviewed upload
+    # tags.  The CLI ``--tags`` value is a legacy fallback used by callers that
+    # do not carry tags in the manifest; letting it override the manifest can
+    # resurrect stale batch labels (for example a formal streamer name) in the
+    # registry even when the clip metadata and Bilibili submission are correct.
+    manifest_tags = api.parse_tags(first.get("tags") or [])
+    tags = manifest_tags or api.parse_tags(args.tags)
     prefix = str(args.prefix or first.get("prefix") or "").strip()
     tid = int(args.tid or first.get("tid") or 21)
     state_path = Path(args.state).expanduser().resolve() if args.state else manifest_path.parent / "upload_state.json"
@@ -76,6 +82,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "publicationKind": clip.get("publicationKind") or "",
             "socialReviewRequired": bool(clip.get("socialReviewRequired")),
             "streamerName": clip.get("streamerName") or "", "description": clip.get("description") or "",
+            "commentSuggestions": clip.get("commentSuggestions") if isinstance(clip.get("commentSuggestions"), list) else [],
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
             "attributionRequired": bool(clip.get("attributionRequired")),

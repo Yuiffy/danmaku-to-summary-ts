@@ -27,12 +27,19 @@ class TopicCandidateRegistryTests(unittest.TestCase):
         metadata = {
             "status": "pending_preflight", "uploadReady": False,
             "window": {"index": "E1-1", "start": 10, "end": 50},
-            "copy": {"title": "Candidate", "description": "Source-backed description"},
+            "copy": {"title": "Candidate", "description": "Source-backed description",
+                     "commentSuggestions": [{"timestamp": "00:12", "content": "看这里", "sourceCueId": "G1"}]},
             "upload": {"prefix": "[Host]", "source": "Host stream", "tags": ["Host"]},
             "output": {"mediaPath": None, "metadataPath": str(file)},
         }
         file.write_text(json.dumps(metadata), encoding="utf-8")
         return file, metadata
+
+    def test_import_persists_coordinate_comment_suggestions(self):
+        file, _ = self.candidate()
+        self.assertEqual(self.import_file(file), 0)
+        saved = self.records()["1"]
+        self.assertEqual(saved["commentSuggestions"], [{"timestamp": "00:12", "content": "看这里", "sourceCueId": "G1"}])
 
     def import_file(self, file):
         return registry.main(["import-json", "--manifest", str(file)])

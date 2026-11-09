@@ -8,12 +8,20 @@ function officialNames(entry = {}) {
     return Array.from(new Set([
         entry.displayName,
         ...(entry.searchTags || []),
-        ...(entry.mentionLabels || [])
+        ...(entry.mentionLabels || []),
+        ...(entry.speakerLabels || [])
     ].map(value => String(value || '').trim()).filter(Boolean)));
 }
 
 function preferredName(entry = {}) {
     return String(entry.aiClipName || entry.uploadPrefix || '').replace(/[【】]/g, '').trim();
+}
+
+function resolveAiStreamerName(config = {}, roomId = null, fallback = '主播') {
+    const key = roomId ? String(roomId) : null;
+    const entry = registryEntries(config).find(item => Array.isArray(item.roomIds)
+        && item.roomIds.map(value => String(value)).includes(key));
+    return preferredName(entry || {}) || String(fallback || '主播').replace(/[【】]/g, '').trim() || '主播';
 }
 
 function explicitUploadTags(entry = {}) {
@@ -57,4 +65,4 @@ function postProcessAiClipMetadata({ title = '', tags = [] } = {}, config = {}) 
     return { title: safeTitle, tags: safeTags };
 }
 
-module.exports = { postProcessAiClipMetadata, officialNames, preferredName };
+module.exports = { postProcessAiClipMetadata, officialNames, preferredName, resolveAiStreamerName };

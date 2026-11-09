@@ -1684,6 +1684,7 @@
       "liko": {
         "displayName": "莉蔻Liko",
         "agency": "VirtuaReal",
+        "aiClipName": "小莉",
         "roomIds": [
           "1713548468"
         ],
@@ -2150,6 +2151,12 @@
       "activatedAt": null,
       "authorizationNote": "",
       "concurrency": 2
+    },
+    "coordinateComments": {
+      "enabled": false,
+      "mode": "off",
+      "scope": "automatic_keyword_topic",
+      "authorizationNote": ""
     },
     "notify": {
       "enabled": true,

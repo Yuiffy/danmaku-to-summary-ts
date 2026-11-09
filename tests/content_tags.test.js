@@ -40,6 +40,15 @@ test('deriveContentTags combines game and mood tags without duplicates', () => {
     assert.equal(new Set(tags).size, tags.length);
 });
 
+test('deriveContentTags adds controlled topic nouns and canonicalizes ASR aliases', () => {
+    const tags = deriveContentTags({
+        streamTitle: '周一午台',
+        matchedKeywords: [],
+        text: '我说我是赛4i，四爱，割追追，bgs吃太好了'
+    });
+    assert.deepEqual(tags, ['4i', '四爱', '假追追', '饼干岁']);
+});
+
 test('manual queue normalizeTagList is re-exported for --tags-extra', () => {
     const { normalizeTagList: fromQueue } = require('../src/scripts/manual_clip_queue');
     assert.equal(fromQueue, normalizeTagList);
