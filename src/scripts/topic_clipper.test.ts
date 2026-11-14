@@ -501,7 +501,46 @@ describe('topic_clipper', () => {
       recordedAt: '2026-06-03 20:15:30',
       streamTitle: '聊天回'
     });
-    expect(title).toBe('提到主播的小片段 06-03 20:15');
+    expect(title).toBe('关键词候选片段 06-03 20:15');
+  });
+
+  test('uses the configured AI nickname in the default title', () => {
+    const info = topicClipper.parseRecordingInfo('D:/录制-25788785-20260603-201530-001-聊天回.flv');
+    const title = topicClipper.buildDefaultTitle({ start: 15, matchedKeywords: ['岁己'] }, info, info.streamerName, {
+      ai: { streamerRegistry: { sui: {
+        aiClipName: '小岁', displayName: '岁己SUI', searchTags: ['岁己'], roomIds: ['25788785']
+      } } }
+    });
+    expect(title).toBe('提到小岁的小片段 06-03 20:15');
+    expect(title).not.toContain('岁己');
+  });
+
+  test.each(['岁己', '小岁', 'SUI', '饼干岁'])('uses the matched target instead of the source streamer: %s', keyword => {
+    const info = { roomId: '26966466', streamerName: '小栞', recordedAt: '2026-11-14 21:14:33' };
+    const title = topicClipper.buildDefaultTitle({ start: 182, matchedKeywords: [keyword] }, info, '小栞', productionConfig);
+    expect(title).toBe(`提到${keyword === '饼干岁' ? '饼干岁' : '小岁'}的小片段 11-14 21:14`);
+  });
+
+  test('deduplicates target nicknames without borrowing identities from room or context', () => {
+    const info = { roomId: '26966466', recordedAt: '2026-11-14 21:14:33' };
+    expect(topicClipper.buildDefaultTitle({ start: 0, matchedKeywords: ['岁己', '小岁', 'SUI', '栞栞'] }, info, '小栞', productionConfig))
+      .toBe('提到小岁、小栞的小片段 11-14 21:14');
+    expect(topicClipper.buildDefaultTitle({ start: 15, matchedKeywords: [], preContext: ['岁己和小栞'] }, {}, '小栞', productionConfig))
+      .toBe('关键词候选片段 00:00:15');
+    expect(topicClipper.buildDefaultTitle({ start: 15, matchedKeywords: ['其他目标'] }, {}, '小栞', productionConfig))
+      .toBe('提到其他目标的小片段 00:00:15');
+  });
+
+  test.each(['empty', 'error', 'unavailable'])('keeps the matched target in fallback copy when title generation is %s', async mode => {
+    const titleGenerator = mode === 'unavailable' ? null : async () => {
+      if (mode === 'error') throw new Error('title provider unavailable');
+      return '';
+    };
+    const copy = await topicClipper.buildClipCopy({
+      start: 10, end: 20, matchSegments: [], matchedKeywords: ['岁己']
+    }, { roomId: '26966466', recordedAt: '2026-11-14 21:14:33' }, '小栞', productionConfig, titleGenerator);
+    expect(copy.title).toBe('提到小岁的小片段 11-14 21:14');
+    expect(copy.description).toContain('来自 小栞 的直播间');
   });
 
   test('writes shifted clip srt for overlapping segments', () => {

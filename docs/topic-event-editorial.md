@@ -23,6 +23,14 @@ The keyword topic workflow now treats a publishable event, not a keyword hit or
 an arbitrary duration, as the unit of selection. This applies to `clipTopics`;
 own-stream and manual-queue selection keep their existing policies.
 
+关键词切片的模板标题（AI 文案不可用或待预审时）以该片段的
+`window.matchedKeywords` 为对象，按注册表转换为安全昵称并去重；例如小栞房间命中
+“岁己”时使用“提到小岁的小片段”，来源前缀仍为“【小栞】”。只命中“饼干岁”时保留
+这个称呼，不从房间或片外上下文猜测被提及者。缺少命中词时使用中性的“关键词候选片段”。
+模板标题不代表关键词身份已经确认，也不改变候选审核状态。历史标题修复须核对模板、
+当前候选及其命中词，同步原编号与对应本地文案，保留人工标题、审核信息和已排队、
+已投稿条目。
+
 ## 未点名的梗句召回
 
 `clipTopics.keywords` 继续表示目标人物称呼；不要把梗句、普通口头禅或观众用户名混入

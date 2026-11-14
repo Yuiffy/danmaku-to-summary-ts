@@ -30,7 +30,7 @@ const {
 } = require('./clipping/topic_config');
 const fs = require('fs');
 const path = require('path');
-const { postProcessAiClipMetadata, resolveAiStreamerName } = require('./ai_clip_metadata');
+const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const DEFAULT_TOPIC_UPLOAD_TAGS = ['虚拟主播', '直播切片'];
 const { deriveContentTags } = require('./content_tags');
 const { buildTimelineCommentSuggestions } = require('./clipping/timeline_comments');
@@ -325,12 +325,12 @@ function sanitizeFileName(value, fallback = 'clip') {
     return safe || fallback;
 }
 
-function buildDefaultTitle(window, info, streamerName = '') {
-    const datePart = info.recordedAt
-        ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}`
-        : formatClock(window.start);
-    const safeName = resolveAiStreamerName({}, null, streamerName || info.streamerName || '主播');
-    return `提到${safeName}的小片段 ${datePart}`;
+function buildDefaultTitle(window, info, _streamerName = '', config = {}) {
+    const datePart = info.recordedAt ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}` : formatClock(window.start);
+    // The room identifies the source, while keyword hits identify the topic target.
+    const targets = Array.from(new Set((Array.isArray(window.matchedKeywords) ? window.matchedKeywords : [])
+        .map(keyword => postProcessAiClipMetadata({ title: String(keyword || '').trim() }, config).title).filter(Boolean)));
+    return targets.length ? `提到${targets.join('、')}的小片段 ${datePart}` : `关键词候选片段 ${datePart}`;
 }
 function normalizeTitle(value, fallback) {
     const title = String(value || '').trim()
@@ -344,7 +344,7 @@ function normalizeTitle(value, fallback) {
 
 
 async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null, coverText = null) {
-    const defaultTitle = buildDefaultTitle(window, info, resolveAiStreamerName(config, info.roomId, streamerName));
+    const defaultTitle = buildDefaultTitle(window, info, streamerName, config);
     let title = defaultTitle;
     let description = `来自 ${streamerName} 的直播间,录制时间 ${info.recordedAt || '未知'},片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
 
@@ -1423,7 +1423,7 @@ async function generateTopicClips(options = {}) {
         let stage = 'subtitle';
         let srtResult = { segmentCount: 0, segments: [] };
         let copy = {
-            title: clip.aiTitle || buildDefaultTitle(window, info, resolveAiStreamerName(options.config || {}, info.roomId, streamerName)),
+            title: clip.aiTitle || buildDefaultTitle(window, info, streamerName, options.config || {}),
             coverText: clip.aiCoverText || '',
             description: clip.aiDescription || '',
             tags: Array.isArray(config.extraTags) ? [...config.extraTags] : []
