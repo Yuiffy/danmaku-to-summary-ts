@@ -778,6 +778,7 @@ describe('topic_clipper', () => {
 
   test('probes video resolution through a hidden file process without a shell', async () => {
     const childProcess = require('child_process');
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
     const execFile = jest.spyOn(childProcess, 'execFile')
       .mockImplementation((...args: any[]) => { args.at(-1)(null, '1920,1080\n'); return {} as any; });
 
@@ -803,6 +804,7 @@ describe('topic_clipper', () => {
       );
     } finally {
       execFile.mockRestore();
+      now.mockRestore();
     }
   });
 

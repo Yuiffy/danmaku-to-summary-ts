@@ -59,7 +59,8 @@ Node workflow bridge 时，也必须从候选描述符注入该变量；单独�
 重复构建和构建失败会清理本次 staging；已经发布的不可变 release 保留用于回退。
 
 GitHub Actions 在 Windows、Node 24、Python 3.12 上执行 `verify:core`、`test:node`
-和 `test:compiled`。CI 安装 FFmpeg 与 `requests[socks]`，使用上海时区及 runner 提供的
+和 `test:compiled`。CI 安装 FFmpeg、`requests[socks]` 与本地已验证的 `bilibili-api-python==17.4.1`，
+使用上海时区及 runner 提供的
 完整临时目录路径，避免 Windows 短路径与真实路径导致跨语言证据绑定不一致。
 完整 Python/ML 回归仍需本地运行，CI 通过不代表该部分已验证。
 lint 的历史 warning 与失败的 error 分开报告；临时目录不参与 lint。架构检查的 `--json` 输出同时列出已解析桥接依赖数和未解析的动态导入；
