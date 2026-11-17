@@ -40,6 +40,15 @@ describe('WeChatWorkNotifier', () => {
     expect(normalizeWeChatWorkContent('path=D:\\files\\videos\\clip.mp4')).toBe('path=D:/files/videos/clip.mp4');
   });
 
+  test('an injected logger keeps transport errors out of the global console', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockedFetch.mockRejectedValue(new Error('private-webhook-credential'));
+    const logger = { info: jest.fn(), debug: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const notifier = new WeChatWorkNotifier('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture', undefined, logger);
+    await expect(notifier.sendText('alert')).resolves.toBe(false);
+    expect(logger.error).toHaveBeenCalled(); expect(consoleError).not.toHaveBeenCalled();
+  });
+
   test('splits Markdown by UTF-8 bytes without cutting a Unicode code point', () => {
     const messages = splitWeChatMarkdown(`字幕上下文：${'栞'.repeat(2000)}`);
 

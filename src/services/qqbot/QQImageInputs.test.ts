@@ -3,11 +3,12 @@ import * as os from 'os';
 import * as path from 'path';
 import sharp from 'sharp';
 import { Response } from 'node-fetch';
-import { QQImageInputs } from './QQImageInputs';
+import { createQQImageNormalizer, QQImageInputs } from './QQImageInputs';
 import { qqImageAttachmentUrl, qqImageReferenceId } from './QQImageInputPolicy';
 import { qqDigest, qqRequest, QQInbound } from './QQPolicy';
 import { createQQImageGenerator } from './QQImage';
-import { QQImageConfig } from './QQImagePolicy';
+import { QQImageConfig, QQ_IMAGE_SOURCE_DECODE_REPLY, qqImageFailureReply } from './QQImagePolicy';
+import { qqFailure } from './QQDiagnostics';
 
 let root: string, png: Buffer;
 const at = Date.parse('2026-10-28T02:00:00Z');
@@ -83,8 +84,10 @@ test('own image receipts survive restart, bind both receipt indices and isolate 
     const request = qqRequest({ ...inbound, msgType: undefined, refMsgIdx }, at)!;
     expect(await inputs.load(request, signal())).toEqual([png]);
   }
-  await expect(inputs.load(qqRequest({ ...inbound, groupOpenid: 'group-b' }, at)!, signal())).rejects.toThrow('unavailable');
-  await expect(new QQImageInputs(root, '900000002', download).load(qqRequest(inbound, at)!, signal())).rejects.toThrow('unavailable');
+  await expect(inputs.load(qqRequest({ ...inbound, groupOpenid: 'group-b' }, at)!, signal()))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_prepare', code: 'image_unavailable' } });
+  await expect(new QQImageInputs(root, '900000002', download).load(qqRequest(inbound, at)!, signal()))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_prepare', code: 'image_unavailable' } });
   const directory = path.join(root, 'data/runtime/qqbot/image-replies/900000001');
   for (const file of await fs.readdir(directory)) {
     const json = await fs.readFile(path.join(directory, file), 'utf8');
@@ -106,7 +109,8 @@ test('a verified own-image receipt remains readable when the quote attachment UR
     { mode: 'edit', instruction: '仅调整脚部位置，保留其他画面。', characters: [] });
   expect(paid).toHaveBeenCalledTimes(1);
   expect((paid.mock.calls[0] as unknown as [string, any])[1].body.getBuffer().includes(png)).toBe(true);
-  await expect(inputs.load({ ...quoted, targetId: 'other-group' }, signal())).rejects.toThrow('unavailable');
+  await expect(inputs.load({ ...quoted, targetId: 'other-group' }, signal()))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_prepare', code: 'image_unavailable' } });
   expect(download).not.toHaveBeenCalled();
 });
 
@@ -143,7 +147,7 @@ test('quoted image edits upload the original bytes first and preserve the full e
   expect(result.prompt).not.toContain('确认按描述生图');
 });
 
-test('source images precede additional named character references and share the eight-image limit', async () => {
+test('source images precede character references and excess references use numbered collages', async () => {
   await remember();
   const character = { name: '岁己', aliases: ['岁己'], description: '白发红瞳', referenceImage: 'public/reference_images/sui.png' };
   await fs.mkdir(path.join(root, 'public/reference_images'), { recursive: true });
@@ -154,11 +158,42 @@ test('source images precede additional named character references and share the 
   expect(result.prompt).toContain('参考图2只用于锁定岁己');
   const form = (paid.mock.calls[0] as unknown as [string, any])[1].body.getBuffer().toString('latin1');
   expect(form.indexOf('source-1.png')).toBeLessThan(form.indexOf('character-1.png'));
-  const tooMany = createQQImageGenerator(root, '900000001', { ...options,
+  const packed = createQQImageGenerator(root, '900000001', { ...options,
     characters: Array.from({ length: 8 }, (_, index) => ({ ...character, name: `岁己${index}` })) }, settings, paid as any);
-  await expect(tooMany(qqRequest({ ...inbound, content: '把岁己改成坐在前面' }, at)!, signal()))
-    .rejects.toMatchObject({ diagnostic: { stage: 'image_prepare' } });
-  expect(paid).toHaveBeenCalledTimes(1);
+  const packedResult = await packed(qqRequest({ ...inbound, content: '把岁己改成坐在前面' }, at)!, signal());
+  expect(packedResult.collageNotice).toContain('拼图后提交');
+  expect(packedResult.prompt).toContain('CHARACTER 8');
+  const packedForm = (paid.mock.calls[1] as unknown as [string, any])[1].body.getBuffer().toString('latin1');
+  expect(packedForm.split('name="image[]"')).toHaveLength(9);
+  expect(packedForm).toContain('Content-Type: image/jpeg');
+  expect(paid).toHaveBeenCalledTimes(2);
+});
+
+test('twelve originals and two identity references upload as eight ordered inputs without dropping pages', async () => {
+  const characters = ['角色甲', '角色乙'].map(name => ({ name, aliases: [name], description: name,
+    referenceImage: 'public/reference_images/identity.png' }));
+  await fs.mkdir(path.join(root, 'public/reference_images'), { recursive: true });
+  await fs.writeFile(path.join(root, characters[0].referenceImage), png);
+  const download = jest.fn(async () => new Response(png, { headers: { 'content-type': 'image/png' } }));
+  const paid = jest.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] })));
+  const request = qqRequest({ ...inbound, content: '将这些图换成角色甲和角色乙，合成长图漫画', refMsgIdx: undefined,
+    msgElements: undefined, attachments: Array.from({ length: 12 }, (_, index) => ({ content_type: 'image/png',
+      url: `https://gchat.qpic.cn/original-${index + 1}` })) }, at)!;
+  const result = await createQQImageGenerator(root, '900000001', { ...options, characters }, settings, paid as any,
+    new QQImageInputs(root, '900000001', download as any))(request, signal(),
+    { mode: 'edit', instruction: request.text, characters: characters.map(character => character.name) });
+  expect(download).toHaveBeenCalledTimes(12); expect(paid).toHaveBeenCalledTimes(1);
+  const form = (paid.mock.calls[0] as unknown as [string, any])[1].body.getBuffer().toString('latin1');
+  expect(form.split('name="image[]"')).toHaveLength(9);
+  expect(form.indexOf('source-6.jpeg')).toBeLessThan(form.indexOf('character-1.png'));
+  expect(form).toContain('1024x1536');
+  for (let index = 0; index < 6; index++) {
+    expect(result.prompt).toContain(`上传图${index + 1}包含原图${index * 2 + 1}、${index * 2 + 2}`);
+  }
+  expect(result.prompt).toContain('上传图7包含角色参考1');
+  expect(result.prompt).toContain('上传图8包含角色参考2');
+  expect(result.prompt).toContain('不作为漫画页');
+  expect(result.collageNotice).toContain('12张原图、2张角色参考，共8张上传图');
 });
 
 test('downloads QQ quote or current-message attachments once without forwarding the provider credentials', async () => {
@@ -173,6 +208,17 @@ test('downloads QQ quote or current-message attachments once without forwarding 
   expect(download).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(download.mock.calls)).not.toContain(settings.apiKey);
   expect((download.mock.calls[0] as unknown as [string, any])[1]).toMatchObject({ redirect: 'error', size: 10 * 1024 * 1024 });
+});
+
+test('warning-prone JPEG bytes retry through the bounded fallback decoder before provider IO', async () => {
+  const jpeg = await sharp({ create: { width: 128, height: 96, channels: 3, background: '#aaccee' } }).jpeg().toBuffer();
+  const fallback = jest.fn(async () => png);
+  const download = jest.fn(async () => new Response(jpeg.subarray(0, jpeg.length - 100), { headers: { 'content-type': 'image/jpeg' } }));
+  const request = qqRequest({ ...inbound, msgElements: undefined, refMsgIdx: undefined,
+    attachments: [{ content_type: 'image/jpeg', url: 'https://multimedia.nt.qq.com.cn/download?fileid=fixture' }] }, at)!;
+  const inputs = new QQImageInputs(root, '900000001', download as any, undefined, createQQImageNormalizer(fallback));
+  expect(await inputs.load(request, signal())).toEqual([png]);
+  expect(fallback).toHaveBeenCalledTimes(1);
 });
 
 test.each(['http://127.0.0.1/private', 'file:///secret.png', 'https://gchat.qpic.cn.evil.test/image',
@@ -194,7 +240,9 @@ test.each(['missing', 'tampered', 'oversized', 'invalid-image', 'redirect', 'abo
     attachments: [{ content_type: 'image/png', url: 'https://gchat.qpic.cn/image' }] } : {}) }, at)!;
   const controller = new AbortController(); if (failure === 'aborted') controller.abort();
   const paid = jest.fn();
-  const generate = createQQImageGenerator(root, '900000001', options, settings, paid, new QQImageInputs(root, '900000001', download as any));
+  const normalizer = createQQImageNormalizer(async () => { throw new Error('fixture decode failed'); });
+  const generate = createQQImageGenerator(root, '900000001', options, settings, paid,
+    new QQImageInputs(root, '900000001', download as any, undefined, normalizer));
   await expect(generate(request, controller.signal)).rejects.toMatchObject({ diagnostic: { stage: 'image_prepare' } });
   expect(paid).not.toHaveBeenCalled();
 });
@@ -225,7 +273,8 @@ test.each([
   const observe = jest.fn();
   const request = qqRequest({ ...inbound, msgElements: undefined, refMsgIdx: undefined,
     attachments: [{ content_type: 'image/png', url: `https://multimedia.nt.qq.com.cn/download?rkey=${privateValue}` }] }, at)!;
-  const inputs = new QQImageInputs(root, '900000001', download as any, observe);
+  const normalizer = createQQImageNormalizer(async () => { throw new Error('fixture decode failed'); });
+  const inputs = new QQImageInputs(root, '900000001', download as any, observe, normalizer);
   let caught: unknown;
   try { await inputs.load(request, signal()); } catch (error) { caught = error; }
   expect(caught).toBeInstanceOf(Error);
@@ -239,6 +288,12 @@ test.each([
   if (failure === 'timeout') expect(read.failure.code).toBe('timeout');
   if (failure === 'decode') expect(read.bytes).toBe(14);
   expect(JSON.stringify(read)).not.toMatch(/signed-url-private-token|rkey|member-a|reply-index|group-a|invalid pixels/u);
+});
+
+test('decode failure tells the user the image arrived but could not be decoded', () => {
+  const failure = qqFailure('image_prepare', 'image_bytes').diagnostic;
+  expect(qqImageFailureReply(failure, { sourceInput: true })).toBe(QQ_IMAGE_SOURCE_DECODE_REPLY);
+  expect(qqImageFailureReply(failure)).toBe(QQ_IMAGE_SOURCE_DECODE_REPLY);
 });
 
 test('source diagnostics identify receipt errors before network and never replace the original failure', async () => {

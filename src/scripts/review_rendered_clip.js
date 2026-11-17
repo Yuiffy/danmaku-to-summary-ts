@@ -8,7 +8,7 @@ const topic = require('./topic_clipper');
 const { buildSubtitleEvidence, linkClipEvidence } = require('./clipping/subtitle_evidence');
 const { copyDigest } = require('./clipping/actor_review');
 const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
-const { fileDigest, sourceSnapshot } = require('./clipping/source_snapshot');
+const { fileDigest, sourceSnapshot, assertRenderedRevision } = require('./clipping/source_snapshot');
 
 const { publicDescription, revisionEvidence } = require('./clipping/rendered_revision_evidence');
 
@@ -39,15 +39,6 @@ function readRenderedSourceEvidence(metadata) {
         if (original.sourceSha256 === expected) return original;
     }
     return evidence;
-}
-
-function assertRenderedRevision(metadata) {
-    const draft = metadata.renderedSubtitles;
-    if (draft && (metadata.rebuildRequired || draft.renderedSha256 !== draft.sha256
-        || draft.renderedRevision !== draft.revision || fileDigest(draft.path) !== draft.sha256
-        || fileDigest(metadata.output.srtPath) !== draft.sha256)) {
-        throw new Error('Current subtitle revision must be rendered before approving the video');
-    }
 }
 
 async function reviewCopy(metadata, options, evidence) {

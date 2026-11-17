@@ -2,9 +2,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { openCommentOwnerLock } from '../bilibili/comment-replies/CommentOwnerLock';
 import { QQ_LIMITS } from './QQPolicy';
-import { QQ_IMAGE_LIMITS } from './QQImagePolicy';
+import { QQ_MEDIA_OPERATOR_LIMITS } from './QQMediaAccess';
 
-export interface QQReceipt { at: number; status: 'accepted' | 'generating' | 'sending' | 'sent' | 'unknown' | 'skipped' }
+export interface QQReceipt { at: number; status: 'accepted' | 'generating' | 'sending' | 'sent' | 'unknown' | 'skipped'; replies?: number }
 export interface QQState {
   version: 1; appId: string; paused: boolean; day: string; tokens: number; lastSendAt: number; starts: number[];
   images?: number; lastImageAt?: number;
@@ -27,9 +27,10 @@ export function validateQQState(value: QQState, appId: string): void {
   for (const [key, user] of Object.entries(value.users)) if (!digest(key) || !user || !time(user.count) ||
     !Array.isArray(user.starts) || user.starts.length > QQ_LIMITS.userWindowReplies || user.starts.some(at => !time(at)) ||
     user.privateAt !== undefined && !time(user.privateAt) || user.images !== undefined && !time(user.images) ||
-    user.imageStarts !== undefined && (!Array.isArray(user.imageStarts) || user.imageStarts.length > QQ_IMAGE_LIMITS.userWindowImages || user.imageStarts.some(at => !time(at))) ||
+    user.imageStarts !== undefined && (!Array.isArray(user.imageStarts) || user.imageStarts.length > QQ_MEDIA_OPERATOR_LIMITS.userWindowImages || user.imageStarts.some(at => !time(at))) ||
     user.noticeUntil !== undefined && !time(user.noticeUntil)) throw new Error('Invalid QQ user state');
   for (const [key, receipt] of Object.entries(value.receipts)) if (!digest(key) || !receipt || !time(receipt.at) ||
+    receipt.replies !== undefined && (!Number.isInteger(receipt.replies) || receipt.replies < 0 || receipt.replies > 5) ||
     !['accepted', 'generating', 'sending', 'sent', 'unknown', 'skipped'].includes(receipt.status)) throw new Error('Invalid QQ receipt');
 }
 

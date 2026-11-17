@@ -3,6 +3,7 @@
  */
 import fetch from 'node-fetch';
 import { getLogger } from '../../core/logging/LogManager';
+import type { ILogger } from '../../core/logging/LoggerInterface';
 import FormData = require('form-data');
 import { createReadStream, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
@@ -56,12 +57,14 @@ export function normalizeWeChatWorkContent(content: string): string {
  * 企业微信通知服务
  */
 export class WeChatWorkNotifier {
-  private logger = getLogger('WeChatWorkNotifier');
+  private logger: Pick<ILogger, 'info' | 'debug' | 'warn' | 'error'>;
   private webhookUrl: string;
   private uploadUrl: string;
   private requestTimeoutMs: number;
 
-  constructor(webhookUrl: string, requestTimeoutMs = WECHAT_WORK_REQUEST_TIMEOUT_MS) {
+  constructor(webhookUrl: string, requestTimeoutMs = WECHAT_WORK_REQUEST_TIMEOUT_MS,
+    logger: Pick<ILogger, 'info' | 'debug' | 'warn' | 'error'> = getLogger('WeChatWorkNotifier')) {
+    this.logger = logger;
     this.webhookUrl = webhookUrl;
     this.requestTimeoutMs = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
       ? requestTimeoutMs

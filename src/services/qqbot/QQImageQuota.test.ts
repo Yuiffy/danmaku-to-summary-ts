@@ -54,8 +54,6 @@ test('a global daily limit can outlast a personal rolling window', () => {
   expect(result?.message).toContain('明天00:00');
 });
 
-test('one-minute global interval remains distinct and releases at the exact boundary', () => {
-  expect(qqImageQuota(now, config, {}, { lastImageAt: now - minute + 1 }))
-    .toEqual({ reason: 'interval', retryAt: now + 1, message: '你生太快了，晚点再来。' });
-  expect(qqImageQuota(now, config, {}, { lastImageAt: now - minute })).toBeUndefined();
+test('a recent global start no longer rejects image admission', () => {
+  expect(qqImageQuota(now, config, {}, { lastImageAt: now })).toBeUndefined();
 });

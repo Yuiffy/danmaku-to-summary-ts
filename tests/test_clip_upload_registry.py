@@ -16,6 +16,45 @@ class ClipUploadRegistryTests(unittest.TestCase):
         config.start()
         self.addCleanup(config.stop)
 
+    def test_atomic_save_never_truncates_state_after_replacement_failure(self):
+        for error in (PermissionError, FileNotFoundError):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                runtime = Path(directory)
+                target = runtime / 'registry.json'
+                target.write_text('{"clips":{"1":{"status":"review"}}}', encoding='utf-8')
+                original = target.read_bytes()
+                with patch.object(registry, 'RUNTIME_DIR', runtime), patch.object(
+                    Path, 'replace', side_effect=error('locked')
+                ) as replace, patch.object(registry.time, 'sleep'):
+                    with self.assertRaises(error):
+                        registry.save_json(target, {'clips': {'1': {'status': 'queued'}}})
+                    self.assertEqual(replace.call_count, 5)
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(list(runtime.iterdir()), [target])
+
+    def test_atomic_save_recovers_from_temporary_windows_sharing_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            target = runtime / 'registry.json'
+            target.write_text('{"status":"review"}', encoding='utf-8')
+            native_replace = Path.replace
+            attempts = []
+
+            def replace(staging, destination):
+                attempts.append(staging)
+                self.assertEqual(json.loads(target.read_text()), {'status': 'review'})
+                if len(attempts) < 3:
+                    raise PermissionError('locked')
+                return native_replace(staging, destination)
+
+            with patch.object(registry, 'RUNTIME_DIR', runtime), patch.object(
+                Path, 'replace', replace
+            ), patch.object(registry.time, 'sleep'):
+                registry.save_json(target, {'status': 'queued'})
+            self.assertEqual(json.loads(target.read_text()), {'status': 'queued'})
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(list(runtime.iterdir()), [target])
+
     def test_queue_mutation_lock_rejects_overlapping_writer(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory) / "runtime"
@@ -95,6 +134,35 @@ class ClipUploadRegistryTests(unittest.TestCase):
             registry.parse_utc_timestamp(state["blockedUntil"]), expected
         )
         self.assertTrue(registry.account_upload_limit_active(queue, now))
+
+    def test_raised_cap_releases_local_wait_without_bypassing_other_retries(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        retry_at = (now + dt.timedelta(hours=2)).isoformat()
+        local = {"id": "local", "status": "retry_wait", "retryKind": "account_rolling_upload_limit", "retryAt": retry_at}
+        queue = {"jobs": [
+            {"id": kind, "status": "retry_wait", "retryKind": kind, "retryAt": retry_at}
+            for kind in ("network", "bilibili_http_406", "bilibili_upload_paused", "bilibili_submission_rate_limit")
+        ] + [local]}
+        with patch.object(registry, "ACCOUNT_ROLLING_UPLOAD_LIMIT", 42):
+            state = registry.ensure_account_upload_guard(queue, "fixture-account")
+            state["events"] = [{"at": (now - dt.timedelta(hours=1)).isoformat(), "bvid": f"BV{i}"} for i in range(42)]
+            registry.recalculate_account_upload_guard(state, now)
+            self.assertIsNone(registry.next_pending_job(queue))
+
+        with patch.object(registry, "configured_upload_account", return_value=("fixture-account", {}, "")), patch.object(
+            registry, "fetch_recent_account_submissions", return_value=[]
+        ):
+            state, changed = registry.refresh_account_upload_guard(queue, {"clips": {}}, now)
+        self.assertTrue(changed)
+        self.assertEqual(state["limit"], 45)
+        self.assertEqual(registry.account_upload_available_slots(state), 3)
+        self.assertNotIn("blockedUntil", state)
+        self.assertIs(registry.next_pending_job(queue), local)
+        queue["jobs"].remove(local)
+        self.assertIsNone(registry.next_pending_job(queue))
+        queue["jobs"].append(local)
+        queue["submissionRateLimit"] = {"cooldownUntil": retry_at}
+        self.assertIsNone(registry.next_pending_job(queue))
 
     def test_normalizes_previously_imported_scored_media_paths(self):
         registry_data = {
@@ -252,6 +320,62 @@ class ClipUploadRegistryTests(unittest.TestCase):
                 self.assertEqual(clip["mediaPath"], str(media_path.resolve()))
                 self.assertEqual(clip["tags"], ["花礼 Harei", "#芙娅之魂"])
                 self.assertEqual(registry.validate_groups([[clip]]), [])
+
+    def test_json_manifest_tags_win_over_stale_cli_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            registry_path = runtime / "registry.json"
+            metadata_path = root / "clip.json"
+            manifest_path = root / "UPLOAD_MANIFEST.json"
+            media_path = root / "clip.mp4"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "upload": {
+                            "source": "莉蔻Liko 直播《测试》",
+                            "prefix": "【小莉】",
+                            "tags": ["4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"],
+                            "roomId": "1713548468",
+                            "streamerName": "莉蔻Liko",
+                        },
+                        "window": {"start": 10, "duration": 30},
+                        "copy": {"title": "JSON 标题", "description": "JSON 简介"},
+                        "output": {"mediaPath": str(media_path), "metadataPath": str(metadata_path)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {"version": 1, "type": "bilibili_clip_upload_manifest",
+                     "clips": [{"reviewIndex": 1, "metadataPath": str(metadata_path)}]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "manifest": str(manifest_path), "review": "", "source": "",
+                    "tags": "岁己,虚拟主播,直播切片,AI切片", "prefix": "", "tid": 21,
+                    "state": None, "label": "", "batch_id": "stale-batch",
+                    "include_pending": False,
+                },
+            )()
+            with patch.object(registry, "RUNTIME_DIR", runtime), patch.object(
+                registry, "REGISTRY_PATH", registry_path
+            ), patch.object(registry, "QUEUE_PATH", runtime / "clip_upload_queue.json"):
+                self.assertEqual(registry.import_json(args), 0)
+                saved = registry.load_json(registry_path, {})
+                self.assertEqual(saved["clips"]["1"]["tags"], [
+                    "4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"
+                ])
+                self.assertEqual(saved["batches"]["stale-batch"]["tags"], [
+                    "4i", "四爱", "假追追", "饼干岁", "小莉", "AI切片"
+                ])
 
     def test_worker_uses_json_manifest_instead_of_review_path(self):
         clip = {
@@ -813,6 +937,25 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(job["retryKind"], "account_rolling_upload_limit")
         self.assertEqual(job["retryAt"], guard["blockedUntil"])
         notify.assert_called_once()
+
+    def test_invalid_tags_are_terminal_even_when_legacy_uploader_exits_zero(self):
+        fixture = self.make_fixture(count=1)
+        saved_registry, saved_queue = self.run_job_with(fixture, lambda group, job:
+            subprocess.CompletedProcess([], 0, stdout="  ❌ 错误: tags 不合法或者多于 10 个\n失败: 1"))
+        job = saved_queue["jobs"][0]
+        self.assertEqual(job["status"], "failed")
+        self.assertNotIn("retryAt", job)
+        self.assertIn("tags 不合法或者多于 10 个", job["error"])
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "failed")
+
+    def test_enqueue_preflight_rejects_excess_tags_without_changing_reviewed_copy(self):
+        from src.scripts.clip_upload_enqueue import publication_errors
+        tags = [f"tag-{i}" for i in range(11)]
+        with patch("src.scripts.clip_upload_enqueue.duplicate_errors", return_value=[]), patch(
+                "src.scripts.clip_upload_enqueue.quality_policy_errors", return_value=[]):
+            errors = publication_errors(registry, [{"id": 1, "tags": tags}], {"clips": {}})
+        self.assertTrue(any("tags" in error and "10" in error for error in errors))
+        self.assertEqual(len(tags), 11)
 
     def test_terminal_missing_file_does_not_retry_forever(self):
         fixture = self.make_fixture(count=1)

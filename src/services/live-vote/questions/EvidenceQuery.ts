@@ -8,10 +8,12 @@ import { LiveQuestionConfig, unsafeQuestionText, validateQuestionConfig } from '
 import { EvidenceHit, EvidenceSearchHit } from './RecordingEvidence';
 import { QuestionCorpus } from './QuestionCorpus';
 import { configuredQuestionRooms, questionScope } from './QuestionScope';
+import { validTitleTerms } from './RecordingTitleScope';
 
 export interface QuestionRuntime { questions: LiveQuestionConfig; botUid?: string }
 export interface EvidenceQueryInput {
   roomId: string; question: string; terms: string[]; kind: 'all' | 'subtitle' | 'danmaku'; date: string | null; expandTop: number;
+  titleTerms?: string[] | null;
 }
 export interface EvidenceQueryResult {
   roomId: string; question: string; elapsedMs: number;
@@ -40,14 +42,14 @@ export function validateLabQuestion(value: unknown, config: LiveQuestionConfig):
 export function parseEvidenceQuery(value: unknown, config: LiveQuestionConfig): EvidenceQueryInput {
   const question = validateLabQuestion(value, config);
   const input = value as Partial<EvidenceQueryInput>;
-  if (Object.keys(input).some(key => !['roomId', 'question', 'terms', 'kind', 'date', 'expandTop'].includes(key))) throw new Error('Unknown search field');
+  if (Object.keys(input).some(key => !['roomId', 'question', 'terms', 'kind', 'date', 'expandTop', 'titleTerms'].includes(key))) throw new Error('Unknown search field');
   const terms = input.terms ?? [question.question.slice(0, 40)];
   const kind = input.kind ?? 'all', date = input.date ?? null, expandTop = input.expandTop ?? 2;
-  if (!Array.isArray(terms) || !terms.length || terms.length > 5 || terms.some(term => typeof term !== 'string' || !term.trim() ||
+  if (!validTitleTerms(input.titleTerms) || !Array.isArray(terms) || !terms.length || terms.length > 5 || terms.some(term => typeof term !== 'string' || !term.trim() ||
     Array.from(term).length > 40 || /[\p{Cc}\p{Cf}]/u.test(term)) || !['all', 'subtitle', 'danmaku'].includes(kind) ||
     date !== null && (typeof date !== 'string' || !/^\d{4}(?:-\d{2}(?:-\d{2})?)?$/u.test(date)) ||
     !Number.isInteger(expandTop) || expandTop < 0 || expandTop > 4) throw new Error('Invalid evidence search options');
-  return { ...question, terms, kind, date, expandTop };
+  return { ...question, terms, kind, date, expandTop, ...(input.titleTerms !== undefined ? { titleTerms: input.titleTerms } : {}) };
 }
 
 /** Retrieval only: no completion model, sender, publication adapter or persistent conversation. */
@@ -60,7 +62,7 @@ export async function queryRecordingEvidence(runtime: QuestionRuntime, input: Ev
     semantic.backend === 'local' ? createLocalEmbedder(semantic, getProjectRoot()) :
       createRemoteEmbedder(semantic, questionProviderSettings(loadConfigLayers({ configPath: config.providerConfigPath })))) : undefined);
   try {
-    const result = await evidence.search({ terms: input.terms, kind: input.kind, date: input.date });
+    const result = await evidence.search({ terms: input.terms, kind: input.kind, date: input.date, titleTerms: input.titleTerms });
     const coverage = [...evidence.coverage.values()];
     return {
       roomId, question, elapsedMs: Date.now() - started, embeddingStatus: evidence.embeddingStatus,

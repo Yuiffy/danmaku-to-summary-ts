@@ -24,6 +24,15 @@ it('retrieves real evidence and expanded cues without any completion credentials
   expect(result.embeddingStatus).toBe('disabled');
 });
 
+it('passes optional title filters through the read-only CLI without using title metadata as evidence', async () => {
+  const room = runtime.questions.recordingRoots['100'][0];
+  await fs.writeFile(path.join(room, '2026-09-12-新衣发布回.srt'), '1\n00:00:01,000 --> 00:00:03,000\n原定同事出门了\n');
+  const input = parseEvidenceQuery({ roomId: '100', question: '新衣回为什么换人', terms: ['出门'], titleTerms: ['新衣'] }, runtime.questions);
+  const result = await queryRecordingEvidence(runtime, input, new AbortController().signal);
+  expect(result.hits).toEqual([expect.objectContaining({ date: '2026-09-12', excerpt: '原定同事出门了' })]);
+  for (const titleTerms of [[], [''], ['a'.repeat(41)], 1]) expect(() => parseEvidenceQuery({ ...input, titleTerms }, runtime.questions)).toThrow();
+});
+
 it('uses semantic recall without luna and reports unavailable embedding fallback', async () => {
   const semantic = { enabled: true, backend: 'local' as const, dimensions: 512, model: 'fixture', directory: path.join(directory, 'index'), modelDirectory: path.join(directory, 'model') };
   runtime.questions.semantic = semantic;

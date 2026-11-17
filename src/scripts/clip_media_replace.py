@@ -46,6 +46,10 @@ def previous_uploaded_metadata(clip, metadata_path):
         if hashlib.sha256(raw).hexdigest() != file.stem:
             continue
         previous = json.loads(raw)
+        # Preparing a new window retains the published media path until rendering.
+        # Such drafts describe the new window, not the file in the upload receipt.
+        if previous.get('rebuildRequired'):
+            continue
         if previous.get('output', {}).get('mediaPath') == published:
             return previous
     return None

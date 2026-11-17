@@ -14,7 +14,7 @@ const lineBudgets: Record<string, number> = {
   'src/services/bilibili/DelayedReplyService.ts': 1727,
   'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1716,
   'src/scripts/ai_comic_generator.py': 3390,
-  'src/scripts/clip_upload_registry.py': 2151,
+  'src/scripts/clip_upload_registry.py': 2133,
   'src/scripts/topic_clipper.js': 1800,
   'src/scripts/own_stream_clipper.js': 1871,
   'src/scripts/python/sensevoice_speaker.py': 2331,

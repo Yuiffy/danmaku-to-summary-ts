@@ -1,6 +1,7 @@
 import { ClipDetail } from '../../core/admin/contracts';
 import { subtitleRows } from '../../core/admin/subtitles';
 import { AdminError } from './AdminFiles';
+import { editorialRequest } from './AdminFeedbackEditorial';
 
 export interface FeedbackPlan {
   blockedReason?: string;
@@ -14,6 +15,8 @@ export interface FeedbackPlan {
   durationNote?: string;
   activityTitles?: { activityId: string; name: string; sourceAlias: string; segmentIndices: number[]; note: string }[];
   useIdentifiedSongNames?: boolean;
+  precision?: boolean;
+  coordinateComment?: { cue: number; content: string };
 }
 export type FeedbackPlanner = (prompt: string) => Promise<string>;
 export const ACTIVITY_TITLE_EVIDENCE_ERROR = '活动名称需绑定本活动附近原文及用户确认；未入队';
@@ -74,7 +77,7 @@ function confirmedNameCorrections(detail: ClipDetail, note: string): NonNullable
 export function feedbackPrompt(detail: ClipDetail, note: string, edits: Record<string, unknown>): string {
   if (detail.subtitles.length + detail.source.subtitles.length > 120000) throw new AdminError('本片文本超出单次修改范围；意见已保存，未入队');
   return `你把用户对登记切片的修改意见转换成一个 JSON 修改计划，只输出 JSON。
-允许字段：blockedReason（用户要求确实无法完成时写具体原因），title，description，coverText，sourceKind（live_speech/recount/playback/audience），durationNote（保留完整长/短主题的具体理由），activityTitles，useIdentifiedSongNames，start/end（原录播绝对秒数），corrections（{from,to,cue?} 数组）。
+允许字段：blockedReason（用户要求确实无法完成时写具体原因），title，description，coverText，sourceKind（live_speech/recount/playback/audience），durationNote（保留完整长/短主题的具体理由），activityTitles，useIdentifiedSongNames，precision，coordinateComment，start/end（原录播绝对秒数），corrections（{from,to,cue?} 数组）。
 按用户意见实际改写文案，不能仅把意见抄进备注。完整保留不需要修改的文案，补齐缺失封面文字。
 只有用户明确确认的原词和替换词才可列入 corrections，通常必须都逐字出现在意见中；不要凭文本猜听不清的字。
 用户用带固定前缀和 xx 占位的统称明确说“都是/统一改为”某个名字时，下面的已确认字幕替换已按当前切片逐字展开，视为用户确认，必须全部落实；不要再要求用户逐个抄写原词。xx 每个 x 对应一个汉字，不当作任意正则；不扩展到相邻录播。没有明确目标、疑问或局部修改仍不能猜改。
@@ -89,7 +92,8 @@ sourceKind 可以沿用已有归属或用户明确确认，不能把模型猜测
 普通成片必须有有效的 sourceKind；未制作关键词候选按上述专用规则处理。“小岁说小栞问了...”属于转述 recount，不能写成两人在当前片里直接对话。新文案 description 只写内容简介，不输出来自/录制日期/片段时间/情绪等程序生成的来源落款。
 用户说“看某人的视频，点评...”时，视频内对话属于 playback，点评属于现场反应；简介须明确区分播放内容和点评，不能把视频内人物写成小岁，也不能把小岁的点评写成视频人物自己的话。作品称呼可以按用户确认保留，逐句发言者仍由后续原音画面核验。
 start/end 在用户要求修改边界、补齐上下文，或 selectionRejection 需要重新规划时填写，限于提供的原字幕上下文；重新规划必须选择完整的新窗口。不得编造时间、引言、人物或事实。
-处理用户全部要求；特效、音量、精剪内部删段等不能用这些字段完成的要求写 blockedReason，不能忽略后投稿。
+普通切片支持 precision:true：制作独立精切并按本次反馈授权选用，保留问题、关键回答和反应，删除无关等待；用户意见会传给原精切流程。coordinateComment:{cue,content} 安排投稿后坐标评论，cue 是最终成片字幕从 1 开始的局部序号，content 必须引用该句原文（最多 200 字），时间由程序据成片字幕计算，不填写录播绝对时间。未制作时可先据候选字幕规划，制作后会再次校验。用户说“精切或者评论区坐标”时至少选择一种；也可两字段都填，精切失败才改用坐标。不得仅改文案就声称处理了精切或坐标。用户同时明确要求两项时应先精切，再读取最终字幕安排坐标。
+处理用户全部要求；尚不支持的特效、音量修改写 blockedReason，不能忽略后投稿。
 完整活动包允许 activityTitles:[{activityId,name,sourceAlias,segmentIndices,note}] 修改歌曲/作品名：按 activities 对应活动，仅用 titleContext 的从一开始 index 和附近原文 sourceAlias，name 必须由用户明确给出或是原话明示的作品名，不从歌词猜歌。不要把同一个歌名套给其他活动。此流程更新封面、主标题、简介和 P 标题，随后专用审核。活动包字幕修改、游戏包修改仍写 blockedReason；工具模式下边界问题先调用 repair_activity_boundaries 独立核验，不能只凭文字直接设定边界。
 existingActivityTitles 是已保存的名称修订及原文引用，不是整包审核通过。用户要求的名称已正确保存且没有其他修改时可返回 {}，由后续专用审核重新核验当前包装、来源和完整边界；不要重复猜歌名或改名。
 工具模式下，歌名不明或报幕疑似同音字时，先调用 identify_song_names，结合弹幕、歌词及歌曲目录交叉核对。工具实际找到有歌词支持的名称后，用 useIdentifiedSongNames:true 应用这些绑定证据；不能自己编造目录证据或据此确认演唱者与边界。
@@ -109,7 +113,7 @@ export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string,
   let value: any;
   try { value = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')); }
   catch { throw new AdminError('修改计划不是有效 JSON；意见已保存，未入队'); }
-  const fields = ['blockedReason', 'title', 'description', 'coverText', 'sourceKind', 'start', 'end', 'corrections', 'durationNote', 'activityTitles', 'useIdentifiedSongNames'];
+  const fields = ['blockedReason', 'title', 'description', 'coverText', 'sourceKind', 'start', 'end', 'corrections', 'durationNote', 'activityTitles', 'useIdentifiedSongNames', 'precision', 'coordinateComment'];
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key))) {
     throw new AdminError('修改计划包含不支持的操作；未入队');
   }
@@ -118,6 +122,18 @@ export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string,
     if (typeof value[key] !== 'string' || !value[key].trim() || value[key].length > max || value[key].includes('\0')) throw new AdminError(`修改计划的 ${key} 无效`);
   }
   if (value.blockedReason) return { blockedReason: value.blockedReason };
+  if (value.precision !== undefined && value.precision !== true) throw new AdminError('精切修改参数无效');
+  const editorial = editorialRequest(note);
+  if (detail.category === 'clip' && editorial.precision && (!editorial.alternative || !value.coordinateComment)) value.precision = true;
+  if (value.coordinateComment !== undefined) {
+    const comment = value.coordinateComment;
+    if (!comment || typeof comment !== 'object' || Array.isArray(comment)
+      || Object.keys(comment).some(key => !['cue', 'content'].includes(key))
+      || !Number.isInteger(comment.cue) || comment.cue < 1
+      || typeof comment.content !== 'string' || !comment.content.trim() || comment.content.length > 200 || comment.content.includes('\0')) {
+      throw new AdminError('坐标评论必须指定本片字幕序号和原话');
+    }
+  }
   if (detail.category !== 'clip' && Object.keys(value).some(key => detail.category !== 'activity' || !['activityTitles', 'useIdentifiedSongNames'].includes(key))) throw new AdminError('完整包修改需要对应的制作流程；意见已保存，未入队');
   if (value.useIdentifiedSongNames !== undefined && (value.useIdentifiedSongNames !== true || detail.category !== 'activity' || value.activityTitles)) throw new AdminError('歌名检索结果只能通过活动包专用包装流程应用');
   if (value.activityTitles !== undefined) {

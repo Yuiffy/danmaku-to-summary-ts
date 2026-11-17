@@ -48,7 +48,7 @@ describe('clip-local video resolution', () => {
     await expect(getVideoResolution(media, 'ffprobe', 100)).resolves.toEqual({ width: 1280, height: 720 });
     await getVideoResolution(media, 'ffprobe', 100);
     expect(probe).toHaveBeenCalledTimes(2);
-    expect(probe.mock.calls[1][1]).toContain('100%115');
+    expect(probe.mock.calls[1][1]).toContain('100%102');
     await getVideoResolution(media, 'ffprobe', 99);
     expect(probe).toHaveBeenCalledTimes(3);
   });
@@ -61,6 +61,17 @@ describe('clip-local video resolution', () => {
     });
     await expect(getVideoResolution(media, 'ffprobe', 100)).rejects.toThrow('resolution');
     await expect(getVideoResolution(media, 'ffprobe', 100)).rejects.toThrow('resolution');
-    expect(probe).toHaveBeenCalledTimes(2);
+    expect(probe).toHaveBeenCalledTimes(4);
+  });
+
+  test('widens a sparse seek once but never uses frames before the requested clip', async () => {
+    const probe = jest.spyOn(childProcess, 'execFile').mockImplementation((...args: any[]) => {
+      args.at(-1)(null, JSON.stringify({ frames: args[1].includes('100%102')
+        ? [{ best_effort_timestamp_time: '99', width: 720, height: 1280 }]
+        : [{ best_effort_timestamp_time: '104', width: 1280, height: 720 }] }));
+      return {} as any;
+    });
+    await expect(getVideoResolution(media, 'ffprobe', 100)).resolves.toEqual({ width: 1280, height: 720 });
+    expect(probe.mock.calls.map(call => (call[1] as string[])[5])).toEqual(['100%102', '100%115']);
   });
 });

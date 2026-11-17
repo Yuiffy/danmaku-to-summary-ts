@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { campaignSummaryExperiment, checkCampaignContent, decideCampaignContent, ensureCampaignContent, campaignReviewContext } from './ownCampaign';
+import { campaignSummaryExperiment, checkCampaignContent, decideCampaignContent, ensureCampaignContent, campaignReviewContext, recordingContentTagContext } from './ownCampaign';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const summary = (games: string[]) => ({ schemaVersion: 1, status: 'success', roomId: 'event',
@@ -83,6 +83,8 @@ test('sidecar admission checks the current source, room and hashes without model
         fs.writeFileSync(srtPath, 'subtitles'); fs.writeFileSync(xmlPath, 'danmaku'); save();
         expect(checkCampaignContent(config, options).allowed).toBe(true);
         expect(campaignReviewContext(config, options)).toMatchObject({ actualGames: ['芙娅之魂'], coverage: 'verified_recording_context_only' });
+        expect(recordingContentTagContext(options)).toEqual({ actualGames: ['芙娅之魂'], coverage: 'verified_recording_context_only', sourceSha256: hash('source') });
+        expect(recordingContentTagContext({ ...options, roomId: 'wrong' })).toBeNull();
         const aliasedConfig = { campaignContentGate: { ...config.campaignContentGate,
             gameAliases: { '普雅之魂': '芙娅之魂' } } };
         content.content.games = ['《普雅之魂》', '其他游戏', '明天玩普雅之魂']; save();
@@ -95,6 +97,7 @@ test('sidecar admission checks the current source, room and hashes without model
         content.content.games = ['芙娅之魂']; save();
         expect(checkCampaignContent(config, { ...options, roomId: 'other' }).allowed).toBe(false);
         fs.writeFileSync(srtPath, 'changed');
+        expect(recordingContentTagContext(options)).toBeNull();
         expect(checkCampaignContent(config, options).allowed).toBe(false);
         expect(campaignReviewContext(config, options)).toBeNull();
         fs.writeFileSync(srtPath, 'subtitles'); fs.writeFileSync(xmlPath, 'changed');
@@ -107,6 +110,7 @@ test('sidecar admission checks the current source, room and hashes without model
         context.sharedPrefix = 'prefix'; content.source.sourceSha256 = hash('another recording'); save();
         expect(checkCampaignContent(config, options).allowed).toBe(false);
         content.source.sourceSha256 = hash('source'); content.content.games = []; save();
+        expect(recordingContentTagContext(options)).toBeNull();
         expect(checkCampaignContent(config, options)).toMatchObject({ allowed: false, reason: '本场未实际游玩活动游戏' });
         fs.writeFileSync(summaryPath, '{');
         expect(checkCampaignContent(config, options).allowed).toBe(false);

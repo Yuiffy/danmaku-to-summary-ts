@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 import { parseModelJson } from '../text/json';
+import { buildCoverageQueries, CoverageSearch, CoverageSearchOptions } from './peerCoverageSearch';
+export { buildCoverageQueries } from './peerCoverageSearch';
 
 export interface CoverageCue { id: string; start: number; end: number; text: string }
 export interface CoverageCandidate {
@@ -26,12 +28,12 @@ export interface CoverageMatch {
 export interface CoverageDecision {
     candidateId: string; inputDigest: string; status: 'original' | 'covered' | 'rejected' | 'needs_review' | 'budget';
     reason: string; score?: number; peer?: PeerVideo; comparison?: Record<string, any>;
-    searches?: Array<{ query: string; bvids: string[]; results?: CoverageMatch[] }>;
+    searches?: Array<{ query: string; order?: 'totalrank' | 'pubdate'; page?: number; limit?: number; bvids: string[]; results?: CoverageMatch[] }>;
     matches?: CoverageMatch[]; support?: unknown;
 }
 export interface CoverageIO {
     accountId: string;
-    search(query: string, limit: number): Promise<PeerVideo[]>;
+    search(query: string, limit: number, options?: CoverageSearchOptions): Promise<PeerVideo[]>;
     read(video: PeerVideo): Promise<PeerVideo>;
     request(phase: string, prompt: string): Promise<string>;
     support(video: PeerVideo): Promise<unknown>;
@@ -54,28 +56,6 @@ export function coverageSettings(raw: CoverageSettings = {}): Required<Omit<Cove
         || new Set(settings.supportActions).size !== settings.supportActions.length) throw new Error('Invalid peer support actions');
     if (settings.favoriteFolderId !== undefined && !/^[1-9]\d*$/u.test(settings.favoriteFolderId)) throw new Error('Invalid favorite folder');
     return settings;
-}
-
-const compactQuery = (value: unknown): string => typeof value === 'string'
-    ? value.replace(/<[^>]*>/gu, '').replace(/[\r\n\t]+/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 80) : '';
-
-/**
- * Model queries are useful but not authoritative. Add deterministic title and
- * source-cue queries so a weak/incorrect model query cannot hide an existing
- * upload whose title uses different wording.
- */
-export function buildCoverageQueries(candidate: CoverageCandidate, modelQueries: unknown, limit = 4): string[] {
-    const values: string[] = [];
-    const add = (value: unknown) => {
-        const query = compactQuery(value);
-        if (query.length >= 3 && !values.includes(query)) values.push(query);
-    };
-    if (Array.isArray(modelQueries)) for (const query of modelQueries) add(query);
-    add(candidate.title);
-    add(candidate.host && candidate.title ? `${candidate.host} ${candidate.title}` : candidate.title);
-    const cues = [...candidate.cues].sort((a, b) => b.text.length - a.text.length);
-    for (const cue of cues.slice(0, 3)) add(candidate.host ? `${candidate.host} ${cue.text}` : cue.text);
-    return values.slice(0, Math.max(1, limit));
 }
 
 function matchSummary(video: PeerVideo, status: CoverageMatchStatus, reason?: string): CoverageMatch {
@@ -154,6 +134,7 @@ export function confirmedCoverage(candidate: CoverageCandidate, peer: PeerVideo,
 /** Candidate ordering is supplied by the source selector. IO failures are unknown, never proof of no competition. */
 export async function curateCandidates(candidates: CoverageCandidate[], raw: CoverageSettings, io: CoverageIO,
     options: { skipEditorialAssessment?: boolean; searchQueries?: (candidate: CoverageCandidate, modelQueries: unknown, limit: number) => string[];
+        searchPlan?: (candidate: CoverageCandidate, modelQueries: unknown, limit: number) => CoverageSearch[];
         rerankPeers?: (candidate: CoverageCandidate, peers: PeerVideo[]) => Promise<Map<string, { relevant: boolean; score: number; reason: string }>> } = {}): Promise<CoverageDecision[]> {
     const settings = coverageSettings(raw), decisions: CoverageDecision[] = [];
     let accepted = 0, suspended = false;
@@ -179,16 +160,20 @@ export async function curateCandidates(candidates: CoverageCandidate[], raw: Cov
                     const queries = options.searchQueries
                         ? options.searchQueries(candidate, assessment.queries, settings.maxSearchQueries)
                         : buildCoverageQueries(candidate, assessment.queries, settings.maxSearchQueries);
-                    if (!queries.length) throw new Error('invalid_search_queries');
+                    const plan = options.searchPlan ? options.searchPlan(candidate, assessment.queries, settings.maxSearchQueries)
+                        : queries.map(query => ({ query, limit: settings.maxSearchResults }));
+                    if (!plan.length) throw new Error('invalid_search_queries');
                     decision = { ...base, status: 'original', score: assessment.score, reason: assessment.reason, searches: [], matches: [] };
                     const seen = new Set<string>();
                     let unverified = false;
-                    for (const query of queries) {
-                        const found = await io.search(query, settings.maxSearchResults);
-                        const search = { query, bvids: found.map(v => v.bvid), results: [] as CoverageMatch[] };
+                    for (const item of plan) {
+                        const { query, limit, ...searchOptions } = item;
+                        const found = await io.search(query, limit, searchOptions);
+                        const search = { query, limit, ...searchOptions, bvids: found.map(v => v.bvid), results: [] as CoverageMatch[] };
                         decision.searches!.push(search);
+                        const unseen = found.filter(hit => hit.ownerId !== io.accountId && !seen.has(hit.bvid));
                         let relevance: Map<string, { relevant: boolean; score: number; reason: string }> | undefined;
-                        if (options.rerankPeers) relevance = await options.rerankPeers(candidate, found);
+                        if (options.rerankPeers && unseen.length) relevance = await options.rerankPeers(candidate, unseen);
                         for (const hit of found) {
                             if (hit.ownerId === io.accountId) {
                                 const own = matchSummary(hit, 'own_account', '本账号成片不作为外部覆盖');

@@ -32,6 +32,15 @@ test('bounded signed search uses the platform account and strips markup without 
     expect(target.searchParams.get('w_rid')).toMatch(/^[a-f0-9]{32}$/);
     expect(transport.mock.calls.every(([, init]) => init.redirect === 'error')).toBe(true);
 });
+test('recent recall forwards publication order, page and full result count to signed search', async () => {
+    const { api, transport } = fixture();
+    await api.search('栞栞', 20, { order: 'pubdate', page: 2 });
+    const target = new URL(transport.mock.calls.find(([url]) => url.includes('/search/type?'))![0]);
+    expect(target.searchParams.get('keyword')).toBe('栞栞');
+    expect(target.searchParams.get('order')).toBe('pubdate');
+    expect(target.searchParams.get('page')).toBe('2');
+    expect(target.searchParams.get('page_size')).toBe('20');
+});
 test('complete transcript is bound to the actual aid/cid and CDN never receives cookies', async () => {
     const { api, transport } = fixture(), result = await api.read(peer);
     expect(result).toMatchObject({ complete: true, duration: 30, cues: [{ id: 'P1', text: '完整原话证据' }] });

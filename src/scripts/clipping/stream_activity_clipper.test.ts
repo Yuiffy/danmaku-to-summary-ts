@@ -2,7 +2,12 @@ export {};
 const fs = require('fs'), os = require('os'), path = require('path');
 const workflow = require('./stream_activity_clipper');
 const { sha } = require('./stream_activity_plan');
-const { songStatistics } = require('../stream_activity_clips');
+const { songStatistics, parseArgs } = require('../stream_activity_clips');
+
+test('song research accepts the explicit unresolved-only flag', () => {
+    expect(parseArgs(['identify-songs', '--metadata', 'songs.json', '--unresolved-only'])).toEqual({
+        command: 'identify-songs', options: { metadata: 'songs.json', 'unresolved-only': true } });
+});
 
 function fixture() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stream-activities-'));
@@ -129,7 +134,7 @@ test('restyling legacy pending packages reuses every video and detector result a
     } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test('restyling an approved package stops before generating covers or changing metadata', async () => {
+test('restyling an approved package requires an explicit revision and clears its old approval', async () => {
     const f = fixture();
     try {
         const result = await workflow.generateStreamActivities(f.options);
@@ -142,6 +147,14 @@ test('restyling an approved package stops before generating covers or changing m
             .rejects.toThrow('explicit reviewed revision');
         expect(fs.readFileSync(metadataPath, 'utf8')).toBe(original);
         expect(f.options.cover).toHaveBeenCalledTimes(2);
+        delete row.presentation;
+        fs.writeFileSync(metadataPath, JSON.stringify(row));
+        expect(await workflow.restyleStreamActivities({ ...f.options, metadataPath,
+            revisionNote: '撤回排队版本后修订名称，重新审核' })).toMatchObject({ updated: 1 });
+        const revised = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        expect(revised).toMatchObject({ uploadReady: false, activityReview: { status: 'pending' },
+            activityPresentationRevision: { note: '撤回排队版本后修订名称，重新审核' } });
+        expect(revised.output.parts).toEqual(row.output.parts);
     } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
 });
 

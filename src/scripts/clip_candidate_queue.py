@@ -214,7 +214,17 @@ def prepare_rebuild(args, api):
         options["ordinary"] = "yes" if getattr(args, "ordinary", False) else None
         options["replan"] = "yes" if getattr(args, "replan", False) else None
         options["feedback_authorized"] = "yes" if getattr(args, "feedback_authorized", False) else None
-        result = candidate_action(api, clip, "prepare", options, timeout=120)
+        selection = clip.get("precisionSelection")
+        if selection and not getattr(args, "ordinary", False):
+            raise ValueError("Selected precision clips require rebuild --ordinary to return to their source baseline")
+        baseline = selection.get("originalMetadataPath") if selection else None
+        if selection and (not baseline or is_published(clip)):
+            raise ValueError("Only an unpublished precision selection with its original baseline can be restored")
+        target = {**clip, "metadataPath": baseline} if baseline else clip
+        result = candidate_action(api, target, "prepare", options, timeout=120)
+        if baseline:
+            clip.update(metadataPath=baseline, manifestPath=baseline)
+            clip.pop("precisionSelection", None)
         update_record(clip, result, api)
         api.save_json(api.REGISTRY_PATH, registry)
     except (OSError, ValueError, api.subprocess.TimeoutExpired) as error:
@@ -230,7 +240,25 @@ def prepare_rebuild(args, api):
     return 0
 
 
+def register_cut_command(sub, cut):
+    p = sub.add_parser("cut", help="Render held topic candidates by their reserved short IDs; never auto-upload")
+    p.add_argument("--precision-baseline", action="store_true", help="Render a local feedback precision baseline; final retained source spans are checked at enqueue")
+    p.add_argument("--feedback-authorized", action="store_true", help="Apply explicit operator feedback publication authority; AI reviews remain advisory")
+    p.add_argument("--automatic-review", action="store_true", help="Fresh independent AI review; do not record human approval")
+    p.add_argument("--ids", required=True)
+    p.add_argument("--review-note", required=True)
+    p.add_argument("--title", default=None)
+    p.add_argument("--description", default=None)
+    p.add_argument("--cover-text", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags for this candidate")
+    p.set_defaults(func=cut)
+
+
 def cut_candidates(args, api):
+    precision_baseline = bool(getattr(args, "precision_baseline", False))
+    if precision_baseline and (not getattr(args, "feedback_authorized", False) or getattr(args, "require_approval", False)):
+        print("[ERROR] precision baseline is a local feedback render, never an upload-worker action", file=sys.stderr)
+        return 2
     ids = api.parse_int_list(args.ids)
     if not ids or not str(args.review_note or "").strip():
         print("[ERROR] candidate IDs and --review-note are required", file=sys.stderr)
@@ -278,7 +306,7 @@ def cut_candidates(args, api):
                 [clip], registry.get("clips", {}).values(),
                 lambda value: api.load_json(Path(value), {}),
             )
-            if duplicate:
+            if duplicate and not precision_baseline:
                 raise ValueError("; ".join(duplicate))
             print(f"[worker] candidate {clip_id}: burning subtitles and generating cover", flush=True)
             candidate_action(api, clip, "render", options, timeout=getattr(args, "timeout_seconds", 1800))

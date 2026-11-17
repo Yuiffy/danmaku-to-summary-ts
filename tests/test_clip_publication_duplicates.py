@@ -66,6 +66,28 @@ class ClipPublicationDuplicatesTests(unittest.TestCase):
         self.new.update(start=4710, duration=150)
         self.assertEqual(self.errors(), [])
 
+    def test_reviewed_precision_checks_retained_intervals_in_both_directions(self):
+        self.old.update(start=100, duration=115)
+        self.new.update(start=100, duration=1100)
+        precision = {'window': {'start': 100, 'end': 1200, 'duration': 25},
+                     'creativeResult': {'status': 'edited'}, 'qaResult': {'status': 'passed'},
+                     'editPlan': {'version': 1, 'mode': 'editorial', 'sourceId': 'source',
+                                  'sourceWindow': {'start': 100, 'end': 1200},
+                                  'keep': [{'start': 100, 'end': 105}, {'start': 1180, 'end': 1200}]}}
+        self.assertEqual(self.errors(metadata={'new.json': precision}), [])
+        self.new.update(status='uploaded'); self.old.update(status='review', uploadState={})
+        self.assertEqual(self.errors(clips=[self.old], metadata={'new.json': precision}), [])
+        self.old.update(start=1180, duration=20)
+        self.assertTrue(self.errors(clips=[self.old], metadata={'new.json': precision}))
+
+    def test_invalid_or_unreviewed_precision_does_not_hide_outer_overlap(self):
+        for keep in ([], [{'start': 6000, 'end': 6020}], [{'start': 4600, 'end': 4590}], [None]):
+            metadata = {'window': {'start': 4546.289, 'end': 4716.22},
+                        'creativeResult': {'status': 'edited'}, 'qaResult': {'status': 'passed'},
+                        'editPlan': {'version': 1, 'mode': 'editorial', 'sourceId': 'source',
+                                     'sourceWindow': {'start': 4546.289, 'end': 4716.22}, 'keep': keep}}
+            self.assertTrue(self.errors(metadata={'new.json': metadata}))
+
     def test_same_rendered_file_is_blocked_without_source_windows(self):
         self.old = {'id': 1, 'status': 'uploaded', 'mediaPath': r'D:\clips\one.mp4'}
         self.new = {'id': 2, 'status': 'review', 'mediaPath': 'd:/clips/one.mp4'}

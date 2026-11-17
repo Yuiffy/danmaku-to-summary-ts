@@ -1,4 +1,7 @@
 import { QQ_AGENT_LIMITS, QQDiagnostic, QQModelCall, validQQDiagnostic, validQQModelCall } from './qqDiagnostics';
+import { QQImageFormat, validQQImageFormat } from '../qqImageFormat';
+/** Full server-owned video drafts must survive both writer and operator-reader validation. */
+export const QQ_RECORD_ANSWER_CHARS = 4500;
 export const QQ_RECORD_STATUSES = {
   accepted: '已接收', generating: '生成中', sending: '发送中／待核对', sent: '已回复', unknown: '发送结果待核对', skipped: '已跳过'
 } as const;
@@ -13,7 +16,7 @@ export interface QQRecord {
   senderName?: string;
   question: string; answer: string; status: keyof typeof QQ_RECORD_STATUSES;
   requestedAt: number; updatedAt: number; model: string; error?: 'model_failed' | 'image_failed';
-  image?: { sha256: string; prompt: string };
+  image?: { sha256: string; prompt: string; format?: QQImageFormat };
   agent?: QQAgentTrace;
   failure?: QQDiagnostic;
   sendFailure?: QQDiagnostic;
@@ -52,12 +55,12 @@ export function validQQRecord(value: QQRecord): boolean {
       Array.from(value.senderName).length >= 1 && Array.from(value.senderName).length <= 80 && !/[\p{Cc}\p{Cf}]/u.test(value.senderName)) &&
     ['group', 'c2c'].includes(value.scope) && Object.hasOwn(QQ_RECORD_STATUSES, value.status) &&
     typeof value.question === 'string' && Array.from(value.question).length <= 600 &&
-    typeof value.answer === 'string' && Array.from(value.answer).length <= 600 &&
+    typeof value.answer === 'string' && Array.from(value.answer).length <= QQ_RECORD_ANSWER_CHARS &&
     [value.requestedAt, value.updatedAt].every(at => Number.isSafeInteger(at) && at >= 0) &&
     value.updatedAt >= value.requestedAt && (['', 'gpt-6-luna'].includes(value.model) || /^gpt-image-[\w.-]{1,60}$/u.test(value.model)) &&
     (value.error === undefined || ['model_failed', 'image_failed'].includes(value.error)) &&
     (value.image === undefined || !!value.image && /^[a-f0-9]{64}$/u.test(value.image.sha256) &&
-      typeof value.image.prompt === 'string' && value.image.prompt.length <= 16000) &&
+      typeof value.image.prompt === 'string' && value.image.prompt.length <= 16000 && validQQImageFormat(value.image.format)) &&
     (value.failure === undefined || validQQDiagnostic(value.failure)) &&
     (value.sendFailure === undefined || validQQDiagnostic(value.sendFailure)) &&
     (value.queuedMs === undefined || Number.isSafeInteger(value.queuedMs) && value.queuedMs >= 0) &&

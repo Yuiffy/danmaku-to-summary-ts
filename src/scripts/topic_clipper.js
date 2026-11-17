@@ -30,9 +30,10 @@ const {
 } = require('./clipping/topic_config');
 const fs = require('fs');
 const path = require('path');
-const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const { postProcessAiClipMetadata, deriveMentionedStreamerTags } = require('./ai_clip_metadata');
 const DEFAULT_TOPIC_UPLOAD_TAGS = ['虚拟主播', '直播切片'];
 const { deriveContentTags } = require('./content_tags');
+const { buildTimelineCommentSuggestions } = require('./clipping/timeline_comments');
 const childProcess = require('child_process');
 const xml2js = require('xml2js');
 const {
@@ -279,8 +280,9 @@ function normalizedRegistryNames(entry = {}) {
 function resolveAiStreamerTags(config = {}, roomId = null) {
     const entry = resolveStreamerEntry(config, roomId);
     if (!entry) return [];
+    const roomTag = config.ai?.roomSettings?.[String(roomId)]?.anchorName || config.roomSettings?.[String(roomId)]?.anchorName;
     const officialNames = normalizedRegistryNames(entry);
-    const candidates = [entry.aiClipName, entry.uploadPrefix].concat(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []).map(value => String(value || '').trim()).filter(Boolean);
+    const candidates = [roomTag, entry.aiClipName, entry.uploadPrefix].concat(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []).map(value => String(value || '').trim()).filter(Boolean);
     const safeCandidates = candidates.filter(tag => !officialNames.has(tag.toLocaleLowerCase()));
     if (safeCandidates.length > 0) return Array.from(new Set(safeCandidates));
     const safeUploadTags = (Array.isArray(entry.uploadTags) ? entry.uploadTags : []).map(value => String(value || '').trim()).filter(Boolean)
@@ -324,13 +326,13 @@ function sanitizeFileName(value, fallback = 'clip') {
     return safe || fallback;
 }
 
-function buildDefaultTitle(window, info) {
-    const datePart = info.recordedAt
-        ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}`
-        : formatClock(window.start);
-    return `提到岁己的小片段 ${datePart}`;
+function buildDefaultTitle(window, info, _streamerName = '', config = {}) {
+    const datePart = info.recordedAt ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}` : formatClock(window.start);
+    // The room identifies the source, while keyword hits identify the topic target.
+    const targets = Array.from(new Set((Array.isArray(window.matchedKeywords) ? window.matchedKeywords : [])
+        .map(keyword => postProcessAiClipMetadata({ title: String(keyword || '').trim() }, config).title).filter(Boolean)));
+    return targets.length ? `提到${targets.join('、')}的小片段 ${datePart}` : `关键词候选片段 ${datePart}`;
 }
-
 function normalizeTitle(value, fallback) {
     const title = String(value || '').trim()
         .replace(/^["""'']+|["""'']+$/g, '')
@@ -341,9 +343,8 @@ function normalizeTitle(value, fallback) {
     return title;
 }
 
-
 async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null, coverText = null) {
-    const defaultTitle = buildDefaultTitle(window, info);
+    const defaultTitle = buildDefaultTitle(window, info, streamerName, config);
     let title = defaultTitle;
     let description = `来自 ${streamerName} 的直播间,录制时间 ${info.recordedAt || '未知'},片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
 
@@ -398,7 +399,6 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
         }
     }
 
-    // 内容自动标签:游戏名(来自直播标题《》) + 情绪标签(白名单,依据片内文本/触发关键词)
     const contentTagList = deriveContentTags({
         streamTitle: info.streamTitle,
         matchedKeywords: window.matchedKeywords,
@@ -406,18 +406,18 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     });
     const tags = Array.from(new Set([
         ...buildTopicUploadTags(config, info.roomId, extraTagList),
+        ...deriveMentionedStreamerTags({ matchedKeywords: window.matchedKeywords, text: sampleText }, config),
         ...contentTagList
-    ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
-
-    const processed = postProcessAiClipMetadata({ title, tags }, config);
+    ].map(tag => String(tag || '').trim()).filter(Boolean)));
+    const processed = postProcessAiClipMetadata({ title, tags, requiredTags: buildTopicUploadTags(config, info.roomId, extraTagList) }, config);
     return {
         title: processed.title,
         coverText: normalizeCoverText(coverText),
         description,
-        tags: processed.tags
+        tags: processed.tags,
+        commentSuggestions: buildTimelineCommentSuggestions({ cues: window.allSegments || window.matchSegments, clipStart: window.start })
     };
 }
-
 function escapeSubtitlePathForFfmpegFilter(srtPath) {
     return String(srtPath)
         .replace(/\\/g, '/')
@@ -613,7 +613,6 @@ function resolveSubtitleBurnPlan(config = {}) {
         requestedMode
     };
 }
-
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const edit = config.editPlan ? require('./workflow-runtime').loadWorkflow('clipping/editPlan') : null;
@@ -1125,9 +1124,10 @@ function parseUploadRegistryOutput(output) {
 
 function buildTopicUploadSettings(metadata, copy = {}) {
     const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
-    const tags = Array.isArray(copy.tags) && copy.tags.length
+    const rawTags = Array.isArray(copy.tags) && copy.tags.length
         ? copy.tags
         : buildTopicUploadTags(metadata.config || {}, metadata.roomId);
+    const tags = postProcessAiClipMetadata({ tags: rawTags }, metadata.config || {}).tags;
     return {
         source,
         tags: Array.from(new Set(tags.map(tag => String(tag || '').trim()).filter(Boolean))),
@@ -1152,7 +1152,8 @@ function writeTopicUploadManifest(manifestPath, reviewPath, results, metadata) {
         upload: settings,
         clips: results.map((result, index) => ({
             reviewIndex: result.reviewIndex || index + 1,
-            metadataPath: result.output?.metadataPath || null
+            metadataPath: result.output?.metadataPath || null,
+            commentSuggestions: Array.isArray(result.copy?.commentSuggestions) ? result.copy.commentSuggestions : []
         }))
     };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
@@ -1422,7 +1423,7 @@ async function generateTopicClips(options = {}) {
         let stage = 'subtitle';
         let srtResult = { segmentCount: 0, segments: [] };
         let copy = {
-            title: clip.aiTitle || buildDefaultTitle(window, info),
+            title: clip.aiTitle || buildDefaultTitle(window, info, streamerName, options.config || {}),
             coverText: clip.aiCoverText || '',
             description: clip.aiDescription || '',
             tags: Array.isArray(config.extraTags) ? [...config.extraTags] : []

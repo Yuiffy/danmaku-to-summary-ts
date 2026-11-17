@@ -43,23 +43,28 @@ export async function researchSong(input: SongResearchInput, io: SongResearchIO)
       return query.kind !== 'lyrics' || lyricText(query.query).length >= 6 && lyricText(quote).includes(lyricText(query.query));
     });
   } catch { errors.push('歌曲检索计划不可用，改用本段不同位置的原字幕查找'); }
-  for (const name of summaryHints) if (!queries.some(query => query.kind === 'name' && lyricText(query.query) === lyricText(name))) {
-    queries.unshift({ kind: 'name', query: name, segmentIndices: [], danmakuIndices: [] });
-  }
-  queries = queries.slice(0, 4);
   if (!queries.length) {
     const lyrics = rows.filter(row => row.start >= event.start && row.end <= event.end && lyricText(row.text).length >= 10 && row.text.length <= 100);
     queries = [...new Set([0, Math.floor(lyrics.length / 3), Math.floor(lyrics.length * 2 / 3)])]
       .flatMap(index => lyrics[index] ? [{ kind: 'lyrics' as const, query: lyrics[index].text, segmentIndices: [lyrics[index].index], danmakuIndices: [] }] : []);
   }
+  for (const name of summaryHints) if (!queries.some(query => query.kind === 'name' && lyricText(query.query) === lyricText(name))) {
+    queries.push({ kind: 'name', query: name, segmentIndices: [], danmakuIndices: [] });
+  }
+  queries = queries.slice(0, 4);
   const candidates = new Map<string, MusicCandidate>();
+  const batches: MusicCandidate[][] = [];
   const searches: Array<SearchQuery & { ids: string[]; error?: string }> = [];
   for (const query of queries) {
     try {
       const found = await io.catalog.search(query.query, query.kind);
-      for (const song of found) if (candidates.size < 12) candidates.set(song.id, song);
+      batches.push(found);
       searches.push({ ...query, ids: found.map(song => song.id) });
     } catch { searches.push({ ...query, ids: [], error: '歌曲目录搜索暂不可用' }); }
+  }
+  // Share the lyric budget across searches; early unrelated names must not starve later lyric hits.
+  for (let index = 0; index < Math.max(0, ...batches.map(batch => batch.length)); index++) {
+    for (const batch of batches) if (batch[index] && candidates.size < 12) candidates.set(batch[index].id, batch[index]);
   }
   const songs: CatalogSong[] = [];
   for (const song of candidates.values()) {

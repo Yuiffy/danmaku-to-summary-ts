@@ -33,7 +33,7 @@ describe('own_stream_clipper', () => {
     const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt: string, options: any) => ({
       text: JSON.stringify({ clips: options.requestPhase.endsWith('-boundary-review')
         ? [{ candidateIndex: 1, approved: true, issues: [], requiredEndCueId: '' }] : prompt.includes('完整候选池')
-        ? [{ ...selected, topicEditPlan: completeTopic('G1', 'G21', 'G25'), candidateIndex: 1, title: 'A grounded story', description: 'The host recounts an incident.', coverText: 'A story' }]
+        ? [{ ...selected, tags: ['影之刃零', '游戏BUG'], topicEditPlan: completeTopic('G1', 'G21', 'G25'), candidateIndex: 1, title: 'A grounded story', description: 'The host recounts an incident.', coverText: 'A story' }]
         : [{ ...selected, event: 'A source-grounded incident' }] }),
       meta: { model: 'test-model' }
     }));
@@ -44,6 +44,8 @@ describe('own_stream_clipper', () => {
       const first = await ownStreamClipper.planClipsWithStagedAI([], parsed, [], info, 240, config, root);
       expect(first.clips).toHaveLength(1);
       expect(first.clips[0]).toMatchObject({ start: 0, end: 72, boundaryFromEvidence: true, grounding: { status: 'linked' } });
+      expect(first.clips[0].tags).toEqual(['影之刃零', '游戏BUG']);
+      expect(generate.mock.calls[1][0]).toContain('每段同时输出tags字符串数组');
       expect(ownStreamClipper.alignClipToSubtitleBoundaries(first.clips[0], parsed.segments, config, 240).end).toBe(72);
       expect(generate.mock.calls[0][0]).toContain('fact-79');
       expect(generate.mock.calls[0][0]).not.toContain('字幕过长已截断');
@@ -83,6 +85,28 @@ describe('own_stream_clipper', () => {
     }, '1727071052', '小松绿Viridis');
 
     expect(tags).toEqual(['Viridis', '虚拟主播', '直播切片', 'AI切片']);
+  });
+
+  test('own-stream tags combine local transcript, AI subjects and verified organization without formal names', () => {
+    const config = { ai: { streamerRegistry: { sui: { roomIds: ['25788785'], displayName: '岁己', aiClipName: '小岁' } } } };
+    const tags = ownStreamClipper.buildClipTags(config, '25788785', '岁己', { uploadTags: [] }, {
+      streamTitle: '陪你过周二', text: '乐师偶卡在天上，什么bug都能被我碰到', aiTags: ['影之刃零', '游戏BUG', '岁己', 'VirtuaReal']
+    });
+    expect(tags).toEqual(expect.arrayContaining(['影之刃零', '游戏BUG', '小岁', 'AI切片']));
+    expect(tags).not.toContain('岁己');
+    expect(tags).not.toContain('VirtuaReal');
+    expect(ownStreamClipper.buildClipTags(config, '25788785', '小岁', { uploadTags: [] }, { text: '四爱和饼干岁' }))
+      .toEqual(expect.arrayContaining(['4i', '四爱', '饼干岁']));
+  });
+
+  test('keeps upload defaults within the ten-tag SDK limit after merging content tags', () => {
+    const config = { ai: { streamerRegistry: { sui: { roomIds: ['25788785'], displayName: '岁己',
+      aiClipName: '小岁', organizationTags: ['VirtuaReal'] } } } };
+    const tags = ownStreamClipper.buildClipTags(config, '25788785', '岁己', { uploadTags: [] }, {
+      aiTags: ['新衣展示', '睡觉表情', '表情测试', '可爱', '搞笑', '饼干岁']
+    });
+    expect(tags).toHaveLength(10);
+    expect(tags).toEqual(expect.arrayContaining(['小岁', '岁AI切片', '虚拟主播', '直播切片', 'AI切片']));
   });
 
   test('parses bilibili danmaku xml rows', async () => {
@@ -1156,13 +1180,14 @@ describe('own_stream_clipper', () => {
   });
 
   test('keeps activity streamer and event tags in own-stream upload metadata', () => {
-    const production = require('../../config/production.json');
     const expected = {
       '1820703922': ['花礼Harei', '芙娅之魂'],
       '1713546334': ['灰泽满Hazel', '芙娅之魂'],
       '1727074031': ['chu2u', '羽啾chu2u', '芙娅之魂'],
       '23771092': ['又一充电中', '芙娅之魂']
     };
+    const production = { ai: { streamerRegistry: Object.fromEntries(Object.entries(expected).map(([roomId, uploadTags]) =>
+      [roomId, { roomIds: [roomId], displayName: `Streamer${roomId}`, uploadTags }])) } };
 
     for (const [roomId, uploadTags] of Object.entries(expected)) {
       const entry = Object.values(production.ai.streamerRegistry)

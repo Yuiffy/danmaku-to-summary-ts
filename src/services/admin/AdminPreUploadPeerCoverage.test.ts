@@ -6,7 +6,8 @@ import { atomicJson } from './AdminFiles';
 import { AdminPreUploadPeerCoverage } from './AdminPreUploadPeerCoverage';
 
 const roots: string[] = [];
-function fixture(api: any, now: number | (() => number) = 1_800_000_000_000) {
+function fixture(api: any, now: number | (() => number) = 1_800_000_000_000,
+  host = { roomId: '25788785', streamerName: '小岁', registry: {} }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pre-upload-peer-')); roots.push(root);
   const assets = path.join(root, 'recordings'); fs.mkdirSync(assets);
   const media = path.join(assets, 'source.mp4'), srt = path.join(assets, 'source.srt'), metadataPath = path.join(assets, 'clip.json');
@@ -14,12 +15,12 @@ function fixture(api: any, now: number | (() => number) = 1_800_000_000_000) {
   fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:01,000\n起因突然出现\n\n2\n00:00:01,000 --> 00:00:02,000\n事情继续发展\n\n3\n00:00:02,000 --> 00:00:03,000\n结果完成收尾\n');
   atomicJson(metadataPath, { source: { mediaPath: media, srtPath: srt }, window: { start: 0, end: 3 }, output: { mediaPath: media, srtPath: srt } });
   atomicJson(path.join(root, 'data/runtime/clip_upload_registry.json'), { clips: {
-    '3354': { id: 3354, title: '小岁起因发展结果', description: '完整事件', status: 'review', roomId: '25788785', streamerName: '小岁',
+    '3354': { id: 3354, title: '小岁起因发展结果', description: '完整事件', status: 'review', roomId: host.roomId, streamerName: host.streamerName,
       mediaPath: media, sourceMediaPath: media, sourceSrtPath: srt, metadataPath, reviewPending: false }
   } });
   const clips = new AdminClipStore(root, () => [assets]);
   const config = { clipCuration: { enabled: true, maxSearchResults: 5, maxSearchQueries: 4, supportActions: ['like', 'favorite', 'repost'], maxSupportPerDay: 10, supportIntervalSeconds: 30 },
-    bilibili: { cookie: 'SESSDATA=x; bili_jct=y; DedeUserID=99' } };
+    bilibili: { cookie: 'SESSDATA=x; bili_jct=y; DedeUserID=99' }, ai: { streamerRegistry: host.registry } };
   const gate = new AdminPreUploadPeerCoverage(root, clips, () => config, async (_prompt) => {
     const resultsLine = _prompt.split('\n').find(line => line.startsWith('RESULTS '));
     let rows: any[] = [];
@@ -45,6 +46,22 @@ it('uses the persistent original cache without searching again', async () => {
   expect(api.search).toHaveBeenCalledTimes(1);
   expect(api.search).toHaveBeenCalledWith('岁己', 20, { order: 'pubdate', page: 1 });
   expect(f.clips.detail('3354').evidence.preUploadPeerCoverage.status).toBe('original');
+});
+
+it('queries the current room host and retains a same-day eight-hour-old hit', async () => {
+  const now = 1_800_000_000_000;
+  const peer = { bvid: 'BV1abcdefgh1', aid: '123', ownerId: '88', title: '念了一堆人都没我，也没岁己', description: '',
+    publishedAt: now / 1000 - 8 * 60 * 60, duration: 0, complete: false, cues: [] };
+  const api = apiWithSearch([peer]); api.read.mockResolvedValue(peer);
+  const f = fixture(api, now, { roomId: '26966466', streamerName: '小栞', registry: {
+    shiori: { roomIds: ['26966466'], displayName: '栞栞', searchTags: ['栞栞'], aiClipName: '小栞' }
+  } });
+  const result = await f.gate.check('3354', f.detail, jest.fn(), jest.fn());
+  expect(api.search).toHaveBeenCalledWith('栞栞', 20, { order: 'pubdate', page: 1 });
+  expect(result.status).toBe('needs_review');
+  expect(result.decision?.searches?.[0]).toMatchObject({ query: '栞栞', order: 'pubdate', page: 1, limit: 20 });
+  expect(result.decision?.matches).toContainEqual(expect.objectContaining({ bvid: peer.bvid, status: 'subtitle_unavailable' }));
+  expect(api.act).not.toHaveBeenCalled();
 });
 
 it('reuses one fresh recent index across different clips', async () => {

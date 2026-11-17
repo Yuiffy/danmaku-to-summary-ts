@@ -25,26 +25,33 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe', atSeconds 
     const entry = { fingerprint, promise: null };
     entry.promise = (async () => {
         try {
-            const result = await new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
+            const deadline = Date.now() + (timed ? 60000 : 10000);
+            const probe = seconds => new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
                 '-v', 'error',
                 '-select_streams', 'v:0',
-                ...(timed ? ['-read_intervals', `${atSeconds}%${atSeconds + 15}`,
+                ...(timed ? ['-read_intervals', `${atSeconds}%${atSeconds + seconds}`,
                     '-show_entries', 'frame=width,height,best_effort_timestamp_time', '-of', 'json']
                     : ['-show_entries', 'stream=width,height', '-of', 'csv=p=0']),
                 String(mediaPath)
             ], {
                 encoding: 'utf8',
-                // A local frame probe decodes from the preceding seek point through this window.
-                // Large merged FLVs can already take ten seconds when the machine is idle.
-                timeout: timed ? 60000 : 10000,
+                // Both windows share one deadline; a sparse stream gets one wider lookup.
+                timeout: Math.max(1, deadline - Date.now()),
                 windowsHide: true,
                 shell: false,
                 maxBuffer: timed ? 1024 * 1024 : 64 * 1024
-            }, (error, stdout) => error ? reject(error) : resolve(String(stdout).trim())));
+            }, (error, stdout) => error ? reject(new Error(`${error.message} (code=${error.code ?? 'none'}, signal=${error.signal ?? 'none'}, killed=${!!error.killed})`))
+                : resolve(String(stdout).trim())));
             // A merged recording can switch orientation after its initial stream header.
             // Seeking may land at an earlier keyframe; only use a decoded frame in this clip.
-            const frame = timed ? JSON.parse(result).frames?.find(row =>
-                Number(row.best_effort_timestamp_time) >= atSeconds) : null;
+            const localFrame = result => JSON.parse(result).frames?.find(row =>
+                Number(row.best_effort_timestamp_time) >= atSeconds && Number(row.best_effort_timestamp_time) <= atSeconds + 15
+                && Number.isInteger(row.width) && row.width > 0 && Number.isInteger(row.height) && row.height > 0);
+            // Fifteen seconds at 60 fps decodes hundreds of needless frames on every clip.
+            // Try a short window first, retaining the wider search for sparse/keyframe gaps.
+            const result = await probe(2);
+            let frame = timed ? localFrame(result) : null;
+            if (timed && !frame && Date.now() < deadline) frame = localFrame(await probe(15));
             const [width, height] = timed ? [frame?.width, frame?.height] : String(result).split(',').map(Number);
             if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
                 throw new Error('Invalid video dimensions');

@@ -28,10 +28,20 @@ def render_precision(args, api):
         command.append('--allow-cover-face-overlap')
     if getattr(args, 'no_bgm', False):
         command.append('--no-bgm')
+    if getattr(args, 'content_only', False):
+        command.append('--content-only')
+    if getattr(args, 'chat_inset', False):
+        command.append('--chat-inset')
     return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
 
 
 def register_commands(sub, api):
+    # Compose explicit editorial actions without growing the registry facade.
+    try:
+        from .clip_feedback_comments import register_commands as register_comments
+    except ImportError:
+        from clip_feedback_comments import register_commands as register_comments
+    register_comments(sub, api)
     p = sub.add_parser('approve-bundle', help='Approve and register one checked numeric keyword bundle; does not enqueue')
     p.add_argument('--revision', required=True)
     p.add_argument('--review-note', required=True)
@@ -70,6 +80,8 @@ def register_commands(sub, api):
     p.add_argument('--allow-cover-face-overlap', action='store_true', help='User-approved cover-only face/text overlap; other QA remains active')
     p.add_argument('--speed-plan', default=None, help='Source-second rate plan for traversal/grinding; subtitles stay whole and readable')
     p.add_argument('--no-bgm', action='store_true', help='Keep the original audio mix and add no background music')
+    p.add_argument('--content-only', action='store_true', help='Precision cuts and subtitles only; preserve source framing/audio and run final QA')
+    p.add_argument('--chat-inset', action='store_true', help='Explicitly allow source-placed enlargement of a selected chat line')
     p.add_argument('--local-clip-note', default=None, help='Explicit user request that turns a rendered manual clip into a local precision revision')
     p.set_defaults(func=lambda args: render_precision(args, api))
     p = sub.add_parser('replace-precision', help='Replace an uploaded BV with a user-reviewed precision revision')

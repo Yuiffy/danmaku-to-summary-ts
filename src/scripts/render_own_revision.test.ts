@@ -52,6 +52,32 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test.each([false, true])('recovers partial upload identity from the bound registry during %s', async renderOnly => {
+    const registryPath = path.join(directory, 'registry.json');
+    const registryUpload = { source: 'Registered stream', prefix: '[Registered]', tags: ['Registered'], tid: 22,
+      roomId: 'registered-room', streamerName: 'Registered host' };
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 7: { metadataPath: file, reviewIndex: 4, ...registryUpload } } }));
+    metadata.upload.tags = ['Reviewed tag']; save();
+    if (renderOnly) await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config);
+    metadata = load();
+    metadata.upload = { tags: ['Reviewed tag'], tid: 21, roomId: 'reviewed-room' }; save();
+    if (!renderOnly) await updateRevision(file, { ...options, registryPath, action: 'prepare', sourceKind: 'live_speech' }, config);
+    await renderRevision(file, { ...options, registryPath }, config);
+    const expected = { ...registryUpload, tags: ['Reviewed tag'], tid: 21, roomId: 'reviewed-room' };
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({ upload: expected }), config);
+    expect(load().upload).toEqual(expected);
+    expect(load().uploadId).toBe(7);
+  });
+
+  test('still rejects missing upload identity when the bound registry cannot supply it', async () => {
+    const registryPath = path.join(directory, 'registry.json');
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 7: { metadataPath: file, reviewIndex: 4 } } }));
+    metadata.upload = { tags: ['Reviewed tag'] }; save();
+    await updateRevision(file, { ...options, registryPath, action: 'prepare', sourceKind: 'live_speech' }, config);
+    await expect(renderRevision(file, { ...options, registryPath }, config)).rejects.toThrow('Missing upload identity');
+    expect(render).not.toHaveBeenCalled();
+  });
+
   test('rebuilds own-stream speaker SRT evidence in its original serialized form and still rejects changed ASR evidence', async () => {
     const asr = require('./asr/asr_backends'), sidecar = require('./asr/evidence_sidecar');
     metadata.source.srtPath = path.join(directory, 'source.speaker.srt');
@@ -89,6 +115,31 @@ describe('own-stream subtitle revisions', () => {
       window: { start: 1, end: 61 }, renderedSubtitles: { cues: [{ start: 0, end: 60, text: 'Hello world' }] } });
     expect(load().editorialTimeline).toBeUndefined(); expect(load().editorialStyle).toBeUndefined();
     expect(fs.readFileSync(metadata.output.srtPath, 'utf8')).toContain('Brand OP');
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  test('only an explicit unpublished ordinary rebuild may address a selected precision baseline', async () => {
+    const registryPath = path.join(directory, 'registry.json');
+    const selected = path.join(directory, 'publication.json');
+    fs.writeFileSync(selected, 'immutable selected precision');
+    const record = { metadataPath: selected, reviewIndex: 4, status: 'review',
+      precisionSelection: { originalMetadataPath: file } };
+    const writeRecord = (extra = {}) => fs.writeFileSync(registryPath, JSON.stringify({ clips: { 7: { ...record, ...extra } } }));
+    writeRecord();
+    const prepare = { ...options, registryPath, action: 'prepare', sourceKind: 'live_speech', feedbackAuthorized: 'yes' };
+    await expect(updateRevision(file, prepare, config)).rejects.toThrow('Registry ID');
+    for (const status of ['uploaded', 'queued', 'rendering', 'uploading']) {
+      writeRecord({ status });
+      await expect(updateRevision(file, { ...prepare, ordinary: 'yes' }, config)).rejects.toThrow('Registry ID');
+    }
+    writeRecord({ uploadState: { bvid: 'BVEXISTING' } });
+    await expect(updateRevision(file, { ...prepare, ordinary: 'yes' }, config)).rejects.toThrow('Registry ID');
+    writeRecord({ precisionSelection: { originalMetadataPath: path.join(directory, 'unbound.json') } });
+    await expect(updateRevision(file, { ...prepare, ordinary: 'yes' }, config)).rejects.toThrow('Registry ID');
+    writeRecord();
+    await updateRevision(file, { ...prepare, ordinary: 'yes' }, config);
+    expect(load()).toMatchObject({ uploadId: 7, rebuildRequired: true });
+    expect(fs.readFileSync(selected, 'utf8')).toBe('immutable selected precision');
     expect(render).not.toHaveBeenCalled();
   });
 

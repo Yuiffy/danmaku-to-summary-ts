@@ -113,11 +113,20 @@ function identity(metadata, metadataPath, options) {
     if (options.registryPath) {
         const registry = JSON.parse(fs.readFileSync(options.registryPath, 'utf8'));
         const record = registry.clips?.[String(id)];
-        if (!record || path.resolve(record.metadataPath) !== metadataPath) throw new Error('Registry ID does not identify this metadata');
+        const restoreBaseline = record && options.action === 'prepare'
+            && (options.ordinary === true || options.ordinary === 'yes')
+            && !['uploaded', 'queued', 'rendering', 'uploading'].includes(record.status) && !record.uploadState?.bvid
+            && record.precisionSelection?.originalMetadataPath
+            && path.resolve(record.precisionSelection.originalMetadataPath) === metadataPath;
+        if (!record || path.resolve(record.metadataPath) !== metadataPath && !restoreBaseline) throw new Error('Registry ID does not identify this metadata');
         if (metadata.reviewIndex && Number(metadata.reviewIndex) !== Number(record.reviewIndex)) throw new Error('Registry review index does not match revision metadata');
         metadata.reviewIndex = record.reviewIndex;
-        metadata.upload ||= { source: record.source, prefix: record.prefix, tags: record.tags, tid: record.tid,
-            roomId: record.roomId, streamerName: record.streamerName };
+        // Rejected candidates may already carry reviewed tags without the other
+        // upload fields. Fill missing fields only from this ID's bound record.
+        metadata.upload ||= {};
+        for (const key of ['source', 'prefix', 'tags', 'tid', 'roomId', 'streamerName']) {
+            metadata.upload[key] ??= record[key];
+        }
         metadata.roomId ||= record.roomId;
         metadata.streamerName ||= record.streamerName;
         if (record.manifestPath && fs.existsSync(record.manifestPath)) {

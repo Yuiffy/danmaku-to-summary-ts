@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from seedance_model_caps import VALID_MODELS, VALID_RESOLUTIONS, duration_bounds, supported_resolutions
 from seedance_queue_store import DEFAULT_QUEUE_PATH, QueueStore
+import seedance_canvas
 
 DREAMINA = "dreamina"
 DEFAULT_MODEL = "seedance2.0"
@@ -245,7 +246,18 @@ def validate_profile(task: Dict[str, Any]) -> Optional[str]:
     if duration < minimum or duration > maximum:
         return f"duration must be between {minimum} and {maximum} seconds: {duration}"
     images = task.get("reference_images")
-    if not isinstance(images, list) or not images:
+    videos = task.get("video_references", [])
+    if task.get("backend") == "dreamina-canvas":
+        durations = task.get("video_durations_ms", [])
+        if (not isinstance(videos, list) or len(videos) > 3 or not isinstance(durations, list) or
+                len(videos) != len(durations) or any(type(value) is not int or not 2000 <= value <= 15400 for value in durations) or sum(durations) > 15400):
+            return "invalid video references"
+        if any(not isinstance(file, str) or not Path(file).is_file() for file in videos):
+            return "video reference missing"
+        if isinstance(images, list) and len(images) + len(videos) + len(resolved_audio_references(task)) > 12:
+            return "too many references"
+    text_only_canvas = task.get("backend") == "dreamina-canvas" and images == [] and not resolved_audio_references(task)
+    if not isinstance(images, list) or not images and not text_only_canvas and not (task.get("backend") == "dreamina-canvas" and videos):
         return "reference_images must contain at least one image"
     missing = [str(path) for path in images if not Path(str(path)).is_file()]
     if missing:
@@ -266,7 +278,7 @@ def task_by_id(data: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
 
 def update_status(task: Dict[str, Any]) -> None:
     task["remaining"] = remaining(task)
-    if task.get("status") == "paused":
+    if task.get("status") in {"paused", "draft", "cancelled"}:
         return
     task["status"] = "submitted" if active_attempt_count(task) else ("completed" if remaining(task) <= 0 else "pending")
 
@@ -446,7 +458,7 @@ def set_lane_cooldown(data: Dict[str, Any], lane: str, seconds: int, reason: str
 def eligible_tasks(tasks: List[Dict[str, Any]], lane: str) -> List[Dict[str, Any]]:
     result = []
     for task in tasks:
-        if task_lane(task) != lane or task.get("status") == "paused":
+        if task_lane(task) != lane or task.get("status") in {"paused", "draft", "cancelled"}:
             continue
         if remaining(task) <= active_attempt_count(task):
             continue
@@ -487,7 +499,7 @@ def reserve_submission(store: QueueStore, task_id: str) -> Tuple[Optional[Dict[s
     with store.transaction() as data:
         normalize_data(data)
         task = task_by_id(data, task_id)
-        if not task or task.get("status") == "paused" or remaining(task) <= active_attempt_count(task):
+        if not task or task.get("status") in {"paused", "draft", "cancelled"} or remaining(task) <= active_attempt_count(task):
             return None, None, "task no longer eligible"
         error = validate_profile(task)
         if error:
@@ -574,8 +586,24 @@ def find_attempt(task: Dict[str, Any], sid: str) -> Optional[Dict[str, Any]]:
 
 def apply_query_result(store: QueueStore, task_id: str, sid: str, result: Dict[str, Any]) -> int:
     status = result.get("gen_status")
+    output_file = None
     if status == "success":
-        download(sid, store.path)
+        snapshot = task_by_id(store.load(), task_id)
+        if snapshot and snapshot.get("qq"):
+            if not re.fullmatch(r"qq_[1-9]\d{0,24}_[a-f0-9]{64}", task_id):
+                raise ValueError("invalid QQ task id")
+            directory = store.path.parent / "qq-results" / task_id
+            directory.mkdir(parents=True, exist_ok=True)
+            if snapshot.get("backend") == "dreamina-canvas":
+                output_file = seedance_canvas.download(snapshot, result, directory)
+            else:
+                download(sid, directory / "queue.json")
+                files = [file for file in directory.glob("*.mp4") if file.is_file() and not file.is_symlink()]
+                if len(files) != 1:
+                    raise ValueError("QQ result must contain exactly one MP4")
+                output_file = str(files[0].resolve())
+        else:
+            download(sid, store.path)
     with store.transaction() as data:
         task = task_by_id(data, task_id)
         if not task:
@@ -592,6 +620,8 @@ def apply_query_result(store: QueueStore, task_id: str, sid: str, result: Dict[s
             store.save(data)
             return interval
         if status == "success":
+            if output_file:
+                task["qq_output"] = output_file
             inflight(task).remove(attempt)
             task["completed"] = int(task.get("completed") or 0) + 1
             task["fail_count"] = 0
@@ -602,7 +632,10 @@ def apply_query_result(store: QueueStore, task_id: str, sid: str, result: Dict[s
         if status == "fail":
             inflight(task).remove(attempt)
             reason = str(result.get("fail_reason") or "failed attempt")
-            if is_moderation_rejection(reason) or is_deterministic_rejection(reason):
+            if task.get("backend") == "dreamina-canvas":
+                task["failure_code"] = result.get("failure_code") or "provider_rejected"
+                pause_task(task, task["failure_code"])
+            elif is_moderation_rejection(reason) or is_deterministic_rejection(reason):
                 pause_task(task, f"generation rejected: {reason}")
             else:
                 record_attempt_failure(task, reason)
@@ -622,7 +655,8 @@ def sync_due_attempts(store: QueueStore, dry_run: bool) -> int:
     intervals = []
     for task_id, sid in due_attempts(snapshot):
         try:
-            result = query(sid)
+            snapshot = task_by_id(store.load(), task_id)
+            result = seedance_canvas.query(snapshot) if snapshot and snapshot.get("backend") == "dreamina-canvas" else query(sid)
             intervals.append(apply_query_result(store, task_id, sid, result))
         except Exception as exc:
             print(f"query retained {task_id} ({sid}): {exc}")
@@ -647,6 +681,7 @@ def run_once(store: QueueStore, options: RunnerOptions) -> RunResult:
             print(f"would submit {task.get('id')} lane={task_lane(task)} model={resolved_model(task)} resolution={resolved_resolution(task)} remaining={remaining(task)}")
         return RunResult(options.submit_interval)
 
+    seedance_canvas.resume_credit_pauses(store)
     # Persist legacy normalization before scheduling.
     with store.transaction() as locked:
         if normalize_data(locked):
@@ -667,7 +702,17 @@ def run_once(store: QueueStore, options: RunnerOptions) -> RunResult:
             continue
         assert snapshot and token
         try:
-            sid = submit(snapshot)
+            sid = seedance_canvas.submit(snapshot, store.path) if snapshot.get("backend") == "dreamina-canvas" else submit(snapshot)
+        except seedance_canvas.CanvasRejected as exc:
+            with store.transaction() as data:
+                task = task_by_id(data, str(snapshot["id"]))
+                if task and pop_reservation(task, token):
+                    task["failure_code"] = exc.code
+                    if type(exc.credits) is int:
+                        task["required_credits"] = exc.credits
+                    pause_task(task, exc.code)
+                    store.save(data)
+            print(f"canvas task paused {snapshot['id']}: {exc.code}")
         except SubmitRejected as exc:
             apply_submission_rejection(store, str(snapshot.get("id")), token, exc.reason, exc.submit_id)
             print(f"submit rejected {snapshot.get('id')}: {exc.reason}")

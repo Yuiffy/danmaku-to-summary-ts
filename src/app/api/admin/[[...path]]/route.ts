@@ -16,6 +16,8 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
   }
   const endpoint = url.pathname.slice('/api/admin'.length);
   const clipPreview = /^\/queues\/clips\/[a-zA-Z0-9_-]{1,120}\/videos\/[1-9]\d{0,2}\/[a-f0-9]{64}\/media$/u.test(endpoint);
+  const aiVideo = /^\/queues\/ai-video(?:\/[a-f0-9]{64}\/media)?$/u.test(endpoint);
+  if (aiVideo && !['GET', 'HEAD'].includes(request.method)) return NextResponse.json({ error: 'AI 视频队列仅可读取' }, { status: 405 });
   if (clipPreview && !['GET', 'HEAD'].includes(request.method)) return NextResponse.json({ error: '切片预览仅可读取' }, { status: 405 });
   if (endpoint === '/queues/clips' && request.method !== 'GET') return NextResponse.json({ error: '自动切片进度仅可读取' }, { status: 405 });
   const allowed = /^\/(health|title-stats|source-assets\/[a-f0-9]{64}|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|peer-coverage\/history|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/(actions|status|asr(?:\/history)?))?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
@@ -23,7 +25,7 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
   const qqImage = /^\/qq-records\/[1-9]\d{0,24}\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{64}\/image$/u.test(endpoint);
   const qqChat = endpoint === '/qq-chat';
   const qqKnowledge = /^\/qq-knowledge(?:\/[a-z0-9][a-z0-9._-]{1,100})?$/u.test(endpoint);
-  if (!allowed.test(endpoint) && endpoint !== '/queues/clips' && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && endpoint !== '/qq-records' && !qqImage && !qqChat && !qqKnowledge && !campaignCandidate && !clipPreview) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
+  if (!allowed.test(endpoint) && endpoint !== '/queues/clips' && endpoint !== '/bilibili/login' && endpoint !== '/comment-replies' && endpoint !== '/comment-feedback' && endpoint !== '/qq-records' && !qqImage && !qqChat && !qqKnowledge && !campaignCandidate && !clipPreview && !aiVideo) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
   if ((endpoint === '/qq-records' || qqImage) && request.method !== 'GET') return NextResponse.json({ error: 'QQ 记录仅可读取' }, { status: 405 });
   if (qqChat && !['GET', 'DELETE'].includes(request.method)) return NextResponse.json({ error: 'QQ 群聊归档方法无效' }, { status: 405 });
   if (qqKnowledge && !['GET', 'PUT', 'DELETE'].includes(request.method)) return NextResponse.json({ error: 'QQ 知识库接口方法无效' }, { status: 405 });

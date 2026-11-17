@@ -686,9 +686,9 @@
           "小岁"
         ],
         "referenceImages": [
-          "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png"
+          "public/reference_images/sui_jk_official_standing.png"
         ],
-        "characterDescription": "岁己SUI，白发红瞳女生。"
+        "characterDescription": "岁己SUI，白发带粉色挑染、红瞳的女生，JK新衣为白衬衫、灰色菱格针织背心、粉色条纹领结、深蓝百褶裙、黑色过膝袜与黑色乐福鞋，配粉色书包和金色光环，具体外观以参考图为准。"
       },
       "shiori": {
         "displayName": "栞栞",
@@ -848,8 +848,7 @@
           "花礼"
         ],
         "uploadTags": [
-          "花礼Harei",
-          "芙娅之魂"
+          "花礼Harei"
         ],
         "mentionLabels": [
           "花礼Harei",
@@ -911,8 +910,7 @@
           "灰泽满"
         ],
         "uploadTags": [
-          "灰泽满Hazel",
-          "芙娅之魂"
+          "灰泽满Hazel"
         ],
         "mentionLabels": [
           "灰泽满Hazel",
@@ -940,6 +938,7 @@
       "liko": {
         "displayName": "莉蔻Liko",
         "agency": "VirtuaReal",
+        "aiClipName": "小莉",
         "roomIds": [
           "1713548468"
         ],
@@ -1081,8 +1080,7 @@
         ],
         "uploadTags": [
           "chu2u",
-          "羽啾chu2u",
-          "芙娅之魂"
+          "羽啾chu2u"
         ],
         "referenceImages": [
           "public/reference_images/chu2u_standing.png"
@@ -1098,8 +1096,7 @@
           "又一充电中"
         ],
         "uploadTags": [
-          "又一充电中",
-          "芙娅之魂"
+          "又一充电中"
         ],
         "mentionLabels": [
           "又一充电中"
@@ -1527,8 +1524,8 @@
       "25788785": {
         "uid": "1954091502",
         "audioOnly": false,
-        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
-        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "referenceImage": "public/reference_images/sui_jk_official_standing.png",
+        "characterDescription": "岁己SUI（白发带粉色挑染、红瞳的女生，JK新衣为白衬衫、灰色菱格针织背心、粉色条纹领结、深蓝百褶裙、黑色过膝袜与黑色乐福鞋，配粉色书包和金色光环，具体外观以参考图为准），饼干岁（有细细四肢的小小的饼干状生物）",
         "anchorName": "小岁",
         "fanName": "饼干岁",
         "whisperPriority": 100,
@@ -2099,6 +2096,12 @@
       "authorizationNote": "用户授权关键词切片通过最终审核后自动入队投稿；沿用现有关键词与忽略房间配置，仅在现有企微列表汇总状态，不单发成功或BV通知。",
       "concurrency": 2
     },
+    "coordinateComments": {
+      "enabled": true,
+      "mode": "auto",
+      "scope": "automatic_keyword_topic",
+      "authorizationNote": "用户授权关键词切片自动投稿成功后，按成片内已审核的坐标评论候选发布一次；评论失败不重投视频。"
+    },
     "notify": {
       "enabled": true,
       "includeSubtitleContext": true,
@@ -2244,7 +2247,7 @@
       {
         "id": "fuya-pilgrimage-2026-10",
         "earlyTrigger": {
-          "enabled": true,
+          "enabled": false,
           "titleKeywords": [
             "芙娅之魂",
             "我魂"
@@ -2259,7 +2262,7 @@
           "普雅之魂": "芙娅之魂",
           "抚雅之魂": "芙娅之魂"
         },
-        "enabled": true,
+        "enabled": false,
         "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
         "startsAt": "2026-10-22T10:51:05+08:00",
         "endsAt": "2026-11-06T00:00:00+08:00",
@@ -2312,7 +2315,7 @@
             ]
           },
           "automaticPublication": {
-            "mode": "auto",
+            "mode": "off",
             "roomIds": [
               "1967216004",
               "1791260716",

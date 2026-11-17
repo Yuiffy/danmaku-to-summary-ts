@@ -88,6 +88,65 @@ function candidateFixture(plan: any = {}, complete?: FeedbackCompletion) {
 }
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 
+function editorialRunner(f: ReturnType<typeof fixture>, precisionCode = 0) {
+  const original = f.run.getMockImplementation()!;
+  f.run.mockImplementation(async (command, write) => {
+    if (command.action === 'precision') {
+      write('PRECISION_RESULT: ' + JSON.stringify({ id: 3354, status: precisionCode ? 'failed' : 'pending_review',
+        qaStatus: precisionCode ? 'failed' : 'passed', metadataPath: f.metadataPath }) + '\n');
+      return precisionCode;
+    }
+    const code = await original(command, write);
+    if (command.action === 'select-precision') {
+      const metadata = readJson(f.metadataPath), registry = readJson(f.registryPath);
+      metadata.creativeResult = { status: 'edited' }; metadata.qaResult = { status: 'passed' };
+      registry.clips['3354'].precisionSelection = { revisionPath: path.dirname(f.metadataPath) };
+      atomicJson(f.metadataPath, metadata); atomicJson(f.registryPath, registry);
+    }
+    if (command.action === 'coordinate-comment') {
+      const metadata = readJson(f.metadataPath);
+      metadata.coordinateCommentApproval = { authority: 'feedback' };
+      metadata.copy.commentSuggestions = [{ timestamp: '00:00', content: '建功' }];
+      atomicJson(f.metadataPath, metadata);
+    }
+    return code;
+  });
+}
+
+it('attempts requested precision omitted by planning and holds a failed render before enqueue', async () => {
+  const f = fixture({ title: '等到最后一句才回答' }, undefined, true);
+  f.feedback.submit('3354', f.input('怎么最关键的在最后一句，能精切一下吗。或者发完以后评论区发坐标'));
+  await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).not.toContain('enqueue');
+  expect(f.run.mock.calls.map(([command]) => command.action)).toContain('precision');
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('精切制作或质检未通过') });
+});
+
+it('renders and selects passed precision under the same ID before enqueueing feedback', async () => {
+  const f = fixture({ precision: true }, undefined, true); editorialRunner(f);
+  f.feedback.submit('3354', f.input('精切一下，把无关等待删掉')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'precision', 'select-precision', 'enqueue']);
+  const selection = f.run.mock.calls[2][0];
+  expect(selection.args).toEqual(expect.arrayContaining(['--id', '3354', '--revision', path.dirname(f.metadataPath), '--feedback-authorized']));
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
+it('uses the explicitly permitted coordinate alternative after precision fails', async () => {
+  const f = fixture({ precision: true, coordinateComment: { cue: 1, content: '建功' } }, undefined, true);
+  editorialRunner(f, 1);
+  f.feedback.submit('3354', f.input('精切一下，或者发完以后评论区发坐标')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'precision', 'coordinate-comment', 'enqueue']);
+  expect(f.run.mock.calls[2][0].args).toEqual(expect.arrayContaining(['--cue', '1', '--content', '建功', '--feedback-authorized']));
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
+it('holds a failed precision with no allowed alternative and never enqueues the baseline', async () => {
+  const f = fixture({ precision: true }, undefined, true); editorialRunner(f, 1);
+  f.feedback.submit('3354', f.input('精切一下')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'precision']);
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('精切制作或质检未通过') });
+});
+
 it('an explicit Web choice publishes the retained ordinary fallback without forcing a precision retry or new score', async () => {
   const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
   Object.assign(metadata, { uploadReady: false, precisionRequired: true, editorialStyle: { status: 'kept_original' },
@@ -121,9 +180,48 @@ it('returns the persisted boundary recovery failure to the editor after a failed
 const agentCall = (name: string, args: unknown = {}) => ({ content: null, tool_calls: [{ id: `call_${name}`,
   type: 'function', function: { name, arguments: JSON.stringify(args) } } as FeedbackToolCall] });
 
+it('resolves a missing song name before processing a bare direct publication request', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  Object.assign(metadata, { type: 'stream_activity_submission', kind: 'songs', source: { srtPath: f.srt },
+    activities: [{ id: 'known-song', kind: 'song', name: '已有歌名', start: 0, end: 1 },
+      { id: 'activity-1', kind: 'song', name: null, start: 1, end: 2 }] });
+  atomicJson(f.metadataPath, metadata);
+  const evidencePath = path.join(path.dirname(f.metadataPath), 'song-evidence.json');
+  atomicJson(evidencePath, { items: [{ activityId: 'activity-1', name: '屑屑' }] });
+  const original = f.run.getMockImplementation()!;
+  f.run.mockImplementation(async (command, output) => {
+    if (command.action === 'identify-songs') {
+      output(`ACTIVITY_SONG_IDENTIFICATION_RESULT ${JSON.stringify({ identified: ['activity-1'], evidencePath })}\n`);
+      return 0;
+    }
+    return original(command, output);
+  });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['identify-songs', 'restyle', 'approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toContain('--unresolved-only');
+  expect(f.run.mock.calls[1][0].args).toEqual(expect.arrayContaining(['--title-evidence', evidencePath]));
+  expect(f.planner).not.toHaveBeenCalled();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
+it('keeps an unresolved song pending when song identification cannot find supported names', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  Object.assign(metadata, { type: 'stream_activity_submission', kind: 'songs', source: { srtPath: f.srt },
+    activities: [{ id: 'activity-1', kind: 'song', name: null, start: 0, end: 2 }] });
+  atomicJson(f.metadataPath, metadata);
+  f.run.mockImplementation(async (_command, output) => {
+    output('ACTIVITY_SONG_IDENTIFICATION_RESULT {"identified":[]}\n'); return 0;
+  });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['identify-songs']);
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed',
+    output: expect.stringContaining('有歌词支持的识别结果') });
+});
+
 it('reads an earlier same-recording window outside default context before applying earlier-start feedback', async () => {
   let turn = 0;
-  const complete: FeedbackCompletion = jest.fn(async messages => {
+  const complete: FeedbackCompletion = jest.fn(async (messages, tools) => {
+    expect(tools.find(item => item.function.name === 'read_source_context')!.function.parameters.properties).not.toHaveProperty('activityId');
     if (turn++ === 0) return agentCall('inspect_clip');
     if (turn === 2) return agentCall('read_source_context', { start: 10, end: 30, query: '弟子' });
     if (turn === 3) {
@@ -257,15 +355,60 @@ it('reprocesses the current ready copy when a failed retry has a stale saved pla
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue', 'approve-review', 'enqueue']);
 });
 
-it('lets an explicitly human-reviewed feedback publication bypass an unresolved peer-coverage check', async () => {
+it('runs the peer-coverage gate for direct feedback and pauses on unresolved coverage', async () => {
   const peerCoverageGate: PreUploadPeerCoverageGate = {
     check: jest.fn(async () => ({ status: 'needs_review' as const, reason: '证据不足', cached: false }))
   };
   const f = fixture({}, undefined, true, peerCoverageGate);
   f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('证据不足') });
+  expect(peerCoverageGate.check).toHaveBeenCalledTimes(1);
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review']);
+});
+
+it('pauses a direct feedback publication for covered peer content, then allows a reviewed override', async () => {
+  const peerCoverageGate: PreUploadPeerCoverageGate = {
+    check: jest.fn()
+      .mockResolvedValueOnce({ status: 'covered' as const, reason: '已确认同题：BV1peer00001', cached: false })
+      .mockResolvedValueOnce({ status: 'covered' as const, reason: '已确认同题：BV1peer00001', cached: true })
+  };
+  const f = fixture({}, undefined, true, peerCoverageGate);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'failed', output: expect.stringContaining('已确认同题') });
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review']);
+
+  f.feedback.submit('3354', { ...f.input('投'), peerCoverageOverride: true }); await f.jobs.flush();
   expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded' });
-  expect(peerCoverageGate.check).not.toHaveBeenCalled();
+  expect(peerCoverageGate.check).toHaveBeenCalledTimes(2);
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+});
+
+it('retries rendering under the same ID when the previous feedback left an unfinished rebuild', async () => {
+  const f = fixture({}, undefined, true);
+  const run = f.run.getMockImplementation()!;
+  let cutAttempts = 0;
+  f.run.mockImplementation(async (command, output) => {
+    if (command.action === 'cut' && ++cutAttempts === 1) {
+      output('Cannot determine clip-local video resolution'); return 2;
+    }
+    const code = await run(command, output);
+    if (command.action === 'cut') {
+      const registry = readJson(f.registryPath); registry.clips['3354'].pendingCut = false;
+      atomicJson(f.registryPath, registry);
+    }
+    return code;
+  });
+  const metadata = readJson(f.metadataPath), registry = readJson(f.registryPath);
+  metadata.selectionRejection = { reason: 'editorial_deferred' };
+  registry.clips['3354'].pendingCut = true;
+  atomicJson(f.metadataPath, metadata); atomicJson(f.registryPath, registry);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('failed');
+  expect(f.run.mock.calls.some(([command]) => command.action === 'enqueue')).toBe(false);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(cutAttempts).toBe(2);
+  expect(f.run.mock.calls.filter(([command]) => command.action === 'enqueue')).toHaveLength(1);
 });
 
 it('keeps queued feedback valid when another clip refreshes the batch registration timestamp', async () => {
@@ -606,7 +749,8 @@ it('forwards direct feedback publication acceptance to the dedicated activity CL
   const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
   Object.assign(metadata, { type: 'stream_activity_submission', kind: 'songs',
     source: { mediaPath: metadata.output.mediaPath, srtPath: f.srt },
-    activities: [{ id: 'activity-1', kind: 'song', start: 0, end: 2 }] });
+    activities: [{ id: 'activity-1', kind: 'song', name: null, start: 0, end: 2 }],
+    presentation: { titleEvidence: { items: [{ activityId: 'activity-1', name: '屑屑' }] } } });
   atomicJson(f.metadataPath, metadata);
   f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
   expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);

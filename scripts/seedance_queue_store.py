@@ -32,10 +32,16 @@ class QueueStore:
 
     def _lock_is_stale(self) -> bool:
         try:
+            modified_at = self.lock_path.stat().st_mtime
+        except OSError:
+            return False
+        try:
             raw = json.loads(self.lock_path.read_text(encoding="utf-8"))
             created_at = float(raw.get("created_at", 0))
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            created_at = 0
+            # O_EXCL publishes the file before its owner finishes writing the JSON.
+            # A partial/unreadable fresh lock still belongs to that writer.
+            created_at = modified_at
         return time.time() - created_at > LOCK_STALE_SECONDS
 
     def acquire(self) -> None:
@@ -61,20 +67,28 @@ class QueueStore:
                         continue
                     except FileNotFoundError:
                         continue
+                    except PermissionError:
+                        pass  # Windows may still have an open reader/writer; wait normally.
                 if time.monotonic() >= deadline:
                     raise QueueLockError(f"queue is locked: {self.lock_path}")
                 time.sleep(0.1)
 
     def release(self) -> None:
-        try:
-            raw = json.loads(self.lock_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return
-        if raw.get("owner") == self._owner:
+        deadline = time.monotonic() + self.lock_wait_seconds
+        while True:
             try:
+                raw = json.loads(self.lock_path.read_text(encoding="utf-8"))
+                if raw.get("owner") != self._owner:
+                    return
                 self.lock_path.unlink()
-            except FileNotFoundError:
-                pass
+                return
+            except (FileNotFoundError, ValueError):
+                return
+            except PermissionError:
+                # Contending readers can temporarily prevent deletion on Windows.
+                if time.monotonic() >= deadline:
+                    raise QueueLockError(f"queue lock could not be released: {self.lock_path}")
+                time.sleep(0.01)
 
     def save(self, data: dict[str, Any]) -> None:
         if not self.lock_path.exists():

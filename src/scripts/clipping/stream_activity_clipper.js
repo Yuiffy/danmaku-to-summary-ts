@@ -235,7 +235,7 @@ async function refreshPresentation(row, plan, root, options = {}) {
     const presentation = presentationTools.presentationFor(scopedPlan, row.kind, row.output.parts, titleEvidence,
         planTools.getActivityConfig(root)[row.kind].tags);
     if (row.presentation?.version === presentation.version && row.presentation?.signature === presentation.signature) return row;
-    if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
+    if (row.activityReview?.status === 'approved' && !String(options.revisionNote || '').trim()) throw new Error('Approved activity presentation requires an explicit reviewed revision');
     const coverPath = presentationTools.coverPathFor(row.output.metadataPath, presentation);
     await (options.cover || media.activityCover)(presentation.parts[0], coverPath, root, presentation.cover);
     return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix, tags: presentation.tags,
@@ -246,6 +246,8 @@ async function refreshPresentation(row, plan, root, options = {}) {
             titleFormat: row.kind === 'songs' ? 'song_name_recording_date' : 'work_alias_recording_date', recordingDate: presentation.recordingDate,
             ...(presentation.publicNames ? { publicNames: presentation.publicNames } : {}),
             ...(titleEvidence ? { titleEvidence } : {}) },
+        ...(String(options.revisionNote || '').trim() ? { activityPresentationRevision: { note: options.revisionNote,
+            previousContentSha256: row.activityReview?.contentSha256, requestedAt: new Date().toISOString() } } : {}),
         uploadReady: false, activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy', 'column_cover'] } };
 }
 async function restyleStreamActivities(options = {}) {
@@ -292,7 +294,7 @@ async function restyleStreamActivities(options = {}) {
             const registered = Object.values(registry.clips).find(clip => clip.metadataPath
                 && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase());
             if (registered && !['needs_review', 'review'].includes(registered.status)) throw new Error(`Activity ID ${registered.id} is ${registered.status}; restyling only supports pending submissions`);
-            if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
+            if (row.activityReview?.status === 'approved' && !String(options.revisionNote || '').trim()) throw new Error('Approved activity presentation requires an explicit reviewed revision');
             for (const part of row.output.parts) if (fs.statSync(part.mediaPath).size !== part.bytes || fileDigest(part.mediaPath) !== part.sha256) throw new Error('Activity video changed before restyling');
             if (fileDigest(row.output.coverPath) !== row.coverSha256) throw new Error('Activity cover changed before restyling');
         }
@@ -670,7 +672,7 @@ async function identifyStreamSongs(options) {
     const metadata = JSON.parse(fs.readFileSync(options.metadataPath, 'utf8'));
     const info = recordingInfo(metadata.source.mediaPath, metadata);
     return require('../workflow-runtime').loadWorkflow('clipping/songResearchRuntime').identifyActivitySongs(options.metadataPath,
-        { activityId: options.activityId, hint: options.hint }, {
+        { activityId: options.activityId, unresolvedOnly: options.unresolvedOnly, hint: options.hint }, {
             parse: file => asr.parseSrt(file).segments.map((row, index) => ({ index: index + 1, start: row.start, end: row.end, text: row.text })),
             audience: async file => (await readAudience(file)).map((row, index) => ({ index: index + 1, ...row })),
             catalog: options.catalog,

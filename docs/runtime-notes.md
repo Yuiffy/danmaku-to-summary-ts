@@ -250,6 +250,19 @@ instead of appending. Unknown names and inheritance cycles fail configuration lo
 Names, identities, reference art, speaker policies and delivery enablement remain
 room settings. Presets cannot overwrite these identities or credentials.
 
+Sui's default goodnight comic reference is
+`public/reference_images/sui_jk_official_standing.png`. Both `default.json` and
+`production.json` point room `25788785` and `ai.streamerRegistry.sui` to this same
+JK outfit and matching appearance description. The asset is the unchanged second
+original PNG (2160 × 3840) from Sui's own goodnight dynamic
+`1270640154438008837`, published at 2026-11-15 02:52:45 Asia/Shanghai:
+<https://www.bilibili.com/opus/1270640154438008837>.
+Its original CDN path is
+`https://i0.hdslb.com/bfs/new_dyn/a215c9ad09ee4a8d05bdb732058d3c311954091502.png`.
+Keep the earlier cat-hat asset for explicitly selected historical skins. Future
+default outfit changes must update both the room reference and registry reference,
+including their descriptions, so guest appearances use the same identity art.
+
 | Preset | Label | Behavior |
 | --- | --- | --- |
 | `standard` | 标准模式 | Filtered source, 100-character reply and normal comic |

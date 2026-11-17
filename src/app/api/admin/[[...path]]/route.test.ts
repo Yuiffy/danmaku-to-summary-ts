@@ -15,6 +15,21 @@ afterEach(() => { global.fetch = fetchOriginal; delete process.env.ADMIN_TOKEN_F
 function request(endpoint: string, options: RequestInit = {}) {
   return new NextRequest(`http://127.0.0.1:3000/api/admin${endpoint}`, { ...options, headers: { Host: '127.0.0.1:3000', ...options.headers } });
 }
+it('proxies AI video queue/history and ranged video reads through fixed readonly routes', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ rows: [] }));
+  expect((await forwardAdmin(request('/queues/ai-video?view=history&page=2'))).status).toBe(200);
+  expect(fetchMock.mock.calls[0][0].search).toBe('?view=history&page=2');
+  const endpoint = `/queues/ai-video/${'a'.repeat(64)}/media`;
+  fetchMock.mockResolvedValueOnce(new Response('ftyp', { status: 206, headers: { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 4-7/16' } }));
+  const video = await forwardAdmin(request(endpoint, { headers: { Range: 'bytes=4-7' } }));
+  expect(video.status).toBe(206); expect(video.headers.get('content-range')).toBe('bytes 4-7/16');
+  expect(fetchMock.mock.calls[1][1].headers.Range).toBe('bytes=4-7');
+  expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer test-token');
+  expect((await forwardAdmin(request('/queues/ai-video', { method: 'POST', body: '{}' }))).status).toBe(405);
+  expect((await forwardAdmin(request('/queues/ai-video', { headers: { Origin: 'https://evil.test' } }))).status).toBe(403);
+  expect((await forwardAdmin(request('/queues/ai-video/resume'))).status).toBe(404);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
 it('forwards QQ transcript reads only through local authenticated proxy', async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ rows: [] }));
   expect((await forwardAdmin(request('/qq-records?date=2026-10-28'))).status).toBe(200);

@@ -1,9 +1,13 @@
 import { createHash } from 'crypto';
 import { QQ_AGENT_LIMITS } from '../../core/admin/qqDiagnostics';
+import { QQ_RECORD_ANSWER_CHARS } from '../../core/admin/qqRecords';
 import { CommentReplyConfig, LIMITS, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
 import { QQImageConfig, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
 import { QQImageEnvelope, QQImageInput, qqImageInput } from './QQImageInputPolicy';
+import { QQVideoInput, qqVideoInput } from './QQVideoInputPolicy';
 import type { QQChatMessage } from './QQChatTypes';
+import { QQMediaAccess, validateQQMediaAccess } from './QQMediaAccess';
+import { QQVideoConfig, validateQQVideoConfig, qqVideoMentioned, qqVideoRequested, qqVideoCollectRequested, qqVideoConfirmRequested } from './QQVideoPolicy';
 
 export const QQ_MODEL = 'gpt-6-luna';
 export const QQ_PRIVATE_REPLY = '鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～';
@@ -14,7 +18,7 @@ export const QQ_LIMITS = { maxAgeMs: 240000, retentionMs: 86400000, maxReceipts:
   startsPerMinute: 5, userWindowMs: 18000000, userWindowReplies: 100, sendIntervalMs: 5000,
   timeoutMs: 90000, privateIntervalMs: 600000, reservation: 262144, agentTurns: QQ_AGENT_LIMITS.modelCalls } as const;
 
-export interface QQConfig {
+export interface QQConfig extends QQMediaAccess {
   secretConfigPath?: string;
   credentialsPath?: string;
   providerConfigPath?: string;
@@ -23,8 +27,10 @@ export interface QQConfig {
   maxUserQueue: number;
   privateReply: string;
   groupMessageMode?: 'mention' | 'all';
+  notificationConfigPath?: string;
   knowledge?: NonNullable<CommentReplyConfig['knowledge']> & { allConfiguredRooms?: boolean };
   images?: QQImageConfig;
+  videos?: QQVideoConfig;
 }
 export interface QQInbound extends QQImageEnvelope {
   kind: string; rawEventType: string; senderId: string; senderName?: string; senderIsBot?: boolean;
@@ -34,9 +40,12 @@ export interface QQInbound extends QQImageEnvelope {
 }
 export interface QQRequest {
   key: string; user: string; scope: 'group' | 'c2c'; targetId: string; msgId: string;
+  /** Server-owned native quote; msgId still owns the current passive reply window. */
+  replyMsgId?: string;
   text: string; createdAt: number; senderName?: string;
   chatContext?: QQChatMessage[];
   imageInput?: QQImageInput;
+  videoInput?: QQVideoInput;
 }
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[\w.-]{1,256}$/u.test(value);
 export const qqDigest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -50,13 +59,16 @@ export function validateQQConfig(config: QQConfig): void {
     !Number.isInteger(config.maxUserQueue) || config.maxUserQueue < 1 || config.maxUserQueue > config.maxQueue ||
     typeof config.privateReply !== 'string' || !config.privateReply.trim() || Array.from(config.privateReply).length > 300 ||
     (config.groupMessageMode !== undefined && !['mention', 'all'].includes(config.groupMessageMode)) ||
+    (config.notificationConfigPath !== undefined && !nonempty(config.notificationConfigPath)) ||
     /[\p{Cc}\p{Cf}]/u.test(config.privateReply) || unsafeComment(config.privateReply)) throw new Error('Invalid QQ bot configuration');
+  validateQQMediaAccess(config);
   const k = config.knowledge;
   if (k && (k.allConfiguredRooms !== undefined && typeof k.allConfiguredRooms !== 'boolean' ||
     typeof k.runtimeConfigPath !== 'string' || !k.runtimeConfigPath.trim() || !/^[1-9]\d{0,24}$/u.test(k.roomId) ||
     !Array.isArray(k.collaborationRooms) || k.collaborationRooms.length > 3 || k.collaborationRooms.some(id =>
       typeof id !== 'string' || !/^[1-9]\d{0,24}$/u.test(id)))) throw new Error('Invalid QQ knowledge configuration');
   if (config.images) validateQQImageConfig(config.images);
+  if (config.videos) validateQQVideoConfig(config.videos);
 }
 
 // QQ answers may need to explain privacy and permission boundaries. Reusing
@@ -70,6 +82,15 @@ export function publishableQQAnswer(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const text = value.trim();
   if (!text || Array.from(text).length > LIMITS.outputChars || /[@\p{Cc}\p{Cf}]/u.test(text) || QQ_UNSAFE_OUTPUT.test(text)) return undefined;
+  return text;
+}
+
+/** Only the server-owned video preview may exceed the ordinary short reply limit. */
+export function publishableQQVideoReview(value: unknown): string | undefined {
+  if (typeof value !== 'string') return;
+  const text = value.trim();
+  if (!text || Array.from(text).length > QQ_RECORD_ANSWER_CHARS || /[\p{Cc}\p{Cf}]/u.test(text.replace(/\n/gu, '')) ||
+    /@/u.test(text.replace(/@(Image|Audio) \d+/gu, '')) || QQ_UNSAFE_OUTPUT.test(text)) return;
   return text;
 }
 
@@ -90,16 +111,26 @@ export function qqRequest(message: QQInbound, now: number, botId?: string): QQRe
   if (Array.from(text).length > LIMITS.inputChars) return;
   const senderName = typeof message.senderName === 'string' ? Array.from(message.senderName.normalize('NFC')
     .replace(/[\p{Cc}\p{Cf}]/gu, '').trim()).slice(0, 80).join('') : '';
-  const imageInput = scope === 'group' ? qqImageInput(message) : undefined;
+  const videoInput = scope === 'group' ? qqVideoInput(message) : undefined;
+  const image = scope === 'group' ? qqImageInput(message) : undefined;
+  // A video quote is not a missing own-image receipt. Keep actual image attachments alongside it.
+  const imageInput = videoInput && !image?.urls.length && !image?.invalid ? undefined : image;
   return { key: qqDigest(JSON.stringify([scope, targetId, message.messageId])),
     user: qqDigest(JSON.stringify([scope, message.senderId])), scope, targetId, msgId: message.messageId, text, createdAt,
-    ...(senderName ? { senderName } : {}), ...(imageInput ? { imageInput } : {}),
+    ...(senderName ? { senderName } : {}), ...(imageInput ? { imageInput } : {}), ...(videoInput ? { videoInput } : {}),
     ...(Array.isArray(message.chatContext) ? { chatContext: message.chatContext.slice(-80) } : {}) };
+}
+
+/** Only a trusted ordinary group event can lend a window for already generated images; never for a model call. */
+export function qqImageReplyTrigger(message: QQInbound, now: number, botId?: string): QQRequest | undefined {
+  if (message?.kind !== 'group' || message.rawEventType !== 'GROUP_MESSAGE_CREATE') return;
+  return qqRequest({ ...message, rawEventType: 'GROUP_AT_MESSAGE_CREATE' }, now, botId);
 }
 
 export function qqFixedReply(request: QQRequest, config: QQConfig): string | undefined {
   if (request.scope === 'c2c') return config.privateReply;
   if (!request.text) return '我在～在艾特后面写上想聊的话，或者带上主播、原话和日期来提问吧。';
-  if (qqImageRequested(request.text, request.imageInput) && !config.images?.enabled) return QQ_IMAGE_REPLY;
+  if ((qqVideoRequested(request.text) || qqVideoCollectRequested(request.text) || qqVideoConfirmRequested(request.text)) && !config.videos?.enabled) return '视频功能暂未开启，可以先在群里艾特我聊天或生图。';
+  if (!qqVideoMentioned(request.text) && qqImageRequested(request.text, request.imageInput) && !config.images?.enabled) return QQ_IMAGE_REPLY;
   return undefined;
 }

@@ -2,7 +2,7 @@ export {};
 const fs = require('fs'), os = require('os'), path = require('path'), sharp = require('sharp');
 const { runCreativeEnhancement, requestedLaugh } = require('./creative_runner');
 
-test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent', 'focus_qa_repaired', 'content_only', 'content_only_discarded_moments', 'content_only_topic_plan', 'context_only'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
+test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent', 'focus_qa_repaired', 'content_only', 'content_only_forced', 'content_only_discarded_moments', 'content_only_topic_plan', 'context_only'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
     const contentOnly = outcome.startsWith('content_only');
     const topicPlan = outcome === 'content_only_topic_plan';
     const profileCase = contentOnly || ['tutorial', 'performance'].includes(outcome);
@@ -25,10 +25,10 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
             runFfmpeg: jest.fn(async args => {
                 if (args.at(-1).endsWith('.jpg')) fs.writeFileSync(args.at(-1), jpeg);
                 if (args.at(-1).endsWith('.pcm')) {
-                    const samples = new Float32Array(60 * 16000 * 2), rendered = args.at(-1).includes('audio-rendered');
+                    const samples = new Float32Array((contentOnly ? 33 : 60) * 16000 * 2), rendered = args.at(-1).includes('audio-rendered');
                     for (let i = 0; i < samples.length; i++) {
                         const t = Math.floor(i / 2) / 16000;
-                        samples[i] = .1 * Math.sin(2 * Math.PI * 200 * t) + (rendered && outcome !== 'context_only' && t >= 5.2 && t < 7 ? .015 * Math.sin(2 * Math.PI * 900 * t) : 0);
+                        samples[i] = .1 * Math.sin(2 * Math.PI * 200 * t) + (rendered && !contentOnly && outcome !== 'context_only' && t >= 5.2 && t < 7 ? .015 * Math.sin(2 * Math.PI * 900 * t) : 0);
                     }
                     fs.writeFileSync(args.at(-1), Buffer.from(samples.buffer));
                 }
@@ -101,6 +101,11 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
         context.options.creativeContextQuestion = { version: 1, kind: 'audience_question', time: 90, text: '你喜欢什么题材？', end: 6 };
         context.options.creativeEditorialFeedback = '原观众提问补前情，不重复回答';
     }
+    if (outcome === 'content_only_forced') {
+        context.options.creativeContentOnly = true;
+        context.options.creativeEditorialFeedback = '不要再叠加弹幕卡';
+        Object.assign(context.config.enhancements.creative, { style: 'accent', variety: true, danmakuRequired: true, music: true });
+    }
     const stages: string[] = [];
     const dependencies = {
         requestStage: jest.fn(async (_config, _budget, info, phase, prompt, images) => {
@@ -166,6 +171,8 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 value = { repairs: [{ momentId: 'M1', remove: [outcome === 'focus_qa_repaired' ? 'focusInset' : 'filter'] }] };
             }
             else {
+                expect(prompt).toContain('先对照上排源画面区分原直播界面与后期效果');
+                expect(prompt).toContain('后期放大、裁切使原界面遮住主体或截掉眼睛、嘴部和下巴，仍须拒绝');
                 if (coverCase) {
                     expect(prompt.includes('用户已明确接受本次封面文字遮挡人脸')).toBe(coverAllowed);
                     const coverOptions = context.topic.generateClipCover.mock.calls[0][3];
@@ -209,6 +216,12 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 expect(context.topic.runFfmpeg.mock.calls.filter(([args]) => /qa-context-\d+\.jpg$/.test(args.at(-1)))).toHaveLength(3);
             }
             if (contentOnly) {
+                if (outcome === 'content_only_forced') {
+                    expect(stages.some(stage => stage.includes('visual-plan'))).toBe(false);
+                    expect(result.creativePlan.effects).toEqual([]);
+                    expect(result.audioQa.status).toBe('passed');
+                    expect(result.creativeResult.history.some(row => row.stage === 'audio_technical_qa')).toBe(true);
+                }
                 expect(result.editPlan.removed.length).toBeGreaterThan(0);
                 const qaInput = JSON.parse(fs.readFileSync(path.join(dir, 'temp/clip-creative/qa-input.json'), 'utf8'));
                 expect(qaInput.sourceFrames.map(row => row.time)).toEqual(qaInput.qaTimes);
@@ -261,7 +274,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
             expect(context.topic.cutClipMedia.mock.calls[1][4].creativePlan.effects[0].zoom).toBeDefined();
             expect(result.creativeResult.history.filter(row => row.stage === 'qa')).toHaveLength(2);
         }
-        expect(stages).toHaveLength(outcome.startsWith('visual_qa_') || outcome === 'focus_qa_repaired' ? 5 : spatialCase ? outcome === 'spatial_repair_twice' ? 5 : 4 : outcome === 'tutorial' ? 4 : profileCase ? 5 : outcome === 'render_failed' ? 2 : ['sound_plan', 'crop_repaired', 'crop_still_unsafe'].includes(outcome) ? 4 : 3);
+        expect(stages).toHaveLength(outcome === 'content_only_forced' ? 4 : outcome.startsWith('visual_qa_') || outcome === 'focus_qa_repaired' ? 5 : spatialCase ? outcome === 'spatial_repair_twice' ? 5 : 4 : outcome === 'tutorial' ? 4 : profileCase ? 5 : outcome === 'render_failed' ? 2 : ['sound_plan', 'crop_repaired', 'crop_still_unsafe'].includes(outcome) ? 4 : 3);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }, 15000);
 

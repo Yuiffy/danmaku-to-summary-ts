@@ -46,6 +46,33 @@ const MOOD_RULES = [
     { tag: '翻唱', pattern: /(翻唱|唱歌|歌回|清唱)/u }
 ];
 
+// Topic-specific nouns are kept in a small controlled list so a single ASR
+// mistake or an arbitrary phrase cannot become a public Bilibili tag.  The
+// aliases "割追追" and "假锥锥" are confirmed ASR spellings of "假追追".
+const CONTENT_TAG_RULES = [
+    { tags: ['4i', '四爱'], pattern: /4i|四爱/iu },
+    { tags: ['假追追'], pattern: /假追追|割追追|假锥锥/u },
+    { tags: ['饼干岁'], pattern: /饼干岁|\bbgs\b/iu }
+];
+
+function normalizeAiContentTags(value) {
+    return Array.from(new Set((Array.isArray(value) ? value : [])
+        .filter(tag => typeof tag === 'string')
+        .map(tag => tag.trim().replace(/^#+|#+$/gu, ''))
+        .filter(tag => tag && tag.length <= 30 && !/[,，;；\r\n]/u.test(tag)
+            && !/^VirtuaReal$/iu.test(tag)))).slice(0, 6);
+}
+
+function contentTagsPromptLines(recordingContext = null) {
+    return [
+        '每段同时输出tags字符串数组：按本片实际内容选择3–6个可检索标签，优先具体游戏名、话题中提到的事物，以及有依据的搞笑、可爱、萌宠等引流标签；主播小名和直播切片等默认标签由系统添加，不占本数组名额。没有依据时允许[]。',
+        '游戏不必在本片反复念出名字，但必须结合本片玩法、角色、道具和已验证整场背景确认；整场玩过某游戏不等于所有杂谈都带该游戏标签。不能只凭直播标题或其他候选的内容补标签。',
+        '若本片明确是战斗、探索、操作或游戏BUG反应，已验证actualGames只有一项且无切换到其他游戏的证据，tags必须包含该游戏名，排在游戏实况/游戏BUG等泛标签前；不能因为片内没复读游戏名而漏掉。独立生活杂谈仍不套用。',
+        '人物标签用小岁、小栞等安全昵称，禁止岁己、栞栞等正式名；不要生成机构标签，VirtuaReal只由主播归属配置添加。',
+        ...(recordingContext ? [`已验证录播游戏背景（只供消歧，不是本片发生过的证明）：${JSON.stringify(recordingContext)}`] : [])
+    ];
+}
+
 function normalizeTagList(value) {
     return Array.from(new Set(String(value || '')
         .split(/[,，、;；\s]+/u)
@@ -82,6 +109,12 @@ function deriveMoodTags(text = '') {
         .map(rule => rule.tag);
 }
 
+function deriveContentTopicTags(text = '') {
+    const haystack = String(text || '');
+    if (!haystack) return [];
+    return CONTENT_TAG_RULES.flatMap(rule => rule.pattern.test(haystack) ? rule.tags : []);
+}
+
 /**
  * Derive content tags for one clip.
  * @param {object} input
@@ -90,16 +123,29 @@ function deriveMoodTags(text = '') {
  * @param {string} [input.text] - clip transcript text (window-scoped)
  * @returns {string[]}
  */
-function deriveContentTags({ streamTitle = '', matchedKeywords = [], text = '' } = {}) {
+function deriveContentTags({ streamTitle = '', matchedKeywords = [], text = '', aiTags = [] } = {}) {
     const keywords = (Array.isArray(matchedKeywords) ? matchedKeywords : [])
         .map(keyword => String(keyword || '')).join('\n');
     const evidenceText = [keywords, text].filter(Boolean).join('\n');
     return Array.from(new Set([
+        ...normalizeAiContentTags(aiTags),
         // A game mentioned in the clip is useful discovery evidence too, but
         // only aliases from the maintained whitelist may become a tag.
         ...extractGameTags(streamTitle, evidenceText),
-        ...deriveMoodTags(evidenceText)
+        ...deriveMoodTags(evidenceText),
+        ...deriveContentTopicTags(evidenceText)
     ]));
 }
 
-module.exports = { normalizeTagList, extractGameTags, deriveMoodTags, deriveContentTags, GAME_ALIASES, MOOD_RULES };
+module.exports = {
+    normalizeAiContentTags,
+    contentTagsPromptLines,
+    normalizeTagList,
+    extractGameTags,
+    deriveMoodTags,
+    deriveContentTopicTags,
+    deriveContentTags,
+    GAME_ALIASES,
+    MOOD_RULES,
+    CONTENT_TAG_RULES
+};

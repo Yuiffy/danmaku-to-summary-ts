@@ -5,6 +5,7 @@ import { AsrHistoryItem } from '../../core/admin/asrHistory';
 import { AdminAsrHistoryIndex, queryAsrHistory } from './AdminAsrHistoryIndex';
 import { backfillAsrHistory } from './AdminAsrHistoryBackfill';
 import { atomicJson } from './AdminFiles';
+import { readAsrHistoryItem, trustedAsrHistoryRoots } from './AdminAsrHistory';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
@@ -62,6 +63,28 @@ it('imports old sidecars without modifying them and stops discovery when closed'
     expect(await backfillAsrHistory([recordings], writer, () => false)).toBe(1);
     expect(await backfillAsrHistory([recordings], writer, () => true)).toBe(0);
     expect(queryAsrHistory(file).items[0]).toMatchObject({ streamerName: '主播', title: '标题', elapsedSeconds: 10, status: 'asr_completed', tiers: [] });
+    expect(fs.readFileSync(sidecar, 'utf8')).toBe(before);
+  } finally { writer.close(); }
+});
+
+it('refreshes existing unrecorded CPU history from original sidecars without rerunning ASR', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-cpu-backfill-')); roots.push(root);
+  const recordings = path.join(root, '100_主播'), sidecar = path.join(recordings, '场次.asr_meta.json');
+  atomicJson(sidecar, { mediaDurationSeconds: 2339.141, generatedAt: '2026-11-10T14:04:28.660Z',
+    stageTimings: { cpu_fallback: 1, model_load_s: 51.527 } });
+  const before = fs.readFileSync(sidecar, 'utf8'), file = path.join(root, 'history.sqlite'), writer = new AdminAsrHistoryIndex(file);
+  try {
+    writer.upsert(sidecar, { ...row('old'), mediaSeconds: 2339.141 });
+    expect(queryAsrHistory(file).summary.recordedAudioSeconds).toBe(0);
+    await backfillAsrHistory([recordings], writer, () => false);
+    // The observer restores the queue identity/status after startup discovery.
+    writer.upsert(sidecar, readAsrHistoryItem({ id: 'old', roomId: '100', status: 'completed',
+      mediaPath: path.join(recordings, '场次.flv') }, trustedAsrHistoryRoots([recordings])));
+    const result = queryAsrHistory(file);
+    expect(result).toMatchObject({ total: 1, items: [{ id: 'old', status: 'completed', modelLoadSeconds: 51.527,
+      tiers: [{ tier: 'cpu_background', audioSeconds: 2339.141 }] }],
+    summary: { recordedAudioSeconds: 2339.141, totalAudioSeconds: 2339.141 } });
+    expect(result.summary.tiers.find(tier => tier.tier === 'cpu_background')?.percent).toBe(100);
     expect(fs.readFileSync(sidecar, 'utf8')).toBe(before);
   } finally { writer.close(); }
 });

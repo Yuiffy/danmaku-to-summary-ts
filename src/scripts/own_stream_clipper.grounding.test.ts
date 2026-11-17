@@ -31,7 +31,7 @@ describe('final own-stream copy grounding', () => {
       fs.writeFileSync(xmlPath, '<i><d p="24,1,25,16777215,1,0,user,0">A replacement reaction.</d></i>');
       const evidence = buildSubtitleEvidence(asr.parseSrt(srtPath).segments);
       const clips = [
-        { start: 0, end: 10, title: '"GuestName"', description: 'A message was left.', evidenceCueIds: ['G1'] },
+        { start: 0, end: 10, title: '"GuestName"', description: 'A message was left.', tags: ['影之刃零', '游戏BUG', 'GuestName'], evidenceCueIds: ['G1'] },
         { start: 20, end: 30, title: 'Another message', description: 'GuestName left another message.', evidenceCueIds: ['G2'], evidenceDanmakuIds: ['D1'] }
       ].map(clip => ({ ...clip, duration: 10, boundaryFromEvidence: true,
         grounding: linkClipEvidence({ ...clip, sourceKind: 'recount' }, clip, evidence, [{ time: 24, text: 'Original reaction.' }]) }));
@@ -71,6 +71,10 @@ describe('final own-stream copy grounding', () => {
         expect(results[1].grounding.audienceChanges).toEqual(savedPlan.clips[1].grounding.audienceChanges);
         const savedMetadata = JSON.parse(fs.readFileSync(results[0].output.metadataPath, 'utf8'));
         expect(savedMetadata.grounding).toEqual(results[0].grounding);
+        expect(savedMetadata.copy.tags).toEqual(expect.arrayContaining(['影之刃零', '游戏BUG', 'AI切片']));
+        expect(savedMetadata.copy.tags).not.toContain('GuestName');
+        expect(savedMetadata.upload.tags).toEqual(savedMetadata.copy.tags);
+        expect(results[1].copy.tags).not.toContain('影之刃零');
         expect(review).toContain('unsupported_quote:title:GuestClip');
         expect(spawnSync).toHaveBeenCalledTimes(1);
         expect(spawnSync.mock.calls[0][1][1]).toBe('import-json');

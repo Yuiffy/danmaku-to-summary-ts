@@ -16,12 +16,14 @@ import { CampaignCandidates } from './CampaignCandidates';
 import { UploadQueue } from './UploadQueue';
 import { AsrQueue } from './AsrQueue';
 import { ClipProgress } from './ClipProgress';
+import { AIVideoQueue } from './AIVideoQueue';
 import { useResource } from './client';
 
-type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq' | 'qq-chat' | 'qq-knowledge';
+type View = 'review' | 'fuya' | 'config' | 'reminders' | 'operations' | 'delayed' | 'questions' | 'login' | 'comments' | 'feedback' | 'qq' | 'qq-chat' | 'qq-knowledge' | 'ai-video';
 const navigation: { id: View; mark: string; name: string; caption: string }[] = [
   { id: 'review', mark: '▷', name: '视频审核', caption: '素材 · 字幕 · 投稿' },
   { id: 'fuya', mark: '◇', name: '候补切片', caption: '逐场候补 · 原片审核' },
+  { id: 'ai-video', mark: '▻', name: 'AI 视频', caption: '生成队列 · 历史记录' },
   { id: 'config', mark: '≡', name: '配置', caption: '处理流程与房间规则' },
   { id: 'login', mark: '◎', name: 'B 站登录', caption: '状态检查 · 恢复登录' },
   { id: 'comments', mark: '↔', name: '评论回复', caption: '处理进度 · 回复记录' },
@@ -62,6 +64,7 @@ export function AdminWorkspace() {
       <div className="workspace-body" key={view}>
         {view === 'review' && <ClipReview onJobs={() => navigate('operations')} />}
         {view === 'fuya' && <CampaignCandidates />}
+        {view === 'ai-video' && <AIVideoQueue />}
         {view === 'config' && <ConfigEditor />}
         {view === 'login' && <BilibiliLogin />}
         {view === 'comments' && <CommentReplies />}

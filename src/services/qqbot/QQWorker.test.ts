@@ -1,11 +1,39 @@
 import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_IMAGE_REPLY, QQ_LIMITS, QQ_PRIVATE_REPLY, qqRequest } from './QQPolicy';
-import { QQTextAnswer, QQWorker } from './QQWorker';
-import { newQQState } from './QQState';
+import { QQTextAnswer, QQWorker, QQWorkerIO } from './QQWorker';
+import { newQQState, validateQQState } from './QQState';
 import { QQRecordUpdate } from './QQRecords';
-import { QQExecuteImage, QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_LIMITS } from './QQImagePolicy';
+import { QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_LIMITS } from './QQImagePolicy';
 import { qqFailure } from './QQDiagnostics';
+import { QQSendRejectedError } from './QQSendReceipt';
 
 const epoch = Date.parse('2026-10-28T02:00:00Z');
+
+test('operator new image requests bypass unrelated global cooldown and pickup, then release the worker for parallel admission', async () => {
+  const f = setup({ images }), operator = qqRequest(f.message(), epoch)!.user;
+  f.state.day = '2026-10-28'; f.state.lastImageAt = epoch - 2000;
+  const enqueueImage = jest.fn(async () => ({ status: 'pending' as const, message: '图片任务已接收，正在后台生成。' }));
+  const waitImage = jest.fn(async () => undefined);
+  f.io.pendingImage.mockResolvedValue({ text: '上一张图还在生成' });
+  f.io.answer.mockImplementation(async (_request, _signal, executeImage) => (await executeImage!(
+    { mode: 'create', instruction: '星空下散步', characters: [] })).message);
+  const worker = new QQWorker({ ...config, images, mediaOperators: [operator] }, f.state, { ...f.io, enqueueImage, waitImage });
+  worker.receive(f.message('first', { content: '生成岁己散步的图片' })); await worker.idle();
+  f.advance(10001);
+  worker.receive(f.message('second', { content: '生成岁己跳舞的图片' })); await worker.idle();
+  expect(enqueueImage).toHaveBeenCalledTimes(2);
+  expect(waitImage).not.toHaveBeenCalled(); expect(f.io.pendingImage).not.toHaveBeenCalled();
+  expect(f.state.users[operator].images).toBe(2);
+});
+
+test('operator inbound queue is eight while a nickname cannot increase the ordinary limit', async () => {
+  const f = setup(), operator = qqRequest(f.message(), epoch)!.user;
+  const worker = new QQWorker({ ...config, mediaOperators: [operator] }, f.state, f.io);
+  for (let i = 0; i < 8; i++) expect(worker.receive(f.message(`op-${i}`))).toBe(true);
+  expect(worker.receive(f.message('op-overflow'))).toBe(false);
+  for (let i = 0; i < 2; i++) expect(worker.receive(f.message(`other-${i}`, { senderId: 'member-b', senderName: '带鱼' }))).toBe(true);
+  expect(worker.receive(f.message('other-overflow', { senderId: 'member-b', senderName: '带鱼' }))).toBe(false);
+  worker.stop(); await worker.idle();
+});
 const config: QQConfig = { credentialsPath: 'credentials.json', providerConfigPath: 'provider.json', dailyTokenBudget: QQ_LIMITS.reservation * 8,
   maxQueue: 20, maxUserQueue: 2, privateReply: QQ_PRIVATE_REPLY };
 function setup(overrides: Partial<QQConfig> = {}) {
@@ -13,9 +41,10 @@ function setup(overrides: Partial<QQConfig> = {}) {
   const state = newQQState('900000001');
   const saved: typeof state[] = [];
   const io = { now: () => now, save: jest.fn(async () => { saved.push(structuredClone(state)); }), record: jest.fn<Promise<void>, [QQRequest, QQRecordUpdate]>(async () => {}),
-    answer: jest.fn<Promise<QQTextAnswer>, [QQRequest, AbortSignal, QQExecuteImage?]>(async () => '你好呀，今天想聊些什么？'),
+    answer: jest.fn<Promise<QQTextAnswer>, Parameters<QQWorkerIO['answer']>>(async () => '你好呀，今天想聊些什么？'),
     image: jest.fn<Promise<QQImageResult>, [QQRequest, AbortSignal, QQImageCommand?]>(async () => ({ file: 'image.png', model: 'gpt-image-2.5-sunburst', sha256: 'a'.repeat(64), prompt: 'scene' })),
     pendingImage: jest.fn<Promise<QQImageDelivery | undefined>, [QQRequest]>(async () => undefined),
+    collectImage: jest.fn<Promise<QQImageDelivery | undefined>, [QQRequest]>(async () => undefined),
     imageAdmission: jest.fn<string | undefined, [QQRequest]>(() => undefined),
     send: jest.fn<Promise<void>, [QQRequest, string, QQImageResult?]>(async () => {}),
     sleep: jest.fn(async (ms: number) => { now += ms; }), report: jest.fn() };
@@ -35,6 +64,15 @@ test('ordinary chatter has no IO; duplicate mentions answer and send once', asyn
   expect(state.tokens).toBe(QQ_LIMITS.reservation);
   expect(saved.some(snapshot => Object.values(snapshot.receipts)[0]?.status === 'generating' && snapshot.tokens === QQ_LIMITS.reservation)).toBe(true);
   expect(saved.some(snapshot => Object.values(snapshot.receipts)[0]?.status === 'sending')).toBe(true);
+});
+
+test('delivers the complete server video review beyond normal answer length without admitting image work', async () => {
+  const { worker, message, io } = setup({ videos: { enabled: true, queuePath: 'queue.json', voices: [] } });
+  const preview = '视频草稿\n素材：图片1：岁己\nprompt：@Image 1 ' + '秋风中散步。'.repeat(80);
+  io.answer.mockResolvedValue({ text: preview, tokens: 100, videoReview: true });
+  worker.receive(message('video-review', { content: '生成岁己散步的视频' })); await worker.idle();
+  expect(io.send.mock.calls[0][1]).toBe(preview);
+  expect(io.image).not.toHaveBeenCalled(); expect(io.pendingImage).not.toHaveBeenCalled();
 });
 test('security explanations are not mistaken for credential output', async () => {
   const { worker, message, io } = setup();
@@ -159,6 +197,29 @@ test('ambiguous sends pause all work and are never retried', async () => {
   expect(io.send).toHaveBeenCalledTimes(1); expect(io.answer).toHaveBeenCalledTimes(1);
   expect(worker.receive(message('c'))).toBe(false);
 });
+
+test('a rejected image send cannot disable queued and future chat or replay the rejected request', async () => {
+  const { worker, message, io, state, saved } = setup({ images: { enabled: true, model: 'gpt-image-2.5-sunburst',
+    quality: 'high', dailyLimit: 300, userDailyLimit: 30, timeoutMs: 180000 } });
+  const image = { file: 'image.png', model: 'image-model', sha256: 'a'.repeat(64), prompt: 'scene' };
+  io.collectImage.mockResolvedValueOnce({ text: '完成', image });
+  io.answer.mockImplementationOnce(async (_request, _signal, _execute, tasks) => (await tasks!.collect()).message);
+  io.send.mockRejectedValueOnce(new QQSendRejectedError(40034006));
+  const rejected = message('rejected-image', { content: '收图' });
+  worker.receive(rejected); worker.receive(message('queued-chat'));
+  await worker.idle();
+  expect(state.paused).toBe(false);
+  expect(state.receipts[qqRequest(rejected, epoch)!.key].status).toBe('unknown');
+  expect(saved.some(snapshot => snapshot.receipts[qqRequest(rejected, epoch)!.key]?.status === 'unknown' && !snapshot.paused)).toBe(true);
+  expect(io.send.mock.calls[0][2]).toEqual(image);
+  expect(io.send).toHaveBeenCalledTimes(2);
+  expect(worker.receive(rejected)).toBe(false);
+  expect(worker.receive(message('fresh-chat'))).toBe(true);
+  await worker.idle();
+  expect(io.send).toHaveBeenCalledTimes(3);
+  expect(io.report).toHaveBeenCalledWith(expect.objectContaining({ event: 'qq_send_rejected' }));
+  expect(Object.values(state.receipts).filter(receipt => receipt.status === 'sent')).toHaveLength(2);
+});
 test('checkpoint failures fail closed before any model or send', async () => {
   const { worker, message, io, state } = setup();
   io.save.mockRejectedValue(new Error('disk full'));
@@ -223,7 +284,7 @@ function imageAgent(mode: 'create' | 'edit' = 'create', overrides: Partial<QQCon
   return fixture;
 }
 
-test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', '人物的位置照这个要求调整', '变岁己', '把图里的角色换成栞栞，改成水彩风格'])
+test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', '人物的位置照这个要求调整', '变岁己', '加入一个饼干人作为老公', '把图里的角色换成栞栞，改成水彩风格'])
 ('the agent selects editing independently of keyword routing: %s', async content => {
   const { worker, message, io, state } = imageAgent('edit');
   worker.receive(message('edit', { content, msgType: 103, msgElements: [{ msg_idx: 'own-image-index' }] })); await worker.idle();
@@ -234,19 +295,32 @@ test.each(['改成一前一后抬棺', '生成图片,改成一前一后抬棺', 
   expect(io.send).toHaveBeenCalledWith(expect.anything(), '给你改好啦～', expect.objectContaining({ file: 'image.png' }));
 });
 
+test('the worker corrects a mislabeled addition to a quoted image before validation', async () => {
+  const { worker, message, io } = setup({ images });
+  io.answer.mockImplementation(async (request, _signal, execute) => {
+    const result = await execute!({ mode: 'create', instruction: request.text, characters: [] });
+    return { text: result.message, tokens: 100 };
+  });
+  worker.receive(message('add-edit', { content: '加入一个饼干人作为老公', msgType: 103, msgElements: [{ msg_idx: 'own-image-index' }] }));
+  await worker.idle();
+  expect(io.image).toHaveBeenCalledTimes(1);
+  expect(io.image.mock.calls[0][2]).toMatchObject({ mode: 'edit', instruction: '加入一个饼干人作为老公' });
+});
+
 test('the agent can answer image-related words or quoted chatter without executing any image tool', async () => {
   const { worker, message, io, state } = setup({ images });
   worker.receive(message('chat', { content: '生成图片这个功能怎么用', refMsgIdx: 'own-image-index' })); await worker.idle();
   expect(io.answer).toHaveBeenCalledTimes(1); expect(io.image).not.toHaveBeenCalled(); expect(state.images || 0).toBe(0);
 });
 
-test('edit tool requires a source and create tool cannot discard a quoted source', async () => {
+test('edit tool requires a source and create tool retains a quoted source', async () => {
   const f = imageAgent('edit');
   f.worker.receive(f.message('missing', { content: '生成图片,改成一前一后抬棺' })); await f.worker.idle();
   expect(f.io.image).not.toHaveBeenCalled(); expect(f.io.send.mock.calls[0][1]).toContain('请引用要修改的图片');
   const g = imageAgent('create');
   g.worker.receive(g.message('discard', { content: `${QQ_IMAGE_CONFIRM_PREFIX}生成图片`, refMsgIdx: 'original' })); await g.worker.idle();
-  expect(g.io.image).not.toHaveBeenCalled(); expect(g.io.send.mock.calls[0][1]).toContain('不能丢弃原图');
+  expect(g.io.image).toHaveBeenCalledTimes(1);
+  expect(g.io.image.mock.calls[0][0]).toMatchObject({ imageInput: { reply: 'original' } });
 });
 
 test.each(['生成岁己和栞栞在wwe赛场上大战的图片', '生成一张森亚露露卡抱向主视角的图', '生成星空图片', '请帮我画一个星汐'])
@@ -315,15 +389,14 @@ test('daily counts reset at Shanghai midnight while image windows survive cleanu
   expect(io.image).toHaveBeenCalledTimes(1); expect(state.users[user].images).toBe(1);
 });
 
-test.each(['daily', 'global', 'cooldown'])('image %s gate reports its actual cause without reserving an image', async gate => {
+test.each(['daily', 'global'])('image %s gate reports its actual cause without reserving an image', async gate => {
   const { worker, message, io, state } = imageAgent();
   const user = qqRequest(message(), epoch)!.user;
   state.day = '2026-10-28'; state.images = gate === 'global' ? 300 : 0;
   state.users[user] = { count: 0, starts: [], images: gate === 'daily' ? 30 : 0 };
-  if (gate === 'cooldown') state.lastImageAt = epoch - 1000;
   worker.receive(message(gate, { content: `${QQ_IMAGE_CONFIRM_PREFIX}生成星空图片` })); await worker.idle();
   expect(io.image).not.toHaveBeenCalled(); expect(state.users[user].imageStarts).toEqual([]);
-  expect(io.send.mock.calls[0][1]).toContain(gate === 'daily' ? '你今天的生图次数用完了' : gate === 'global' ? '今天大家的生图次数用完了' : '你生太快了，晚点再来。');
+  expect(io.send.mock.calls[0][1]).toContain(gate === 'daily' ? '你今天的生图次数用完了' : gate === 'global' ? '今天大家的生图次数用完了' : '全局生图启动间隔');
 });
 
 test('global capacity admits the 300th image and blocks another user', async () => {
@@ -334,13 +407,14 @@ test('global capacity admits the 300th image and blocks another user', async () 
   expect(io.image).toHaveBeenCalledTimes(1); expect(state.images).toBe(300); expect(io.send.mock.calls[1][1]).toBe('今天大家的生图次数用完了，请在明天00:00后再尝试吧～');
 });
 
-test.each(['rewrite', 'failure'] as const)('confirmed personal image limit survives model %s and preserves the quota', async mode => {
+test.each(['rewrite', 'failure'] as const)('personal image limit reached during planning survives model %s and preserves the quota', async mode => {
   const { worker, message, io, state } = imageAgent();
   const user = qqRequest(message(), epoch)!.user;
   state.day = '2026-10-28'; state.images = 10;
   const imageStarts = Array(10).fill(epoch - 60000);
-  state.users[user] = { count: 0, starts: [], images: 10, imageStarts: [...imageStarts] };
+  state.users[user] = { count: 0, starts: [], images: 10, imageStarts: [] };
   io.answer.mockImplementation(async (request, _signal, execute) => {
+    state.users[user].imageStarts = [...imageStarts];
     const result = await execute!({ mode: 'create', instruction: request.text, characters: [] });
     expect(result.status).toBe('blocked');
     if (mode === 'failure') throw new Error('model failed after reading the limit');
@@ -354,6 +428,7 @@ test.each(['rewrite', 'failure'] as const)('confirmed personal image limit survi
   expect(io.image).not.toHaveBeenCalled(); expect(state.images).toBe(10);
   expect(state.users[user].images).toBe(10); expect(state.users[user].imageStarts).toEqual(imageStarts);
   expect(state.lastImageAt).toBeUndefined();
+  expect(io.answer).toHaveBeenCalledTimes(1);
 });
 
 test('personal image quotas apply across groups and remain independent between members', async () => {
@@ -473,10 +548,10 @@ test('stopping during the reply wait suppresses any send', async () => {
   expect(f.io.send).not.toHaveBeenCalled(); expect(f.state.images).toBe(1);
 });
 
-test('pending status replies do not consume model or image budget even when the daily model budget is exhausted', async () => {
+test('empty-mention pickup does not consume model or image budget even when the daily model budget is exhausted', async () => {
   const f = setup({ images }); f.state.day = '2026-10-28'; f.state.tokens = config.dailyTokenBudget;
   f.io.pendingImage.mockResolvedValue({ text: '上一张图还在后台生成' });
-  f.worker.receive(f.message('waiting')); await f.worker.idle();
+  f.worker.receive(f.message('waiting', { content: '' })); await f.worker.idle();
   expect(f.io.answer).not.toHaveBeenCalled(); expect(f.io.image).not.toHaveBeenCalled();
   expect(f.state.tokens).toBe(config.dailyTokenBudget); expect(f.state.images || 0).toBe(0);
   expect(f.io.send.mock.calls[0][1]).toContain('后台生成');
@@ -494,4 +569,99 @@ test('background journal admission failure pauses before sending an acknowledgem
   const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, enqueueImage: async () => { throw new Error('disk full'); } });
   worker.receive(f.message('image', { content: '生成星空图片' })); await worker.idle();
   expect(f.state.paused).toBe(true); expect(f.io.send).not.toHaveBeenCalled(); expect(f.io.image).not.toHaveBeenCalled();
+});
+
+test.each(['生成星空图片', '生成小岁散步的视频', '确认生成视频'])('explicit media commands acknowledge after admission and before planning: %s', async content => {
+  const f = setup({ images, videos: { enabled: true, queuePath: 'queue.json', voices: [] } });
+  const events: string[] = [];
+  const acknowledge = jest.fn(async () => { expect(f.saved.length).toBeGreaterThan(0); events.push('ack'); return true; });
+  f.io.answer.mockImplementation(async () => { events.push('answer'); return '正在处理'; });
+  const worker = new QQWorker({ ...config, images, videos: { enabled: true, queuePath: 'queue.json', voices: [] } }, f.state, { ...f.io, acknowledge });
+  worker.receive(f.message('media', { content })); await worker.idle();
+  expect(events).toEqual(['ack', 'answer']); expect(acknowledge).toHaveBeenCalledTimes(1);
+  expect(f.io.send).toHaveBeenCalledTimes(1);
+});
+
+test.each(['user_window', 'user_daily', 'global_daily', 'capacity'] as const)
+('known image %s rejection sends only the refusal before any progress or model call', async gate => {
+  const f = imageAgent();
+  const acknowledge = jest.fn(async () => true);
+  const user = qqRequest(f.message(), epoch)!.user;
+  f.state.day = '2026-10-28';
+  f.state.users[user] = { count: 0, starts: [], images: gate === 'user_daily' ? images.userDailyLimit : 0,
+    imageStarts: gate === 'user_window' ? Array(10).fill(epoch - 60000) : [] };
+  f.state.images = gate === 'global_daily' ? images.dailyLimit : 0;
+  if (gate === 'capacity') f.io.imageAdmission.mockReturnValue('后台已有两张图在生成，请稍后再试。');
+  const before = structuredClone(f.state);
+  const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, acknowledge });
+  worker.receive(f.message('known-limit', { content: '生成岁几躺床上双脚分叉挖矿的图' }));
+  await worker.idle();
+  expect(acknowledge).not.toHaveBeenCalled(); expect(f.io.answer).not.toHaveBeenCalled();
+  expect(f.io.image).not.toHaveBeenCalled(); expect(f.io.send).toHaveBeenCalledTimes(1);
+  expect(f.io.send.mock.calls[0][1]).toBe(gate === 'user_window' ? '你生太多了，请在14:59后再尝试吧～' :
+    gate === 'user_daily' ? '你今天的生图次数用完了，请在明天00:00后再尝试吧～' :
+    gate === 'global_daily' ? '今天大家的生图次数用完了，请在明天00:00后再尝试吧～' :
+    '后台已有两张图在生成，请稍后再试。');
+  expect(f.state.tokens).toBe(before.tokens); expect(f.state.images).toBe(before.images);
+  expect(f.state.users[user]).toEqual(before.users[user]);
+  expect(f.state.paused).toBe(false);
+});
+
+test('image cooldown does not block video progress, chat, help or an existing result pickup', async () => {
+  const f = setup({ images, videos: { enabled: true, queuePath: 'queue.json', voices: [] } });
+  const acknowledge = jest.fn(async () => true);
+  f.state.lastImageAt = epoch - 1000;
+  const worker = new QQWorker({ ...config, images, videos: { enabled: true, queuePath: 'queue.json', voices: [] } }, f.state, { ...f.io, acknowledge });
+  for (const [index, content] of ['生成小岁散步的视频', '你好', '怎么生成图片'].entries()) {
+    worker.receive(f.message(`unaffected-${index}`, { content })); await worker.idle();
+  }
+  f.io.collectImage.mockResolvedValueOnce({ text: '图片已生成', image: { file: 'image.png', model: images.model, sha256: 'a'.repeat(64), prompt: 'scene' } });
+  f.io.answer.mockImplementationOnce(async (_request, _signal, _execute, tasks) => (await tasks!.collect()).message);
+  worker.receive(f.message('existing-result', { content: '领取图片' })); await worker.idle();
+  expect(acknowledge).toHaveBeenCalledTimes(1); expect(f.io.answer).toHaveBeenCalledTimes(4);
+  expect(f.io.send).toHaveBeenCalledTimes(4); expect(f.io.imageAdmission).not.toHaveBeenCalled();
+  expect(f.io.send.mock.calls.at(-1)?.[2]?.file).toBe('image.png');
+});
+
+test.each(['你好', '怎么生成图片', '不要生成视频'])('ordinary chat and media help have no progress notice: %s', async content => {
+  const f = setup({ images }); const acknowledge = jest.fn(async () => true);
+  const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, acknowledge });
+  worker.receive(f.message('chat', { content })); await worker.idle();
+  expect(acknowledge).not.toHaveBeenCalled();
+});
+
+test('an uncertain progress send stops before paid planning and the final answer', async () => {
+  const f = setup({ images });
+  const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, acknowledge: async () => { throw new Error('send uncertain'); } });
+  worker.receive(f.message('media', { content: '生成星空图片' })); await worker.idle();
+  expect(f.state.paused).toBe(true); expect(f.io.answer).not.toHaveBeenCalled(); expect(f.io.send).not.toHaveBeenCalled();
+});
+
+test('ordinary explicit image submissions return queue receipts immediately despite pending images and five recent text starts', async () => {
+  const f = imageAgent(); f.state.day = '2026-10-28'; f.state.starts = Array(5).fill(epoch); f.state.lastImageAt = epoch;
+  const enqueueImage = jest.fn(async () => ({ status: 'pending' as const, background: true, message: '图片已排队，目前第2位，预计约3分钟后开始生成。' }));
+  const waitImage = jest.fn(async () => undefined);
+  f.io.pendingImage.mockResolvedValue({ text: '上一张还在生成' });
+  const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, enqueueImage, waitImage });
+  worker.receive(f.message('new-image', { content: '生成星空图片' })); await worker.idle();
+  expect(() => validateQQState(f.state, '900000001')).not.toThrow();
+  expect(enqueueImage).toHaveBeenCalledTimes(1); expect(waitImage).not.toHaveBeenCalled(); expect(f.io.pendingImage).not.toHaveBeenCalled();
+  expect(f.io.send.mock.calls[0][1]).toContain('第2位');
+});
+
+test('a queue filling during model preparation returns the exact refusal without spending image quota', async () => {
+  const f = imageAgent(); f.state.day = '2026-10-28';
+  const enqueueImage = jest.fn(async () => ({ status: 'blocked' as const, message: '生图排队满了（最多20张），请稍后再试。' }));
+  const worker = new QQWorker({ ...config, images }, f.state, { ...f.io, enqueueImage });
+  worker.receive(f.message('full-during-prepare', { content: '生成星空图片' })); await worker.idle();
+  const user = qqRequest(f.message(), epoch)!.user;
+  expect(f.state.images).toBe(0); expect(f.state.users[user].images).toBe(0); expect(f.state.users[user].imageStarts).toEqual([]);
+  expect(f.io.send.mock.calls[0][1]).toContain('排队满了');
+});
+
+test('rapid image submissions use the twenty-item inbound capacity while ordinary chatter remains bounded', async () => {
+  const f = setup({ images });
+  for (let i = 0; i < 20; i++) expect(f.worker.receive(f.message(`burst-${i}`, { content: '生成星空图片' }))).toBe(true);
+  expect(f.worker.receive(f.message('overflow', { content: '生成星空图片' }))).toBe(false);
+  f.worker.stop(); await f.worker.idle();
 });

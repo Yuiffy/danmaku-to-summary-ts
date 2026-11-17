@@ -30,19 +30,24 @@ export function experimentEligibility(clip: ExperimentClip, sourceSha256?: strin
 
 /** An explicitly rebuilt baseline carries a newer review than its original selection plan. */
 export function rebuiltPrecisionCandidate(artifact: Record<string, any>, sourceSha256: string,
-    snapshot: { source: unknown; digests: Record<string, unknown> }): ExperimentClip {
+    snapshot: { source: unknown; digests: Record<string, unknown> }, localNote = ''): ExperimentClip {
     const draft = artifact.renderedSubtitles, review = artifact.attributionReview, final = artifact.publicationReview;
     const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
     const copyDigest = createHash('sha256').update(['title', 'coverText', 'description']
         .map(key => String(artifact.copy?.[key] || '')).join('\0')).digest('hex');
-    if (!artifact.uploadReady || artifact.publicCopyPending || artifact.rebuildRequired || artifact.selectionRejection
+    const localBaseline = Boolean(localNote.trim()) && review?.status === 'passed'
+        && review.artifactWindow?.start === artifact.window.start && review.artifactWindow?.end === artifact.window.end
+        && ['video', 'subtitles'].every(key => snapshot.digests[key] && review.artifactDigests?.[key] === snapshot.digests[key])
+        && (!final || final.status === 'needs_review' && final.issues?.length === 1 && final.issues[0] === 'precision_not_completed');
+    const finalReviewed = final?.status === 'passed' && final.technical?.passed === true && !final.issues?.length
+        && final.artifactWindow?.start === artifact.window.start && final.artifactWindow?.end === artifact.window.end
+        && ['content', 'attribution', 'subtitles', 'visuals', 'policy'].every(key => final.checks?.[key] === true)
+        && same(final.source, snapshot.source)
+        && ['video', 'subtitles', 'cover', 'copy'].every(key => snapshot.digests[key] && final.digests?.[key] === snapshot.digests[key]);
+    if ((!artifact.uploadReady && !localBaseline) || artifact.publicCopyPending || artifact.rebuildRequired || artifact.selectionRejection
         || draft?.version !== 1 || !draft.review?.note || draft.sourceSha256 !== sourceSha256
         || draft.window?.start !== artifact.window.start || draft.window?.end !== artifact.window.end
-        || final?.status !== 'passed' || final.technical?.passed !== true || final.issues?.length
-        || final.artifactWindow?.start !== artifact.window.start || final.artifactWindow?.end !== artifact.window.end
-        || ['content', 'attribution', 'subtitles', 'visuals', 'policy'].some(key => final.checks?.[key] !== true)
-        || !same(final.source, snapshot.source)
-        || ['video', 'subtitles', 'cover', 'copy'].some(key => !snapshot.digests[key] || final.digests?.[key] !== snapshot.digests[key])
+        || (!finalReviewed && !localBaseline)
         || review?.artifactCopyDigest !== copyDigest) throw new Error('Rebuilt precision baseline requires current independent review');
     const clip: ExperimentClip = { start: artifact.window.start, end: artifact.window.end,
         ...review.proposedCopy, attributionRequired: true, publicCopyPending: false,

@@ -65,6 +65,27 @@ def _ranges(clip, metadata):
     if _purpose(clip, metadata) == ('compilation',):
         return []
     window = metadata.get('window') or {}
+    plan = metadata.get('editPlan') or {}
+    # Reviewed precision media contains only these absolute recording intervals.
+    # Its enclosing window may include a long deleted topic already published.
+    if (_purpose(clip, metadata) == ('ordinary',) and metadata.get('creativeResult', {}).get('status') == 'edited'
+            and metadata.get('qaResult', {}).get('status') == 'passed' and plan.get('version') == 1
+            and plan.get('mode') == 'editorial' and plan.get('sourceId')
+            and plan.get('sourceWindow') == {key: window.get(key) for key in ('start', 'end')}):
+        kept = plan.get('keep')
+        cursor = _seconds(window.get('start'))
+        horizon = _seconds(window.get('end'))
+        result = []
+        for row in kept if isinstance(kept, list) else []:
+            start, end = (_seconds(row.get(key)) for key in ('start', 'end')) if isinstance(row, dict) else (None, None)
+            if (start is None or end is None or cursor is None or horizon is None
+                    or start < cursor or end <= start or end > horizon):
+                result = []
+                break
+            result.append((start, end))
+            cursor = end
+        if result:
+            return result
     items = (metadata.get('parts') or clip.get('parts')) if _purpose(clip, metadata) != ('ordinary',) else None
     items = items or [window if window else clip]
     result = []

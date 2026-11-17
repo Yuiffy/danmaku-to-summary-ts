@@ -51,6 +51,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
         .map((clip, index) => {
             const reject = (reason, extra = {}) => {
                 rejections?.push({ index: index + 1, candidateIndex: clip.candidateIndex, reason,
+                    tags: require('../content_tags').normalizeAiContentTags(clip.tags),
                     title: typeof clip.title === 'string' ? clip.title : null, score: clip.score ?? null,
                     startCueId: clip.startCueId, endCueId: clip.endCueId, startTime: clip.startTime, endTime: clip.endTime, ...extra });
                 return null;
@@ -109,6 +110,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
                 title: String(resolved.title || '').trim() || (base ? buildFallbackTitle(base, streamerLabel) : `${streamerLabel}：直播有趣片段`),
                 coverText: normalizeCoverText(resolved.coverText),
                 description: String(resolved.description || '').trim(),
+                tags: require('../content_tags').normalizeAiContentTags(resolved.tags),
                 reason: String(clip.reason || base?.reason || '').trim(),
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
                 score: Number(clip.score ?? base?.recallScore ?? base?.score ?? 0),

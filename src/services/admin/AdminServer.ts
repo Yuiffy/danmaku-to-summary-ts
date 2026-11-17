@@ -26,6 +26,7 @@ import { AdminCampaignFeedback } from './AdminCampaignFeedback';
 import { AdminAsrStatus } from './AdminAsrStatus';
 import { AdminClipProgress } from './AdminClipProgress';
 import { AdminQQKnowledge } from './AdminQQKnowledge';
+import { AdminAIVideoQueue } from './AdminAIVideoQueue';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
@@ -46,6 +47,7 @@ export interface AdminAdapters {
   campaignFeedback?: AdminCampaignFeedback;
   asr?: AdminAsrStatus;
   clipProgress?: AdminClipProgress;
+  aiVideoQueue?: AdminAIVideoQueue;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -60,6 +62,14 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.use(express.json({ limit: '1mb' }));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  app.get('/queues/ai-video', (req, res) => {
+    if (!adapters.aiVideoQueue) throw new AdminError('AI 视频队列未配置', 503);
+    res.json(adapters.aiVideoQueue.view(req.query));
+  });
+  app.get('/queues/ai-video/:key/media', (req, res) => {
+    if (!adapters.aiVideoQueue) throw new AdminError('AI 视频队列未配置', 503);
+    res.type('mp4').sendFile(adapters.aiVideoQueue.media(req.params.key));
+  });
   const candidates = () => { if (!adapters.campaignCandidates) throw new AdminError('活动候选未配置', 503); return adapters.campaignCandidates; };
   app.get('/source-assets/:key', (req, res) => {
     if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
@@ -103,7 +113,8 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   });
   app.get('/qq-records/:appId/:date/:id/image', (req, res) => {
     if (!adapters.qqRecords) throw new AdminError('QQ 记录未配置', 503);
-    res.type('png').send(adapters.qqRecords.image(req.params.appId, req.params.date, req.params.id));
+    const image = adapters.qqRecords.image(req.params.appId, req.params.date, req.params.id);
+    res.type(image.subarray(0, 3).toString('ascii') === 'GIF' ? 'gif' : 'png').send(image);
   });
   app.get('/qq-chat', (req, res) => {
     if (!adapters.qqChat) throw new AdminError('QQ 群聊归档未配置', 503);

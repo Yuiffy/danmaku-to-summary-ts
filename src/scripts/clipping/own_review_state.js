@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { buildSubtitleEvidence, parseClipResponse } = require('./subtitle_evidence');
 const { chronologicalResults } = require('./own_review_report');
 
-function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
+function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = [], tagSettings = {}) {
     const topic = require('../topic_clipper');
     const evidence = buildSubtitleEvidence(parsed.segments);
     const intentPolicy = require('../workflow-runtime').loadWorkflow('clipping/clipIntent');
@@ -89,13 +89,18 @@ function prepareReviewResults(results, plan, parsed, outputRoot, danmaku = []) {
         fs.mkdirSync(directory, { recursive: true });
         const srtPath = validWindow ? path.join(directory, `rejected-${key}.srt`) : null;
         if (srtPath) topic.writeClipSrt(parsed.segments, window, srtPath);
+        const tags = require('../content_tags').deriveContentTags({ streamTitle: tagSettings.streamTitle,
+            aiTags: rejection.tags, text: validWindow ? parsed.segments.filter(cue => cue.end > start && cue.start < end).map(cue => cue.text).join('\n') : '' });
+        const safeTags = require('../ai_clip_metadata').postProcessAiClipMetadata({ tags: [...tags, ...(tagSettings.baseTags || [])], requiredTags: tagSettings.baseTags || [] }, tagSettings.rootConfig || {}).tags;
         const metadata = {
             version: 1, mode: 'own_stream_fun_review', status: 'selection_rejected', reviewIndex: index,
             generatedAt: new Date().toISOString(), source, window,
             selectionSource: rejection.selectionSource || 'model_global_rerank', reviewPresentation,
             copy: { title: rejection.title || `\u88ab\u5254\u9664\u5019\u9009 ${rejection.candidateIndex ?? rejection.index ?? '?'}`,
                 description: rejection.reason === 'editorial_deferred' ? rejection.description || '' : '',
-                coverText: rejection.reason === 'editorial_deferred' ? rejection.coverText || '' : '' },
+                coverText: rejection.reason === 'editorial_deferred' ? rejection.coverText || '' : '',
+                tags: safeTags },
+            upload: { tags: safeTags },
             recommendationScore: rejection.score ?? null, publicCopyPending: true, uploadReady: false,
             ...(rejection.publication ? { publication: rejection.publication } : {}), ...(rejection.curation ? { curation: rejection.curation } : {}),
             ...(clipIntent?.signals.length ? { clipIntent } : {}),

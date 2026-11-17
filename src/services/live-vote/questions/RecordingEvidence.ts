@@ -11,6 +11,7 @@ import { FtsMatch, FtsSearch } from './RecordingFtsIndex';
 import { BrowseResult, BrowseSource, OpeningResult, RecordingBrowser, RecordingCollection } from './RecordingBrowser';
 import { curatedSources, parseHighlight } from './CuratedRecordingSources';
 import { RecordingCalendar } from './RecordingCalendar';
+import { matchesRecordingTitle, recordingDetailTerms, validTitleTerms } from './RecordingTitleScope';
 
 type EvidenceKind = BrowseSource['kind'];
 interface Cue extends DanmakuAttribution { seconds: number; text: string }
@@ -42,6 +43,7 @@ export interface RecordingSearch {
   terms: string[]; kind: 'all' | 'subtitle' | 'danmaku'; date: string | null;
   query?: string | null; withinEvidenceId?: string | null;
   collection?: RecordingCollection;
+  titleTerms?: string[] | null;
 }
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -53,8 +55,9 @@ const MAX_EVIDENCE = 2048;
 
 export function parseRecordingSearch(args: unknown): RecordingSearch {
   const input = args as Partial<RecordingSearch>;
-  if (!input || Object.keys(input).some(key => !['terms', 'kind', 'date', 'query', 'withinEvidenceId', 'collection'].includes(key)) ||
+  if (!input || Object.keys(input).some(key => !['terms', 'kind', 'date', 'query', 'withinEvidenceId', 'collection', 'titleTerms'].includes(key)) ||
       input.collection !== undefined && !['recordings', 'highlights', 'clips'].includes(input.collection) ||
+      !validTitleTerms(input.titleTerms) || input.titleTerms != null && input.collection != null && input.collection !== 'recordings' ||
       !Array.isArray(input.terms) || !input.terms.length || input.terms.length > 5 ||
       input.terms.some(term => typeof term !== 'string' || !term.trim() || Array.from(term).length > 40 || /[\p{Cc}\p{Cf}]/u.test(term)) ||
       !['all', 'subtitle', 'danmaku'].includes(input.kind as string) ||
@@ -303,7 +306,7 @@ export class RecordingEvidence {
     const input = parseRecordingSearch(args);
     this.checkAbort();
     if (input.collection && input.collection !== 'recordings') return this.searchCurated(input);
-    const terms = expandGiftTerms(input.terms as string[]);
+    const terms = expandGiftTerms(recordingDetailTerms(input.terms, input.titleTerms));
     const scoreText = evidenceScorer(terms, input.query || this.options.question);
     const earliest = /最早|首次|第一次.{0,8}(?:发|出现)/u.test(this.options.question || input.query || '');
     const chronology = (a: { file: RecordingFile; seconds: number; sentAt?: string }, b: { file: RecordingFile; seconds: number; sentAt?: string }) =>
@@ -311,12 +314,18 @@ export class RecordingEvidence {
     const anchor = input.withinEvidenceId ? this.origins.get(input.withinEvidenceId) : undefined;
     if (input.withinEvidenceId && !anchor) throw new Error('Unknown session evidence ID');
     if (anchor && anchor.file.kind !== 'subtitle' && anchor.file.kind !== 'danmaku') throw new Error('Derived artifacts require an original recording lookup');
-    const fast = await this.options.ftsSearch?.(input.date, terms, { query: input.query || undefined,
-      session: anchor?.file, kind: input.kind, earliest });
+    const titleFiles = input.titleTerms ? (await this.files(anchor?.file.date || input.date, input.kind))
+      .filter(file => matchesRecordingTitle(file.file, input.titleTerms!)) : undefined;
+    const titleScope = titleFiles ? new Set(titleFiles.map(file => file.file)) : undefined;
+    const focus = { query: input.query || undefined, session: anchor?.file, files: titleScope };
+    const fast = await this.options.ftsSearch?.(input.date, terms, { ...focus, kind: input.kind, earliest });
     let invalidIndexedSource = false;
     const known = anchor ? [...this.origins.values()].map(origin => origin.file) : [];
-    const files = fast?.available ? [] : [...new Map([...(await this.files(anchor?.file.date || input.date, input.kind)), ...known].filter(file =>
+    // Once the title narrows the sources, also scan their body cues: the per-file FTS chunk cap
+    // can hide a single useful action cue behind repetitive chatter elsewhere in the same event.
+    const files = fast?.available && !titleFiles ? [] : [...new Map([...(titleFiles || await this.files(anchor?.file.date || input.date, input.kind)), ...known].filter(file =>
       (!anchor || recordingSessionKey(file) === recordingSessionKey(anchor.file)) &&
+      (!titleScope || titleScope.has(file.file)) &&
       (input.kind === 'all' || input.kind === file.kind) && (!input.date || file.date?.startsWith(input.date))).map(file => [file.file, file])).values()];
     if (earliest) files.sort((a, b) => (a.date || '').localeCompare(b.date || '') || a.file.localeCompare(b.file));
     const semanticMatches: Array<{ file: RecordingFile; index: number }> = [];
@@ -327,12 +336,13 @@ export class RecordingEvidence {
       // Keep routine keyword searches and chronological exact-quote lookup on the fast path.
       if (!search || input.kind === 'danmaku' && !isFts || !isFts && fast?.available && indexedMatches.length && (!input.query || earliest)) continue;
       try {
-        const candidates = await search(input.date, terms, { query: input.query || undefined, session: anchor?.file });
+        const candidates = await search(input.date, terms, focus);
         const roots = new Set<string>();
         for (const root of this.roots) { try { roots.add(await fs.realpath(root)); } catch { /* Offline archive. */ } }
         const snapshots = new Map<string, string>();
         for (const candidate of candidates.slice(0, 32)) {
           this.checkAbort();
+          if (titleScope && !titleScope.has(candidate.file)) continue;
           if (anchor && recordingSessionKey(candidate) !== recordingSessionKey(anchor.file) || !roots.has(candidate.root) || !inside(candidate.root, candidate.file) ||
             input.date && !candidate.date?.startsWith(input.date as string)) { invalidIndexedSource = true; continue; }
           const parts = path.relative(candidate.root, candidate.file).split(path.sep);
@@ -388,6 +398,7 @@ export class RecordingEvidence {
     let limited = fast?.available ? !fast.complete || !!fast.limited || invalidIndexedSource : input.kind !== 'danmaku' && (!!this.options.semanticSearch || !!this.options.indexedSearch) ||
       !earliest && files.length > MAX_FILES || earliest && files.some(file => !file.date) ||
       this.enumerationLimited || this.directoryEntries >= MAX_DIRECTORY_ENTRIES;
+    if (titleScope) limited ||= this.enumerationLimited || this.directoryEntries >= MAX_DIRECTORY_ENTRIES || !earliest && files.length > MAX_FILES;
     const deadline = Date.now() + 30000;
     const concepts = terms.filter(term => !terms.some(other => other !== term && term.includes(other)));
     let stopAfter: string | undefined;
@@ -459,6 +470,9 @@ export class RecordingEvidence {
     }
     const hits: EvidenceSearchHit[] = [];
     const combined: Array<{ file: RecordingFile; index: number }> = [];
+    // For a title-scoped event, preserve the verified body scan before approximate/global chunk
+    // candidates consume the result budget. Semantic recall still fills unused slots.
+    if (titleScope) combined.push(...matches.slice(0, MAX_HITS));
     // Alternate independent recall lists; neither common keywords nor approximate similarity can monopolize evidence.
     for (let i = 0; i < MAX_HITS; i++) {
       for (const match of earliest ? [matches[i], indexedMatches[i], semanticMatches[i]] : [indexedMatches[i], matches[i], semanticMatches[i]]) {

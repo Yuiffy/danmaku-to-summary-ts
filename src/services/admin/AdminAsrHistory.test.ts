@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { asrHistoryMetrics, readAsrHistory } from './AdminAsrHistory';
 import { atomicJson } from './AdminFiles';
+import { summarizeAsrHistory } from '../../core/admin/asrHistory';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
@@ -24,6 +25,48 @@ it('does not invent legacy device/tier or use full duration to inflate resumed s
   expect(asrHistoryMetrics({ stageTimings: { handoff_gpu_audio_s: 500, handoff_cpu_audio_s: 0, handoff_gpu_window_s: 10,
     handoff_transcription_s: 20, handoff_reused_audio_s: 9500 }, speakerProcessing: { status: 'disabled' } }))
     .toMatchObject({ speedX: 25, speakerState: 'skipped', tiers: [{ tier: 'gpu_unknown', speedX: 50 }] });
+});
+
+it('recognizes observed CPU fallback outside handoff without inventing window timing or counters', () => {
+  const result = asrHistoryMetrics({ backend: 'paraformer', mediaDurationSeconds: 2339.141, elapsedSeconds: 434.354,
+    stageTimings: { cpu_fallback: 1, model_load_s: 51.527, pipeline_total_s: 304.398, asr_inference_s: 264.494 } });
+  expect(result.tiers).toEqual([{ tier: 'cpu_background', audioSeconds: 2339.141 }]);
+  expect(result).toMatchObject({ modelLoadSeconds: 51.527 });
+  // Inference/pipeline timing is not the handoff transcription wall clock.
+  expect(result.transcriptionSeconds).toBeUndefined();
+  expect(result.speedX).toBeUndefined();
+  expect(result.switches).toBeUndefined();
+  expect(result.interruptions).toBeUndefined();
+  expect(asrHistoryMetrics({ stageTimings: { model_load_s: 0 } }).modelLoadSeconds).toBe(0);
+  for (const cpu_fallback of [undefined, 0, '1', true]) {
+    expect(asrHistoryMetrics({ mediaDurationSeconds: 100, stageTimings: { cpu_fallback } }).tiers).toEqual([]);
+  }
+});
+
+it('does not attribute reused audio or missing handoff counters to a one-shot CPU run', () => {
+  const reused = asrHistoryMetrics({ mediaDurationSeconds: 1000,
+    stageTimings: { cpu_fallback: 1, live_asr_reused_audio_s: 900 } });
+  expect(reused).toMatchObject({ reusedSeconds: 900, tiers: [{ tier: 'cpu_background', audioSeconds: 100 }] });
+  for (const stageTimings of [
+    { cpu_fallback: 1, device_handoff: 1 },
+    { cpu_fallback: 1, handoff_cpu_audio_s: 0, handoff_gpu_audio_s: 0, handoff_reused_audio_s: 1000 },
+    { cpu_fallback: 1, live_asr_reused_audio_s: 1000 }
+  ]) {
+    expect(asrHistoryMetrics({ mediaDurationSeconds: 1000, stageTimings }).tiers).toEqual([]);
+  }
+  const handoff = asrHistoryMetrics({ mediaDurationSeconds: 1000, stageTimings: { cpu_fallback: 1, device_handoff: 1,
+    handoff_cpu_audio_s: 100, handoff_gpu_audio_s: 200, handoff_model_load_s: 0, model_load_s: 99 } });
+  expect(handoff.tiers).toEqual([{ tier: 'cpu_background', audioSeconds: 100, windowSeconds: undefined,
+    speedX: undefined, batchSeconds: undefined }, { tier: 'gpu_unknown', audioSeconds: 200, windowSeconds: undefined, speedX: undefined }]);
+  expect(handoff.modelLoadSeconds).toBe(0);
+});
+
+it('excludes fully reused audio from the unrecorded summary', () => {
+  const base = { id: 'reused', streamerName: '主播', title: '场次', status: 'completed', metadata: 'available' as const };
+  const metrics = asrHistoryMetrics({ mediaDurationSeconds: 1000,
+    stageTimings: { device_handoff: 1, handoff_cpu_audio_s: 0, handoff_gpu_audio_s: 0, handoff_reused_audio_s: 1000 } });
+  expect(summarizeAsrHistory([{ ...base, ...metrics }]).totalAudioSeconds).toBe(0);
+  expect(summarizeAsrHistory([{ ...base, ...metrics, reusedSeconds: 900 }]).tiers.at(-1)?.audioSeconds).toBe(100);
 });
 
 it('reads bounded queue-linked sidecars without exposing paths or touching queue and metadata', () => {

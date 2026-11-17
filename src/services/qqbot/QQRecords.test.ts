@@ -6,6 +6,9 @@ import { qqRequest, QQInbound, QQ_LIMITS } from './QQPolicy';
 import { AdminQQRecords } from '../admin/AdminQQRecords';
 import requestHttp from 'supertest';
 import { createAdminServer } from '../admin/AdminServer';
+import { QQWorker } from './QQWorker';
+import { newQQState } from './QQState';
+import { publishableQQAnswer, publishableQQVideoReview, QQ_PRIVATE_REPLY } from './QQPolicy';
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-records-')); });
@@ -13,6 +16,38 @@ afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 const at = Date.parse('2026-10-28T02:00:00Z');
 const inbound: QQInbound = { kind: 'group', rawEventType: 'GROUP_AT_MESSAGE_CREATE', senderId: 'private-user', groupOpenid: 'private-group',
   messageId: 'message-a', content: '鹿饼你好', timestamp: new Date(at).toISOString() };
+
+test('a full video review survives real transcript checkpoints, admin reads and the next question', async () => {
+  let now = at;
+  const writer = new QQRecords(root, '900000001', () => now), state = newQQState('900000001');
+  const review = '视频草稿\nprompt：\n' + '镜头展示角色的动作。'.repeat(100);
+  expect(publishableQQVideoReview(review)).toBe(review);
+  expect(publishableQQAnswer(review)).toBeUndefined();
+  const send = jest.fn(async () => {});
+  const answer = jest.fn().mockResolvedValueOnce({ text: review, tokens: 100, videoReview: true }).mockResolvedValue('你好呀');
+  const worker = new QQWorker({ secretConfigPath: 'secrets.json', maxQueue: 20, maxUserQueue: 2,
+    dailyTokenBudget: QQ_LIMITS.reservation * 8, privateReply: QQ_PRIVATE_REPLY }, state, {
+    now: () => now, save: async () => {}, record: (request, update) => writer.write(request, update),
+    answer, send, sleep: async ms => { now += ms; }, report: () => {}
+  });
+  expect(worker.receive(inbound)).toBe(true); await worker.idle();
+  expect(state.paused).toBe(false);
+  expect(send).toHaveBeenNthCalledWith(1, expect.anything(), review, undefined);
+  const row = new AdminQQRecords(root).view({ date: '2026-10-28' }).rows[0];
+  expect(row).toMatchObject({ answer: review, status: 'sent' });
+  expect(worker.receive({ ...inbound, messageId: 'next-question' })).toBe(true); await worker.idle();
+  expect(send).toHaveBeenCalledTimes(2); expect(state.paused).toBe(false);
+});
+
+test('transcript answer capacity includes the video review boundary and rejects overflow', async () => {
+  const writer = new QQRecords(root, '900000001', () => at), req = qqRequest(inbound, at)!;
+  const answer = '景'.repeat(4500);
+  expect(publishableQQVideoReview(answer)).toBe(answer);
+  await writer.write(req, { status: 'sending', answer });
+  expect(new AdminQQRecords(root).view({ date: '2026-10-28' }).rows[0].answer).toBe(answer);
+  expect(publishableQQVideoReview(answer + '景')).toBeUndefined();
+  await expect(writer.write(req, { status: 'sending', answer: answer + '景' })).rejects.toThrow('Invalid QQ transcript');
+});
 
 test('durable question and answer survive new reader, with filters and no raw identifiers', async () => {
   const request = qqRequest(inbound, at)!, writer = new QQRecords(root, '900000001', () => at + 1000);

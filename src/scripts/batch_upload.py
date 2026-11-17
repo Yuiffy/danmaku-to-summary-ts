@@ -81,6 +81,7 @@ from clip_upload_input import load_queued_upload_clips
 from clip_upload_description import (
     clean_generated_description, split_source_description, build_clip_time_range, build_desc, resolve_upload_prefix,
 )
+from clip_coordinate_comments import publish_coordinate_comments
 import requests
 from clip_submission_recovery import (find_intent, clear_intent, intent_key, reconcile_intent,
     validate_queue_submission, SubmissionRecoveryPending, SubmissionRecoveryConflict)
@@ -712,6 +713,19 @@ async def upload_one_guarded(
                 credential,
                 collection_section_id=collection_section_id,
             )
+            # Coordinate comments are a separate, opt-in side effect.  They
+            # run only after the archive has a confirmed aid and their own
+            # journal makes each suggestion idempotent across worker restarts.
+            try:
+                result['coordinateComments'] = await publish_coordinate_comments(
+                    clip, result, credential, get_config()
+                )
+            except Exception as error:
+                # A comment failure must never turn a successful video upload
+                # into a media retry.  Keep a visible outcome in upload state.
+                result['coordinateComments'] = {
+                    'status': 'failed', 'items': [], 'error': str(error)[:300]
+                }
             if clip.get('externalSubtitles'):
                 from game_subtitle_upload import after_upload
                 try:
@@ -809,7 +823,9 @@ async def main():
             return 1
         args.source = args.source or clips[0].get('source') or ''
         args.prefix = resolve_upload_prefix(args.prefix, clips[0].get('prefix'))
-        tags = tag_override or clips[0].get('tags') or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+        # Queue IDs bind reviewed arrays; the comma-delimited CLI copy is lossy.
+        tags = clips[0].get('tags') if args.queue_ids is not None else tag_override or clips[0].get('tags')
+        tags = tags or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
         args.tid = args.tid or int(clips[0].get('tid') or 21)
         args.streamer_name = args.streamer_name or clips[0].get('streamerName') or None
         args.room_id = args.room_id or clips[0].get('roomId') or None
@@ -1066,6 +1082,7 @@ async def main():
                 'collectionSectionId': result.get('collectionSectionId'),
                 'collectionStatus': result.get('collectionStatus'),
                 'collectionError': result.get('collectionError'),
+                'coordinateComments': result.get('coordinateComments'),
                 'subtitleStatus': result.get('subtitleStatus'),
                 'subtitleTaskPath': result.get('subtitleTaskPath'),
                 'subtitleError': result.get('subtitleError'),
@@ -1129,7 +1146,7 @@ async def main():
     if rate_limited:
         # EX_TEMPFAIL: callers should preserve state and retry after a cooldown.
         return 75
-    return 2 if title_conflicts or any(r['status'] == 'quality_policy_hold' for r in results) else 0
+    return 2 if title_conflicts or fail or any(r['status'] in ('no_file', 'no_cover', 'invalid_video') for r in results) else 0
 
 
 if __name__ == '__main__':

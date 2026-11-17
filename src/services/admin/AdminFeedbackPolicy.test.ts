@@ -1,5 +1,6 @@
 import { ClipDetail } from '../../core/admin/contracts';
 import { feedbackPrompt, parseFeedbackPlan } from './AdminFeedbackPolicy';
+import { assertEditorialFulfilled, editorialRequest } from './AdminFeedbackEditorial';
 
 const subtitles = [
   '你自己说石手心汤每天都准备礼物',
@@ -63,4 +64,31 @@ it('keeps exact user-confirmed corrections and unsupported-operation blocks inta
   expect(parseFeedbackPlan('{"corrections":[{"from":"石手先生","to":"时守星沙","cue":4}]}', detail,
     '第4条“石手先生”改成“时守星沙”').corrections).toEqual([{ from: '石手先生', to: '时守星沙', cue: 4 }]);
   expect(parseFeedbackPlan('{"blockedReason":"还需要调整音量"}', detail, note)).toEqual({ blockedReason: '还需要调整音量' });
+});
+
+it('accepts supported precision and coordinate plans while rejecting arbitrary comment operations', () => {
+  const plan = { precision: true, coordinateComment: { cue: 4, content: '这个石手先生' } };
+  expect(parseFeedbackPlan(JSON.stringify(plan), detail, '精切或者评论区发坐标')).toEqual(plan);
+  for (const coordinateComment of [{ cue: 0, content: '原话' }, { cue: 1, content: '' },
+    { cue: 1, content: '原话', command: 'post' }]) {
+    expect(() => parseFeedbackPlan(JSON.stringify({ coordinateComment }), detail, '评论区发坐标')).toThrow('坐标评论');
+  }
+});
+
+it('requires actual editorial completion for the original 4634 feedback and each alternative', () => {
+  const text = '怎么最关键的在最后一句，能精切一下吗。或者发完以后评论区发坐标';
+  expect(editorialRequest(text)).toEqual({ precision: true, coordinate: true, alternative: true });
+  expect(() => assertEditorialFulfilled(text, false, false)).toThrow('不能仅改文案');
+  expect(() => assertEditorialFulfilled(text, true, false)).not.toThrow();
+  expect(() => assertEditorialFulfilled(text, false, true)).not.toThrow();
+  expect(() => assertEditorialFulfilled('精切并在评论区发坐标', true, false)).toThrow();
+  expect(() => assertEditorialFulfilled('不要精切，直接投', false, false)).not.toThrow();
+});
+
+it('preserves an explicit precision request even when the model supplies only window and copy edits', () => {
+  const text = '太长了吧，可以精切呀，前面留一点全力的工作，后面直接从刷抖音开始';
+  expect(parseFeedbackPlan('{"title":"努力工作"}', detail, text)).toEqual({ title: '努力工作', precision: true });
+  expect(parseFeedbackPlan('{}', detail, '不要精切，直接投')).toEqual({});
+  expect(parseFeedbackPlan('{"coordinateComment":{"cue":1,"content":"原话"}}', detail,
+    '精切或者评论区发坐标')).toEqual({ coordinateComment: { cue: 1, content: '原话' } });
 });

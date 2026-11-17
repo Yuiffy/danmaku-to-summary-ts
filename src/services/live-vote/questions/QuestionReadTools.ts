@@ -19,7 +19,7 @@ const DEFAULT_QUESTION_ROOM_LIMIT = 3;
 
 // Channels resend tool schemas on every turn; keep channel descriptions concise without changing shared contracts.
 const descriptions: Record<string, string> = {
-  search_recordings: '按主题词查原录播recordings、摘要highlights或切片clips；date为年/月/日或null查历史。query传null；withinEvidenceId锁定已有原录播及分段，跨场查找传null。结果limited表示覆盖受限。',
+  search_recordings: '按主题词查原录播recordings、摘要highlights或切片clips；titleTerms可用1至3个标题片段OR筛选原录播场次，null不限制，terms仍只查正文。指定新衣回等场次时优先按标题定位，再搜细节/动作词，标题本身不能证明答案。date为年/月/日或null查历史。query传null；withinEvidenceId锁定已有原录播及分段，跨场查找传null。结果limited表示覆盖受限。',
   read_context: '展开已有evidenceId前后90秒、最多21条原文，核对细节与归属。',
   read_recent: '读取当前仍录制场次的最近5/10分钟，返回字幕延迟和覆盖限制；不查历史。',
   read_recording_openings: '按fromDate/toDate批量读多天开场字幕和录像时间点；最多8份、总384条，按录制时钟去重。nextOffset翻页，nextCueOffset在相同范围续读；录制起点不等于开播。',

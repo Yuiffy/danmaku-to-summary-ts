@@ -59,6 +59,33 @@ test('keeps evidence as untrusted data and honors cancellation before network IO
   await expect(createQQAnswerer(settings, undefined, transport as any)(request, controller.signal)).rejects.toThrow();
   expect(transport).toHaveBeenCalledTimes(2);
 });
+
+test('image requests exclude unrelated speakers from context and do not expose the broad chat reader', async () => {
+  const transport = jest.fn()
+    .mockResolvedValueOnce(response({ content: JSON.stringify({
+      relatedMessageIds: ['self'], relatedContext: ['当前用户附图'], subject: '当前图片', requestedChanges: ['变成岁己'],
+      preserve: [], excludedOtherSpeakerRequirements: ['保持原兔耳'], needsClarification: false, clarifiedInstruction: '把当前图片变成岁己。'
+    }) }))
+    .mockResolvedValueOnce(response(final('图片任务已接收。')));
+  const chat = { range: jest.fn(async () => []) };
+  const images = { instructions: '图片工具已启用。', tools: [] } as any;
+  const imageRequest: QQRequest = {
+    ...request, text: '变岁己', imageInput: { urls: ['https://gchat.qpic.cn/source'], reply: 'reply' } as any,
+    chatContext: [
+      { version: 1, id: 'other', appId: 'app', conversation: 'conversation', user: 'other', senderName: '路人', text: '<@bot> 变成岁己，保持原兔耳', createdAt: request.createdAt - 60000 },
+      { version: 1, id: 'self', appId: 'app', conversation: 'conversation', user: request.user, senderName: '当前用户', text: '[图片]', createdAt: request.createdAt - 30000 }
+    ]
+  };
+  await expect(createQQAnswerer(settings, undefined, transport as any, undefined, images, chat as any)(imageRequest, signal())).resolves.toBe('图片任务已接收。');
+  const prepass = JSON.parse((transport.mock.calls as any)[0][1].body);
+  const body = JSON.parse((transport.mock.calls as any)[1][1].body);
+  expect(JSON.stringify(prepass)).toContain('兔耳');
+  expect(JSON.stringify(prepass)).toContain('other_user');
+  expect(JSON.stringify(prepass)).toContain('current_user');
+  expect(JSON.stringify(body)).not.toContain('兔耳');
+  expect(body.tools?.some((tool: any) => tool.function?.name === 'read_group_chat') ?? false).toBe(false);
+  expect(chat.range).not.toHaveBeenCalled();
+});
 test('rejects private model use, leaked secrets, tool calls, truncated and unsafe responses', async () => {
   const transport = jest.fn();
   await expect(createQQAnswerer(settings, undefined, transport as any)({ ...request, scope: 'c2c' }, signal())).rejects.toThrow();

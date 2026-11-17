@@ -60,8 +60,9 @@ export function summarizeAsrHistory(items: AsrHistoryItem[]): AsrHistorySummary 
         }
       }
     } else if (Number.isFinite(item.mediaSeconds) && (item.mediaSeconds || 0) > 0) {
-      // Legacy records have no handoff fields; keep their duration visible as unrecorded.
-      totals.set('unrecorded', (totals.get('unrecorded') || 0) + (item.mediaSeconds || 0));
+      // Only audio processed in this run belongs in the tier distribution.
+      const reused = Number.isFinite(item.reusedSeconds) && (item.reusedSeconds || 0) >= 0 ? item.reusedSeconds || 0 : 0;
+      totals.set('unrecorded', (totals.get('unrecorded') || 0) + Math.max(0, (item.mediaSeconds || 0) - reused));
     }
   }
   const totalAudioSeconds = summaryTiers.reduce((sum, tier) => sum + (totals.get(tier) || 0), 0);

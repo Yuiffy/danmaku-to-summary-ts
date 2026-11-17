@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -235,6 +236,48 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
             store.save(data)
         self.assertEqual(store.load()["tasks"][0]["id"], "one")
         self.assertFalse(store.lock_path.exists())
+
+    def test_new_unfinished_lock_is_not_reclaimed(self):
+        store = store_module.QueueStore(self.queue_path, lock_wait_seconds=0)
+        for contents in ("", '{"owner":'):
+            with self.subTest(contents=contents):
+                store.lock_path.write_text(contents, encoding="utf-8")
+                with self.assertRaises(store_module.QueueLockError):
+                    store.acquire()
+                self.assertEqual(store.lock_path.read_text(encoding="utf-8"), contents)
+
+    def test_abandoned_unfinished_lock_can_be_reclaimed(self):
+        store = store_module.QueueStore(self.queue_path, lock_wait_seconds=0)
+        store.lock_path.write_text("", encoding="utf-8")
+        os.utime(store.lock_path, (1, 1))
+        store.acquire()
+        self.assertEqual(json.loads(store.lock_path.read_text(encoding="utf-8"))["owner"], store._owner)
+        store.release()
+
+    def test_unreadable_fresh_lock_is_not_stale(self):
+        store = store_module.QueueStore(self.queue_path)
+        store.lock_path.write_text("", encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=PermissionError("writer still open")):
+            self.assertFalse(store._lock_is_stale())
+
+    def test_busy_stale_lock_reports_lock_timeout(self):
+        store = store_module.QueueStore(self.queue_path, lock_wait_seconds=0)
+        store.lock_path.write_text("", encoding="utf-8")
+        os.utime(store.lock_path, (1, 1))
+        with patch.object(Path, "unlink", side_effect=PermissionError("reader still open")):
+            with self.assertRaises(store_module.QueueLockError):
+                store.acquire()
+
+    def test_release_retries_windows_reader_conflicts(self):
+        store = store_module.QueueStore(self.queue_path)
+        store.acquire()
+        raw = store.lock_path.read_text(encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=[PermissionError("busy"), raw, raw]), \
+                patch.object(Path, "unlink", side_effect=[PermissionError("busy"), None]) as unlink, \
+                patch.object(store_module.time, "sleep"):
+            store.release()
+        self.assertEqual(unlink.call_count, 2)
+        store.release()
 
     def test_remote_failure_releases_slot_and_pauses_after_retry_limit(self):
         failed = self.task("failed", status="submitted", fail_count=2, submit_ids=["remote-failed"], inflight=[{"submit_id": "remote-failed", "submitted_at": 100}])

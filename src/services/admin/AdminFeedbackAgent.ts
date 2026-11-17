@@ -22,6 +22,8 @@ export const FEEDBACK_TOOLS = [
     sourceKind: { type: 'string', enum: ['live_speech', 'recount', 'playback', 'audience'] },
     start: { type: 'number' }, end: { type: 'number' }, durationNote: { type: 'string' },
     useIdentifiedSongNames: { type: 'boolean' },
+    precision: { type: 'boolean' },
+    coordinateComment: schema({ cue: { type: 'integer' }, content: { type: 'string', maxLength: 200 } }, ['cue', 'content']),
     corrections: { type: 'array', items: schema({ from: { type: 'string' }, to: { type: 'string' }, cue: { type: 'integer' } }, ['from', 'to']) },
     activityTitles: { type: 'array', items: schema({ activityId: { type: 'string' }, name: { type: 'string' }, sourceAlias: { type: 'string' },
       segmentIndices: { type: 'array', items: { type: 'integer' } }, note: { type: 'string' } }, ['activityId', 'name', 'sourceAlias', 'segmentIndices', 'note']) }
@@ -35,7 +37,10 @@ export function createFeedbackAgent(complete: FeedbackCompletion): FeedbackAgent
   return async (session, initial, edits, progress) => {
     const availableTools = FEEDBACK_TOOLS.map(item => session.directFeedback && item.function.name === 'revise_and_review'
       ? { ...item, function: { ...item.function, description: '落实用户修改并制作成片、保存反馈直投授权。AI 审核意见只供参考；成功后调用 enqueue_submission。' } } : item).filter(item =>
-      item.function.name !== 'repair_activity_boundaries' || initial.category === 'activity').filter(item =>
+      item.function.name !== 'repair_activity_boundaries' || initial.category === 'activity').map(item =>
+      item.function.name === 'read_source_context' && initial.category !== 'activity'
+        ? { ...item, function: { ...item.function, parameters: schema(Object.fromEntries(
+          Object.entries(item.function.parameters.properties).filter(([key]) => key !== 'activityId'))) } } : item).filter(item =>
       item.function.name !== 'identify_song_names' || initial.category === 'activity' && initial.evidence.kind === 'songs');
     const rules = feedbackPrompt(initial, session.note, edits).replace('你把用户对登记切片的修改意见转换成一个 JSON 修改计划，只输出 JSON。',
       '你是切片编辑 agent。先理解全部用户意见，再通过工具查证、修改、独立复核并入队。下列字段规则是 revise_and_review.plan 的契约。');
@@ -62,7 +67,7 @@ export function createFeedbackAgent(complete: FeedbackCompletion): FeedbackAgent
         if (!availableTools.some(item => item.function.name === name)) throw new AdminError('此切片不支持的编辑工具');
         const args = JSON.parse(call.function.arguments);
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new AdminError('工具参数无效');
-        const definition = FEEDBACK_TOOLS.find(item => item.function.name === name)!.function.parameters;
+        const definition = availableTools.find(item => item.function.name === name)!.function.parameters;
         if (Object.keys(args).some(key => !(key in definition.properties)) || definition.required.some(key => !(key in args))) throw new AdminError('工具参数包含未知或缺失字段');
         if (!inspected && name !== 'inspect_clip') throw new AdminError('先读取当前切片状态');
         if (name === 'inspect_clip') { result = session.inspect(); inspected = true; }

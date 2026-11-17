@@ -28,6 +28,7 @@ import { createFeedbackCompletion } from '../../services/admin/AdminFeedbackClie
 import { AdminQQKnowledge } from '../../services/admin/AdminQQKnowledge';
 import { qqKnowledgeFile } from '../../services/qqbot/QQKnowledgeBase';
 import { AdminPreUploadPeerCoverage } from '../../services/admin/AdminPreUploadPeerCoverage';
+import { AdminAIVideoQueue } from '../../services/admin/AdminAIVideoQueue';
 
 export function startAdminService(): void {
   const root = getProjectRoot(), tokenFile = path.join(root, 'data/runtime/admin/access-token');
@@ -74,7 +75,9 @@ export function startAdminService(): void {
   const asr = new AdminAsrStatus(root, { queueFile: process.env.WHISPER_QUEUE_FILE, logFile: process.env.ADMIN_ASR_LOG_FILE });
   asr.startHistoryIndex();
   const clipProgress = new AdminClipProgress(root);
-  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, qqChat, qqKnowledge, campaignCandidates, campaignFeedback, asr, clipProgress }, fs.readFileSync(tokenFile, 'utf8').trim());
+  const videoQueuePath = readJson(path.resolve(root, process.env.ADMIN_QQ_CONFIG || 'config/qqbot.example.json'), {}).videos?.queuePath;
+  const aiVideoQueue = typeof videoQueuePath === 'string' && videoQueuePath.trim() ? new AdminAIVideoQueue(path.resolve(root, videoQueuePath)) : undefined;
+  const app = createAdminServer({ configs, clips, jobs, queries, sourceMedia, feedback, covers, titles, bilibiliLogin, commentReplies, commentFeedback, qqRecords, qqChat, qqKnowledge, campaignCandidates, campaignFeedback, asr, clipProgress, aiVideoQueue }, fs.readFileSync(tokenFile, 'utf8').trim());
   const port = Number(process.env.ADMIN_PORT || 15127);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('ADMIN_PORT 无效');
   const server = app.listen(port, '127.0.0.1', () => console.log(`管理 API: http://127.0.0.1:${port}`));

@@ -7,6 +7,7 @@ import { createHash } from 'crypto';
 import { qqConversations, qqIdentity, qqUsers, summarizeQQRecords } from './AdminQQRecordStats';
 import { qqAccountUsage, readQQUsage } from './AdminQQUsage';
 import { projectQQDiagnostic, projectQQModelCall } from '../../core/admin/qqDiagnostics';
+import { qqImageBufferFormat } from '../../core/qqImageFormat';
 
 /** Bounded, read-only local transcript listing. Never opens credentials or calls QQ. */
 export class AdminQQRecords {
@@ -19,14 +20,16 @@ export class AdminQQRecords {
       for (const entry of [archive, path.join(archive, appId), directory]) {
         const stat = fs.lstatSync(entry); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('image directory');
       }
-      const recordFile = path.join(directory, `${id}.json`), imageFile = path.join(directory, `${id}.png`);
-      for (const file of [recordFile, imageFile]) {
-        const stat = fs.lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > (file === recordFile ? 65536 : 10 * 1024 * 1024)) throw new Error('image file');
-      }
+      const recordFile = path.join(directory, `${id}.json`);
+      const recordStat = fs.lstatSync(recordFile);
+      if (!recordStat.isFile() || recordStat.isSymbolicLink() || recordStat.size > 65536) throw new Error('image record');
       const record = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as QQRecord;
       if (!validQQRecord(record) || record.id !== id || record.appId !== appId || shanghaiDay(record.requestedAt) !== date || !record.image) throw new Error('image schema');
+      const format = record.image.format || 'png', imageFile = path.join(directory, `${id}.${format}`);
+      const imageStat = fs.lstatSync(imageFile);
+      if (!imageStat.isFile() || imageStat.isSymbolicLink() || imageStat.size > 10 * 1024 * 1024) throw new Error('image file');
       const image = fs.readFileSync(imageFile);
-      if (image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || createHash('sha256').update(image).digest('hex') !== record.image.sha256) throw new Error('image hash');
+      if (qqImageBufferFormat(image) !== format || createHash('sha256').update(image).digest('hex') !== record.image.sha256) throw new Error('image hash');
       return image;
     } catch { throw new AdminError('QQ 图片存档无法读取或校验失败', 503); }
   }
@@ -69,7 +72,8 @@ export class AdminQQRecords {
           if (scope === 'all' || scope === value.scope) {
             const { version, id, appId, scope: recordScope, user, conversation, senderName, question, answer, status: recordStatus, requestedAt, updatedAt, model, error, image, agent, failure, sendFailure, queuedMs } = value;
             records.push({ version, id, appId, scope: recordScope, user, conversation, question, answer, status: recordStatus, requestedAt, updatedAt, model,
-              ...(senderName ? { senderName } : {}), ...(error ? { error } : {}), ...(image ? { image: { sha256: image.sha256, prompt: image.prompt } } : {}),
+              ...(senderName ? { senderName } : {}), ...(error ? { error } : {}), ...(image ? { image: { sha256: image.sha256, prompt: image.prompt,
+                ...(image.format ? { format: image.format } : {}) } } : {}),
               ...(failure ? { failure: projectQQDiagnostic(failure) } : {}), ...(queuedMs !== undefined ? { queuedMs } : {}),
               ...(sendFailure ? { sendFailure: projectQQDiagnostic(sendFailure) } : {}),
               ...(agent ? { agent: { modelCalls: agent.modelCalls, inputTokens: agent.inputTokens, outputTokens: agent.outputTokens,

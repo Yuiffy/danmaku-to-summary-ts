@@ -19,7 +19,8 @@ async function runCreativeStory(input, io) {
     const surroundingSpeech = (Array.isArray(subtitleEvidence.cues) ? sourceContext() : parsed.segments).filter(row => row.end > baseline.window.start - 30
         && row.start < baseline.window.end + require('./topic_edit_plan').contextSeconds(config))
         .map(row => ({ id: row.id, start: row.start - baseline.window.start, end: row.end - baseline.window.start, text: row.text }));
-    const contextSha256 = hash(JSON.stringify({ surroundingSpeech, topicEditPlan: clip.topicEditPlan || null }));
+    const editorialFeedback = String(options.creativeEditorialFeedback || '');
+    const contextSha256 = hash(JSON.stringify({ surroundingSpeech, audience, topicEditPlan: clip.topicEditPlan || null, editorialFeedback }));
     const sourceCues = topic.parseTopicSrt(baseline.output.srtPath).segments.map((row, i) => ({ ...row, id: `C${i + 1}` }));
     const protectedSpans = timelineTools.protectedStorySpans(clip, subtitleEvidence, danmaku, baseline.window, baseline.sourceExpansion);
     const protectedCues = timelineTools.protectedStoryCues(protectedSpans, sourceCues);
@@ -59,8 +60,8 @@ async function runCreativeStory(input, io) {
         .filter(row => Number.isFinite(row.start) && Number.isFinite(row.end)
             && row.end > row.start && row.start >= 0 && row.end <= sourceDuration);
     writeJsonAtomic(path.join(scratch, 'story-input.json'), { sourceDuration, copy: baseline.copy, sourceCues,
-        protectedSpans, protectedCues, speedHints, keepBeatSeconds, cutAfterSeconds, keepTailSeconds });
-    const storyPrompt = '先识别内容与语气再剪辑。游戏保留关键操作/路线和反应；杂谈、故事、连麦保留人物关系、铺垫和接话；教程保留步骤与解释；演唱、演奏、朗读等连续表演保留完整乐句和段落，不在内部乱剪。'
+        protectedSpans, protectedCues, audience, speedHints, keepBeatSeconds, cutAfterSeconds, keepTailSeconds });
+    const storyPrompt = `运营精切意见（按此选材，仍须保留完整原话及证据约束）：${JSON.stringify(editorialFeedback)}\n` + '先识别内容与语气再剪辑。游戏保留关键操作/路线和反应；杂谈、故事、连麦保留人物关系、铺垫和接话；教程保留步骤与解释；演唱、演奏、朗读等连续表演保留完整乐句和段落，不在内部乱剪。'
         + '删掉重复说明、无进展操作及支线，但不为了固定压缩比例删必要内容。只选给出的完整字幕句组，按原顺序，不改话、不挪因果，必须覆盖protectedSpans。'
         + '反应前有必要的无字幕动作时，keep组可选actionBeforeSeconds（0到12秒），表示首句前保留的总时长；程序仍在上一句结束处截住，不截断或恢复已删对白。按已核实的动作选择，不给所有切点固定加时；需保留更早对白时扩展fromCue。'
         + '同时给出profile：kind=gameplay/conversation/story/tutorial/performance/mixed；tone=comic/neutral/serious；density=dense/moderate/light；preserveContinuity为布尔；music=playful/none；laughter为布尔；reason说明依据。中性/严肃内容不要笑声或轻快BGM，连续表演必须preserveContinuity=true且music=none、laughter=false。'
@@ -76,7 +77,8 @@ async function runCreativeStory(input, io) {
         + (clip.topicEditPlan ? '选材阶段已规划完整话题：必须保留全部keep段（包括第二个例子、后续回应及结尾），不得重新只挑首次笑点；drop段不恢复。使用给出的已映射C字幕keep草案。\n'
             + JSON.stringify({ plan: clip.topicEditPlan, keep: require('./topic_edit_plan').subtitleKeepDraft(clip.topicEditPlan, sourceCues, baseline.window) }) : '')
         + (baseline.sourceExpansion ? '\n本轮已根据独立审核从原录播扩展素材，重新编号C字幕。旧选材keep/drop仍按原来的绝对范围保留，旧结尾保护不延伸到整个新窗。新增R引用已映射为protectedCues，须保留完整起因、回答与收束；其余新增字幕可以按完整句组删冗余或无关转场。素材外窗的最后一句不等于成片必留结尾，收束当前主题即可，不要接入无关唱歌、找伴奏或新的游戏。不要机械照抄旧keep草案而漏掉新增必要内容。\n' : '')
-        + JSON.stringify({ duration: sourceDuration, copy: baseline.copy, cues: sourceCues, protectedSpans, protectedCues,
+        + 'audience是本片XML观众弹幕，time使用原片内秒数，不能归为主播对白。视觉呈现和字号由后续成片审核核实。\n'
+        + JSON.stringify({ duration: sourceDuration, copy: baseline.copy, cues: sourceCues, protectedSpans, protectedCues, audience,
             ...(speedHints.length ? { speedHints } : {}) });
     // Operator speed hints are contractual: the story must not trim inside them, or the
     // requested montage cannot be applied. Cue-level coverage is enforced here, before
@@ -196,7 +198,9 @@ async function runCreativeStory(input, io) {
     await applyMusicSuitability();
     const reviewStory = stage => {
         const reviewEvidence = timelineTools.storyReviewEvidence(sourceCues, timeline, protectedSpans);
-        writeJsonAtomic(path.join(scratch, `${stage}-input.json`), { profile, ...reviewEvidence, surroundingSpeech, contextSha256, copy: baseline.copy });
+        const retainedAudience = timelineTools.mapTimelineCues(audience.map(row => ({ ...row, start: row.time, end: row.time + .01 })), timeline)
+            .map(row => ({ time: row.start, sourceTime: row.time, text: row.text }));
+        writeJsonAtomic(path.join(scratch, `${stage}-input.json`), { profile, ...reviewEvidence, surroundingSpeech, audience, retainedAudience, contextSha256, copy: baseline.copy });
         if (stage === 'story-qa' && options.creativeResumeDirectory) {
             const previous = JSON.parse(fs.readFileSync(path.join(options.creativeResumeDirectory, 'clip.json'), 'utf8'));
             const prior = previous.creativeResult?.history?.find(row => row.stage === 'story');
@@ -223,7 +227,8 @@ async function runCreativeStory(input, io) {
         + (keepTailSeconds !== null ? `运营已明确指定尾段从本片 ${keepTailSeconds.toFixed(2)}s 起强制保留到素材末尾（keepTailFrom）：素材窗的结尾就是成片的结尾，这是用户看过素材后确认的结构，碰铃铛之后的全部台词一句不删、只删纯静音空档。素材窗之后即使还有同话题原话，也不构成"窗口截断本题"，不得因此拒绝、不得置needsSourceExpansion=true、不得要求扩窗。只核对尾段内部的台词完整与连贯。\n` : '')
         + (keepBeatSeconds.length ? `运营指定的无台词表演区间（keepBeats）：${JSON.stringify(keepBeatSeconds.map(row => `${row.start.toFixed(2)}-${row.end.toFixed(2)}`))}。区间里是岁己的笑、叹气等真实反应，保留它们是运营明确要求，不属于"留了无信息量空档"，不得据此拒绝或要求删掉；这些区间没有字幕编号是设计如此。\n` : '')
         + (options.creativeNoStorySpeed ? '除了运营指定的speedHints区间，其余keep段没有speed字段是设计如此：后半段一律1x原速播放，不得因"节奏还能更快"而拒绝。\n' : '')
-        + JSON.stringify({ profile, ...reviewEvidence, surroundingSpeech, topicEditPlan: clip.topicEditPlan || null, protectedSpans, protectedCues, speedHints, keepBeatSeconds, copy: baseline.copy }));
+        + 'audience是原片内的XML观众弹幕；retainedAudience是映射到新时间轴的候选背景证据，time为成片秒数，sourceTime为原片内秒数，二者均不表示已选入或已烧录的弹幕。不要因未选入的旁支弹幕拒绝对白时间轴；实际采用的弹幕由后续节点、渲染与画面审核核对。弹幕不能归为主播对白；本轮核对对白内容和保留时段。\n'
+        + JSON.stringify({ editorialFeedback, profile, ...reviewEvidence, surroundingSpeech, audience, retainedAudience, topicEditPlan: clip.topicEditPlan || null, protectedSpans, protectedCues, speedHints, keepBeatSeconds, copy: baseline.copy }));
     };
     let storyQa = await routeSourceRequirements(await reviewStory('story-qa'), 'story-qa');
     const incompleteSource = stage => {

@@ -10,6 +10,9 @@ const { loadWorkflow } = require('../workflow-runtime');
 async function renderPrecisionRevision(options, dependencies = {}) {
     const id = Number(options.id);
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('A positive numeric clip ID is required');
+    if (options.contentOnly && (options.insetPlanPath || options.chatInset || options.contextDanmakuAt != null || options.speedPlanPath)) {
+        throw new Error('Content-only precision cannot add insets, context overlays or speed changes');
+    }
     const registry = JSON.parse(fs.readFileSync(options.registryPath, 'utf8'));
     const record = registry.clips?.[String(id)];
     if (!record?.metadataPath) throw new Error('Clip has no metadata');
@@ -34,7 +37,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             || (keywordTopic && original.mode !== 'own_stream_fun_review'
                 && original.publicationKind !== 'keyword_topic'
                 && !['local_review', 'topic_candidate_manual_cut'].includes(original.mode))
-            || !original.uploadReady && !singleHostNote || original.rebuildRequired
+            || !original.uploadReady && !singleHostNote && !localClipNote || original.rebuildRequired
             || original.publicCopyPending && !singleHostNote || original.output?.mediaError || !original.output?.burnedSubtitles
             || (original.uploadId && original.uploadId !== id)) throw new Error('A reviewed ordinary own-stream clip is required');
         const successfulAutomatic = !keywordTopic && original.creativeResult?.status === 'edited';
@@ -162,19 +165,35 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             if (JSON.stringify(original.renderedSubtitles.sourceSnapshot) !== JSON.stringify(snapshot)) {
                 throw new Error('Rebuilt baseline source changed');
             }
-            // A keyword candidate with explicit feedback acceptance is already
+            // A keyword or user-named manual candidate with feedback acceptance is
             // source-bound and user-directed. It may enter a local precision
             // revision without pretending that the ordinary baseline passed
             // the independent publication review required by unattended upload.
             // The acceptance is recorded on the rendered human review by
             // `rebuild`/`cut --feedback-authorized`; subtitle revisions keep it
             // on `renderedSubtitles.review`, so both places count.
-            const feedbackAcceptedKeyword = keywordTopic
+            const feedbackAcceptedBaseline = (keywordTopic || manualClip && localClipNote)
                 && (original.renderedSubtitles?.review?.acceptanceMode === 'feedback'
                     || original.ownStreamHumanReview?.acceptanceMode === 'feedback');
-            if (!feedbackAcceptedKeyword) {
+            if (feedbackAcceptedBaseline && manualClip) {
+                require('./source_snapshot').assertRenderedRevision(original);
+                if (original.renderedSubtitles.sourceSha256 !== evidence.sourceSha256) throw new Error('Feedback baseline source evidence changed');
+                // Feedback accepts the current source-bound cut, not an old actor
+                // review for a different window/copy. Do not relabel that as passed.
+                attributionExemption = { version: 1, authority: 'user', scope: 'local_precision_revision_only',
+                    note: localClipNote, sourceSha256: evidence.sourceSha256, sourceSnapshot: snapshot,
+                    previousReview: original.attributionReview || null, audioVisualReviewed: false, uploadAuthorized: false };
+                clip = { ...clip, attributionRequired: false, attributionReview: undefined };
+                original = { ...original, attributionRequired: false, attributionExemption };
+                delete original.attributionReview;
+            }
+            if (!feedbackAcceptedBaseline) {
                 clip = loadWorkflow('clipping/experiment').rebuiltPrecisionCandidate(original, evidence.sourceSha256,
-                    await loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original));
+                    await loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original), localClipNote);
+                if (localClipNote) {
+                    require('./source_snapshot').assertRenderedRevision(original);
+                    original = { ...original, uploadReady: true };
+                }
             }
         }
         if (!clip || (clip.attributionRequired && evidence.sourceSha256 !== original.attributionReview?.sourceSha256)
@@ -311,7 +330,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             ...(cutAfterAbsolute ? { cutAfter: cutAfterAbsolute } : {}),
             ...(keepTailAbsolute ? { keepTailFrom: keepTailAbsolute } : {}),
             ...(options.noBgm ? { musicDisabled: true } : {}),
-            ...(manualClip ? { localClipBaseline: { note: localClipNote, authority: 'user', scope: 'local_precision_revision_only' } } : {}),
+            ...(options.contentOnly ? { contentOnly: true, musicDisabled: true } : {}),
+            ...(localClipNote ? { localClipBaseline: { note: localClipNote, authority: 'user', scope: 'local_precision_revision_only',
+                audioVisualReviewed: false } } : {}),
             ...(contextQuestion ? { contextQuestion } : {}),
             ...(attributionExemption ? { attributionExemption } : {}),
             ...(options.allowCoverFaceOverlap ? { coverFaceOverlapApproved: true } : {}),
@@ -342,6 +363,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
                 allowKeywordTopicPrecision: keywordTopic,
                 creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan, creativeSoundLevelOverrides: soundLevelOverrides,
                 creativeContextQuestion: contextQuestion, creativeEditorialFeedback: String(options.note || ''),
+                creativeContentOnly: options.contentOnly === true,
                 creativeCoverTextPosition: options.coverTextPosition,
                 creativeSpeedWindows: speedWindows, creativeCutAfter: cutAfterAbsolute,
                 creativeKeepTailFrom: keepTailAbsolute,
@@ -350,6 +372,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
                 creativeNoSticker: noSticker,
                 ...(radioDanmaku ? { creativeRadioDanmaku: radioDanmaku, creativeDanmakuXmlPath: xmlPath } : {}),
                 creativeNoMusic: options.noBgm === true,
+                creativeChatInset: options.chatInset === true,
                 creativeAllowCoverFaceOverlap: options.allowCoverFaceOverlap === true },
             topic, clip, subtitleEvidence: evidence, execution });
         if (fs.readFileSync(metadataPath, 'utf8') !== before || JSON.stringify(sourceSnapshot(original)) !== JSON.stringify(snapshot)
@@ -395,10 +418,10 @@ async function renderPrecisionRevision(options, dependencies = {}) {
 module.exports = { renderPrecisionRevision };
 if (require.main === module) {
     const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'single-host-note': { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' }, 'context-danmaku-at': { type: 'string' },
-        'speed-plan': { type: 'string' }, 'no-bgm': { type: 'boolean' }, 'local-clip-note': { type: 'string' } } });
+        'speed-plan': { type: 'string' }, 'no-bgm': { type: 'boolean' }, 'content-only': { type: 'boolean' }, 'chat-inset': { type: 'boolean' }, 'local-clip-note': { type: 'string' } } });
     renderPrecisionRevision({ id: values.id, registryPath: values.registry, note: values.note, style: values.style,
         singleHostNote: values['single-host-note'], avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'], contextDanmakuAt: values['context-danmaku-at'],
-        speedPlanPath: values['speed-plan'], noBgm: values['no-bgm'], localClipNote: values['local-clip-note'] })
+        speedPlanPath: values['speed-plan'], noBgm: values['no-bgm'], contentOnly: values['content-only'], chatInset: values['chat-inset'], localClipNote: values['local-clip-note'] })
         .then(result => { console.log('PRECISION_RESULT: ' + JSON.stringify(result)); if (result.status !== 'pending_review') process.exitCode = 1; })
         .catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 }

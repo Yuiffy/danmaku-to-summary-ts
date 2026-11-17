@@ -13,6 +13,7 @@ from src.scripts import clip_upload_registry as registry
 from src.scripts import batch_upload
 from src.scripts.clip_upload_errors import has_terminal_upload_error, terminal_upload_error_reason
 from src.scripts.clip_upload_input import load_queued_upload_clips
+from src.scripts.clip_submission_recovery import validate_queue_submission
 
 
 class QueuedUploadInputTests(unittest.TestCase):
@@ -102,6 +103,27 @@ class QueuedUploadInputTests(unittest.TestCase):
         self.manifest.unlink()
         self.assertEqual(len(self.load()), 2)
 
+    def test_feedback_coordinate_approval_survives_manifest_and_stable_queue_input(self):
+        from src.scripts.clip_feedback_comments import prepare_comment
+        metadata = json.loads(self.metadata.read_text(encoding='utf-8'))
+        media = Path(metadata['output']['mediaPath'])
+        media.write_bytes(b'rendered media')
+        subtitles = self.root / 'rendered.srt'
+        subtitles.write_text('1\n00:01:27,000 --> 00:01:30,000\n我又不是岁己啊\n', encoding='utf-8')
+        metadata['output']['srtPath'] = str(subtitles)
+        clip = self.records['clips']['4002']
+        suggestion, approval = prepare_comment(clip, metadata, 1, '重点：我又不是岁己啊', '评论区发坐标', 'now')
+        metadata['copy']['commentSuggestions'] = [suggestion]
+        metadata['coordinateCommentApproval'] = approval
+        self.metadata.write_text(json.dumps(metadata, ensure_ascii=False), encoding='utf-8')
+        row = registry.load_upload_manifest(self.metadata)[0]
+        self.assertEqual(row['coordinateCommentApproval'], approval)
+        clip.update(commentSuggestions=row['commentSuggestions'], coordinateCommentApproval=row['coordinateCommentApproval'], srtPath=str(subtitles))
+        self.save()
+        queued = self.load()[0]
+        self.assertEqual(queued['coordinateCommentApproval'], approval)
+        self.assertEqual(queued['commentSuggestions'], [suggestion])
+
     def test_batch_cli_uses_stable_ids_without_parsing_replaced_manifest(self):
         secrets = self.root / "secrets.json"
         secrets.write_text('{"bilibili":{"cookie":"fixture"}}', encoding="utf-8")
@@ -121,6 +143,68 @@ class QueuedUploadInputTests(unittest.TestCase):
         self.assertIn("原场次切片", output.getvalue())
         self.assertIn("4028232656", output.getvalue())
         self.assertNotIn("另一场直播", output.getvalue())
+
+    def test_queue_submission_preserves_reviewed_tags_containing_commas(self):
+        reviewed_tags = ["下个, 路口, 见", "小岁"]
+        self.records["clips"]["4002"]["tags"] = reviewed_tags
+        self.save()
+        secrets = self.root / "secrets.json"
+        secrets.write_text('{"bilibili":{"cookie":"fixture"}}', encoding="utf-8")
+
+        for multipart in (False, True):
+            with self.subTest(multipart=multipart), ExitStack() as stack:
+                def load(ids, job):
+                    clips = self.load(ids, job)
+                    if multipart:
+                        clips[0]["parts"] = [{"path": clips[0]["path"], "title": "第一首"}]
+                    return clips
+
+                async def submit(clip, credential, prefix, tags, *args, before_submit, **kwargs):
+                    before_submit()
+                    self.assertEqual(tags, reviewed_tags)
+                    return {"idx": clip["idx"], "title": prefix + clip["title"],
+                            "status": "ok", "bvid": "BVfixture", "cover": "fixture.jpg"}
+
+                stack.enter_context(patch.object(sys, "argv", ["batch_upload.py", "--manifest", str(self.manifest),
+                    "--queue-job", "upload-test", "--queue-ids", "4002", "--tags", ",".join(reviewed_tags)]))
+                stack.enter_context(patch.object(batch_upload, "load_queued_upload_clips", side_effect=load))
+                stack.enter_context(patch.object(batch_upload, "find_secrets_path", return_value=str(secrets)))
+                stack.enter_context(patch.object(batch_upload, "fetch_member_archives", return_value={}))
+                stack.enter_context(patch.object(batch_upload, "search_existing_titles", return_value={}))
+                stack.enter_context(patch.object(batch_upload, "build_credential"))
+                stack.enter_context(patch.object(batch_upload, "UploadPacing"))
+                stack.enter_context(patch.object(batch_upload, "save_upload_state"))
+                stack.enter_context(patch("clip_upload_registry.clip_upload_enqueue.quality_policy_errors", return_value=[]))
+                authorize = stack.enter_context(patch.object(batch_upload, "validate_queue_submission",
+                    side_effect=lambda clip, job: validate_queue_submission(clip, job, api=registry)))
+                upload = stack.enter_context(patch.object(batch_upload, "upload_one_guarded", side_effect=submit))
+                stack.enter_context(redirect_stdout(io.StringIO()))
+                self.assertEqual(asyncio.run(batch_upload.main()), 0)
+                upload.assert_awaited_once()
+                authorize.assert_called_once()
+
+    def test_batch_failure_before_submission_returns_nonzero_without_creating_intent(self):
+        secrets = self.root / "secrets.json"
+        secrets.write_text('{"bilibili":{"cookie":"fixture"}}', encoding="utf-8")
+
+        async def reject(clip, *args, **kwargs):
+            return {"idx": clip["idx"], "title": clip["title"], "status": "error",
+                    "error": "tags 不合法或者多于 10 个"}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(sys, "argv", ["batch_upload.py", "--manifest", str(self.manifest),
+                "--queue-job", "upload-test", "--queue-ids", "4002"]))
+            stack.enter_context(patch.object(batch_upload, "load_queued_upload_clips", side_effect=self.load))
+            stack.enter_context(patch.object(batch_upload, "find_secrets_path", return_value=str(secrets)))
+            stack.enter_context(patch.object(batch_upload, "fetch_member_archives", return_value={}))
+            stack.enter_context(patch.object(batch_upload, "search_existing_titles", return_value={}))
+            stack.enter_context(patch.object(batch_upload, "build_credential"))
+            stack.enter_context(patch.object(batch_upload, "UploadPacing"))
+            save = stack.enter_context(patch.object(batch_upload, "save_upload_state"))
+            stack.enter_context(patch.object(batch_upload, "upload_one_guarded", side_effect=reject))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            self.assertEqual(asyncio.run(batch_upload.main()), 2)
+            self.assertFalse(save.call_args.args[1].get('submission_intents'))
 
     def test_cli_distinguishes_review_failure_from_unreadable_input(self):
         output = io.StringIO()

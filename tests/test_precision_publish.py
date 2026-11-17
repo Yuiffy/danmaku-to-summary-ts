@@ -13,6 +13,14 @@ from src.scripts import replace_video as transport
 
 
 class PrecisionPublicationTests(unittest.TestCase):
+    def test_content_only_is_forwarded_without_queue_authority(self):
+        run = Mock(return_value=SimpleNamespace(returncode=0))
+        api = SimpleNamespace(REGISTRY_PATH=Path('registry.json'), PROJECT_ROOT=Path('.'), subprocess=SimpleNamespace(run=run))
+        args = SimpleNamespace(id=17, note='只剪内容并保留原画原声', content_only=True, allow_cover_face_overlap=False)
+        self.assertEqual(render_precision(args, api), 0)
+        self.assertIn('--content-only', run.call_args.args[0])
+        self.assertNotIn('--enqueue', run.call_args.args[0])
+
     def test_context_question_timestamp_is_forwarded_without_granting_publication(self):
         run = Mock(return_value=SimpleNamespace(returncode=0))
         api = SimpleNamespace(REGISTRY_PATH=Path('registry.json'), PROJECT_ROOT=Path('.'), subprocess=SimpleNamespace(run=run))

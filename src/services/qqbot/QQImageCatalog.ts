@@ -3,6 +3,17 @@ import * as path from 'path';
 import { readJsonObject } from '../../core/config/ConfigLayers';
 import { QQImageCharacter, QQImageConfig } from './QQImagePolicy';
 
+// Reuse the AI-video binggan identity; the small devil on 岁己's sheet is a separate subject.
+const suiCookieCharacters: QQImageCharacter[] = [{
+  name: '饼干岁人', aliases: ['饼干岁人', '饼干人', '饼干岁'],
+  referenceImage: 'public/reference_images/binggan_sui_humanoid.png',
+  description: 'AI生视频常用的饼干岁人：完整的圆形金黄色巧克力豆饼干就是整个头部，饼干表面有简单可爱的五官，头戴小金色皇冠；脖子以下是正常人类比例的身体、手臂和双腿。没有人类脸孔或头发，不能画成人脸加饼干发饰，也不是细四肢的小恶魔饼干。参考图是同一角色的三视图与服饰细节，只取身份，不复制多视图排版。默认深色夹克、白T恤、深灰长裤、白色运动鞋与斜挎包；服饰和动作可按用户要求或原图保留，但替换角色时必须将整个头部换成饼干头。'
+}, {
+  name: '恶魔饼干岁', aliases: ['恶魔饼干岁'],
+  referenceImage: 'public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png',
+  description: '参考图右上方的小小恶魔饼干岁：浅金色带深色斑点的饼干身体、细细四肢和可爱表情。只参考这个小饼干角色；它与饼干头、人类身体的饼干岁人是不同形象，不是白发女生或岁己的皮肤；未要求岁己时不要加入岁己。'
+}];
+
 /** Reuse the maintained streamer registry, plus named assets not yet in that registry. No secret layers. */
 export function qqImageCharacters(root: string, config: QQImageConfig): QQImageCharacter[] {
   if (!config.registryConfigPath) return config.characters || [];
@@ -38,6 +49,7 @@ export function qqImageCharacters(root: string, config: QQImageConfig): QQImageC
   const directory = path.join(root, 'public/reference_images');
   // Explicit outfits retain their own names and metadata instead of becoming duplicate filename-derived characters.
   for (const character of config.characters || []) used.add(character.referenceImage);
+  for (const character of suiCookieCharacters) used.add(character.referenceImage);
   const files = fs.readdirSync(directory); if (files.length > 1000) throw new Error('QQ reference catalogue too large');
   for (const file of files) {
     const reference = `public/reference_images/${file}`;
@@ -47,6 +59,11 @@ export function qqImageCharacters(root: string, config: QQImageConfig): QQImageC
     add(short || name, [name, short], reference, '按对应角色参考图还原外观和人物身份');
   }
   const catalogue = [...characters, ...(config.characters || [])];
+  for (const character of suiCookieCharacters) {
+    if (!catalogue.some(item => item.name === character.name) && fs.existsSync(path.resolve(root, character.referenceImage))) {
+      catalogue.push({ ...character, aliases: [...character.aliases] });
+    }
+  }
   for (const character of catalogue) if (character.baseCharacter && !catalogue.some(base => base.name === character.baseCharacter && !base.baseCharacter)) {
     throw new Error('Unknown QQ skin character');
   }
