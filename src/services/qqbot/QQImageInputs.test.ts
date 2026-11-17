@@ -240,7 +240,9 @@ test.each(['missing', 'tampered', 'oversized', 'invalid-image', 'redirect', 'abo
     attachments: [{ content_type: 'image/png', url: 'https://gchat.qpic.cn/image' }] } : {}) }, at)!;
   const controller = new AbortController(); if (failure === 'aborted') controller.abort();
   const paid = jest.fn();
-  const generate = createQQImageGenerator(root, '900000001', options, settings, paid, new QQImageInputs(root, '900000001', download as any));
+  const normalizer = createQQImageNormalizer(async () => { throw new Error('fixture decode failed'); });
+  const generate = createQQImageGenerator(root, '900000001', options, settings, paid,
+    new QQImageInputs(root, '900000001', download as any, undefined, normalizer));
   await expect(generate(request, controller.signal)).rejects.toMatchObject({ diagnostic: { stage: 'image_prepare' } });
   expect(paid).not.toHaveBeenCalled();
 });
@@ -271,7 +273,8 @@ test.each([
   const observe = jest.fn();
   const request = qqRequest({ ...inbound, msgElements: undefined, refMsgIdx: undefined,
     attachments: [{ content_type: 'image/png', url: `https://multimedia.nt.qq.com.cn/download?rkey=${privateValue}` }] }, at)!;
-  const inputs = new QQImageInputs(root, '900000001', download as any, observe);
+  const normalizer = createQQImageNormalizer(async () => { throw new Error('fixture decode failed'); });
+  const inputs = new QQImageInputs(root, '900000001', download as any, observe, normalizer);
   let caught: unknown;
   try { await inputs.load(request, signal()); } catch (error) { caught = error; }
   expect(caught).toBeInstanceOf(Error);

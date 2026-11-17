@@ -7,6 +7,8 @@
 
 推荐 Node.js 24、Python 3.12 和 pnpm 11。仓库只维护 `pnpm-lock.yaml`，安装依赖使用
 `pnpm install --frozen-lockfile`；运行命令可用 `npm run`，不另建 npm lockfile。
+`pnpm-workspace.yaml` 显式允许当前锁定版本的 Sharp 和 unrs-resolver 安装脚本；
+升级这些依赖时同步复核构建脚本并更新版本匹配，保留其他依赖的默认构建检查。
 
 ```powershell
 pnpm install --frozen-lockfile
