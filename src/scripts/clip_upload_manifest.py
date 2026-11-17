@@ -324,6 +324,7 @@ def load_upload_manifest(
                     if isinstance(copy.get("commentSuggestions"), list)
                     else []
                 ),
+                "coordinateCommentApproval": metadata.get("coordinateCommentApproval"),
             }
         )
     return clips

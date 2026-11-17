@@ -7,6 +7,7 @@ import { subtitleRows } from '../../core/admin/subtitles';
 import { CoverageCandidate, CoverageDecision, CoverageSettings, coverageSettings } from '../../workflows/clipping/peerCoverage';
 import { createPeerApi, PeerApi } from '../../workflows/clipping/peerCoverageApi';
 import { runPeerCuration } from '../../workflows/clipping/peerCoverageRuntime';
+import { coverageHostQuery, CoverageStreamerRegistry } from '../../workflows/clipping/peerCoverageSearch';
 
 export type PreUploadPeerCoverageStatus = 'disabled' | 'original' | 'covered' | 'needs_review';
 export interface PreUploadPeerCoverageResult {
@@ -59,7 +60,7 @@ const GLOBAL_SEARCH_COOLDOWN_MS = 3 * 60 * 1000;
 const DAILY_SEARCH_BUDGET = 96;
 const MAX_SEARCHES_PER_CHECK = 1;
 const RECENT_INDEX_TTL_MS = 15 * 60 * 1000;
-const RECENT_INDEX_RETENTION_MS = 6 * 60 * 60 * 1000;
+const RECENT_INDEX_RETENTION_MS = 24 * 60 * 60 * 1000;
 const PEER_DETAIL_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_INDEX_RESULTS = 40;
 
@@ -143,7 +144,7 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
       host: String(record.streamerName || ''), source, start: window.start, end: window.end,
       title: String(detail.title || record.title || ''), cues };
     const sourceSrtSha256 = createHash('sha256').update(text).digest('hex');
-    const policyVersion = 'pre-upload-peer-v1';
+    const policyVersion = 'pre-upload-peer-v2';
     const key = digest(JSON.stringify({ policyVersion, sourceSrtSha256,
       sourceWindow: window, roomId: candidate.roomId, host: candidate.host,
       title: candidate.title, description: String(detail.description || '').slice(0, 1000),
@@ -160,13 +161,10 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
       ...(searchIndexCheckedAt ? { searchIndexCheckedAt: new Date(searchIndexCheckedAt).toISOString() } : {}) };
   }
 
-  private broadQuery(candidate: CoverageCandidate, raw: CoverageSettings): string {
+  private broadQuery(candidate: CoverageCandidate, raw: CoverageSettings, registry?: CoverageStreamerRegistry): string {
     const configured = raw.preUploadSearchQuery;
     if (typeof configured === 'string' && configured.trim().length >= 2) return configured.trim().slice(0, 80);
-    const host = candidate.host.trim().slice(0, 80);
-    if (/岁己|sui/iu.test(host) && host.length >= 2) return host;
-    if (/小岁/iu.test(host)) return '岁己';
-    return '岁己';
+    return coverageHostQuery(candidate, registry);
   }
 
   async check(id: string, detail: any, output: (text: string) => void,
@@ -177,7 +175,7 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
     const { candidate, sourceSrtSha256, key } = await this.candidate(id, detail);
     const policy = coverageSettings(raw);
     const cookie = String(config?.bilibili?.cookie || '');
-    const query = this.broadQuery(candidate, raw);
+    const query = this.broadQuery(candidate, raw, config?.ai?.streamerRegistry);
     const state = this.state(), current = this.now(), hit = state.entries[key];
     const indexFresh = state.searchIndex?.query === query && current - state.searchIndex.fetchedAt < RECENT_INDEX_TTL_MS;
     if (hit && hit.expiresAt > current && indexFresh) {
@@ -236,7 +234,7 @@ export class AdminPreUploadPeerCoverage implements PreUploadPeerCoverageGate {
     } };
     const decisions = await runPeerCuration({ candidates: [candidate], settings: { ...policy, maxSearchQueries: Math.min(policy.maxSearchQueries, MAX_SEARCHES_PER_CHECK) },
       cookie, evidencePath, statePath: this.supportPath, support: true, skipEditorialAssessment: true,
-      searchQueries: () => [query], rerankPeers: true },
+      searchQueries: () => [query], searchPlan: () => [{ query, limit: 20, order: 'pubdate', page: 1 }], rerankPeers: true },
       async (phase, prompt) => { update({ phase: `正在${phase}` }); return this.request(prompt); }, limitedApi);
     const decision = decisions[0] || { candidateId: candidate.id, inputDigest: digest(JSON.stringify(candidate)),
       status: 'needs_review', reason: 'B站同题核查没有返回有效结果' } as CoverageDecision;

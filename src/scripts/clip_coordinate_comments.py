@@ -50,6 +50,8 @@ def automatic_coordinate_comments_enabled(config: Optional[Dict[str, Any]]) -> b
 
 
 def eligible_coordinate_comments(clip: Dict[str, Any], config: Optional[Dict[str, Any]]) -> bool:
+    if (clip.get('coordinateCommentApproval') or {}).get('authority') == 'feedback':
+        return True
     if not automatic_coordinate_comments_enabled(config):
         return False
     if str(clip.get("publicationKind") or "") != "keyword_topic":
@@ -135,6 +137,18 @@ async def publish_coordinate_comments(
     """Publish eligible suggestions once and return durable per-item outcomes."""
     if not eligible_coordinate_comments(clip, config):
         return {"status": "skipped", "items": []}
+    approval = clip.get('coordinateCommentApproval') or {}
+    if approval.get('authority') == 'feedback':
+        try:
+            bound = approval.get('version') == 1 and bool(approval.get('note'))
+            for field, key in [('mediaPath', 'videoSha256'), ('srtPath', 'subtitleSha256')]:
+                with Path(clip[field]).open('rb') as stream:
+                    bound = bound and hashlib.file_digest(stream, 'sha256').hexdigest() == approval.get(key)
+            bound = bound and approval.get('suggestions') == clip.get('commentSuggestions')
+        except (OSError, KeyError, TypeError):
+            bound = False
+        if not bound:
+            return {'status': 'blocked', 'reason': 'feedback coordinate artifacts changed', 'items': []}
     bvid = str(upload_result.get("bvid") or "").strip()
     aid = _positive_id(upload_result.get("aid"))
     if not bvid or not aid:
@@ -145,9 +159,25 @@ async def publish_coordinate_comments(
         key = suggestion_key(bvid, suggestion)
         path = _journal_path(journal_directory, key)
         previous = _load_journal(path)
+        if previous.get("state") == "publishing":
+            # A prior process may have sent the POST before losing its receipt.
+            previous.update({"state": "unknown", "unknownAt": time.time(),
+                             "error": "interrupted coordinate comment publication"})
+            _save_journal(path, previous)
         if previous.get("state") in {"published", "unknown", "rejected"}:
             items.append({"suggestion": suggestion, "state": previous.get("state"),
                           **({"replyId": previous.get("replyId")} if previous.get("replyId") else {})})
+            continue
+
+        # Manual backfills and the upload worker may arrive together.  Claim
+        # once before writing the journal, including its initially empty state.
+        # A crash retains the claim: an uncertain POST must never be replayed.
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.with_suffix('.claim').open('x', encoding='utf-8') as claim:
+                json.dump({'bvid': bvid, 'aid': aid, 'suggestion': suggestion, 'claimedAt': time.time()}, claim, ensure_ascii=False)
+        except FileExistsError:
+            items.append({'suggestion': suggestion, 'state': 'unknown', 'error': 'coordinate publication already claimed'})
             continue
 
         journal = {

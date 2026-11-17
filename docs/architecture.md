@@ -95,7 +95,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
-| `services/qqbot`, `tools/qqbot` | authenticated QQ admission, optional all-message group archive, bounded group context and summary reads, fixed private guidance, bounded Agents SDK loop selecting recording/image/chat tools, room-scoped evidence and local tool traces, server-bound source/reference images with one paid image attempt and account receipts; see [QQ bot guide](qqbot.md) | Bilibili publication/credentials, arbitrary agent tools or paths, shared media queues or automatic activation |
+| `services/qqbot`, `tools/qqbot` | authenticated QQ admission, optional all-message group archive, bounded group context and summary reads, fixed private guidance, bounded Agents SDK recording/image/video/chat tools, room-scoped evidence, server-bound media, video draft review and admission through the fixed Seedance QueueStore bridge; see [QQ bot guide](qqbot.md) | Bilibili publication/credentials, arbitrary agent tools or paths, owning a second media scheduler or automatic activation |
 | `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
 | `questions/QuestionReadTools`, `PublicSearchRuntime`, `StockSearch` | shared recording/public read-only tool sessions for Web, danmaku, QQ and comments; per-question public IDs, bounded security resolution/quotes and configured search transport | model credentials from another channel, publication, image jobs, arbitrary URLs/paths |
@@ -133,12 +133,26 @@ dedupe receipts. `admin/AdminQQRecords` exposes a bounded read-only date/filter 
 `core/admin/qqRecords` owns the shared schema. Neither page reads provider credentials
 nor initiates model calls or QQ publication. See [QQ bot guide](qqbot.md).
 
-`qqbot/QQImageJobs` owns the QQ process's durable background image attempts under
+`qqbot/QQImageSchedule` owns pure rolling-ten-minute/ten-start admission and queue ETA simulation.
+`QQImageQueueInputs` freezes bounded references before admission without persisting platform IDs or signed URLs.
+`qqbot/QQImageJobs` owns a durable waiting queue (20 waiting jobs, separate from running slots) and background image attempts under
 the existing account owner lock. Generation has an independent bounded deadline;
 only a new authenticated mention from the same user/group authorizes delivery.
 Persist attempt intent before provider IO and pickup intent before platform IO;
-never replay interrupted generation or ambiguous delivery. Deployment preserves
+resume queued jobs after restart, but never replay interrupted generation or ambiguous delivery.
+Persist rolling provider starts (including gateway retries) before IO; concurrency or rolling limits delay dispatch, not acceptance. Deployment preserves
 this journal and artifacts and waits for both reply and image work to become idle.
+
+`qqbot/QQVideoPolicy/Queue/Tools` own trusted creative admission, named image/voice selection,
+with `QQVideoInputPolicy/Inputs` owning authenticated quoted/attached video selection, bounded QQ CDN reads and local MP4 validation;
+draft preview and scoped confirmation/pickup. `scripts/seedance_qq_bridge.py` is the only QQ queue
+writer and uses the existing QueueStore lock; `seedance_queue_runner.py` remains the scheduler.
+`seedance_canvas.py` owns the Canvas adapter, operator-authorized automatic credit confirmation,
+atomic per-submit quote accounting and durable paid-run intent. Admin projections aggregate this
+accounting per app/user without treating quotes as final charges or refunds.
+Draft/cancelled jobs are never scheduled; ambiguous runs are observed by their original submit ID.
+`admin/AdminAIVideoQueue` is a read-only bounded projection/media resolver for the same queue;
+the Next `#ai-video` page only proxies fixed authenticated GET/HEAD routes. See [Seedance](seedance-queue.md).
 
 `questions/LiveOverview` reads fixed generated overview artifacts under trusted recording
 roots, preserving the dated session separately from newer observed recording fragments.
@@ -190,6 +204,8 @@ subtitles, including edit/creative timeline projection and CPU fallback. `subtit
 owns the extracted subtitle sizing policy; `topic_clipper` retains its export.
 `clip_upload_cli.py` forwards parser construction to the registry's current
 factory so both entrypoints expose the same commands and arguments.
+The registry delegates `cut` argument registration to `clip_candidate_queue`;
+its local feedback precision baseline mode leaves enqueue/worker duplicate checks intact.
 
 `workflows/clipping/editorialStyle` owns the three editorial modes, teaser/body
 repetition rules and subtitle timeline projection. `editorialSelection` chooses
@@ -304,6 +320,10 @@ supplementary publication workflows. It adds no content-review stage.
   registry retains compatibility functions and supplies its current limit/window
   settings. `clip_upload_state.UploadStateIO` narrows snapshot/status-commit
   dependencies to locks and persistence; it has no publication capability.
+- The registry's `save_json` replaces complete snapshots atomically. Windows
+  sharing failures retry the replacement at most five times, then preserve the
+  previous file and report the failure; they never fall back to truncating live
+  registry/queue JSON while readers are active.
 - `scripts/clip_upload_cancel.py` also owns editorial exclusion. Unqueued IDs use
   the short queue transaction without stopping an unrelated upload worker; active
   IDs retain the existing worker-lock/cancellation boundary. The registry retains
@@ -450,6 +470,12 @@ deliberately narrower. Changes to business behavior need focused tests at the
 owner; publication changes also need persistence/idempotency workflow coverage.
 
 ## Automated constraints
+
+QQ media operator privileges are resolved from configured authenticated user digests by `QQMediaAccess`,
+never from nicknames or model choices. Image reservations stay in `QQWorker`/`QQImageJobs`; video
+frequency and active-task reservations are committed under the existing QueueStore lock by
+`seedance_qq_bridge` using pure `seedance_qq_limits` decisions. Draft timestamps and admitted
+timestamps are distinct; quota checks must cover both direct admission and draft approval.
 
 `npm run architecture:check` scans TS, TSX, JS, and Python source/workflow files:
 

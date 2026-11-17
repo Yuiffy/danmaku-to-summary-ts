@@ -56,7 +56,7 @@ MAX_AUTOMATIC_JOB_RETRIES = 8
 BILIBILI_SUBMISSION_RATE_LIMIT_CODE = 137022
 SUBMISSION_RATE_LIMIT_BASE_DELAY_SECONDS = 20 * 60
 SUBMISSION_RATE_LIMIT_MAX_DELAY_SECONDS = 24 * 60 * 60
-ACCOUNT_ROLLING_UPLOAD_LIMIT = 38
+ACCOUNT_ROLLING_UPLOAD_LIMIT = 45
 ACCOUNT_ROLLING_WINDOW_SECONDS = 24 * 60 * 60
 ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS = 5
 ACCOUNT_ARCHIVE_REFRESH_SECONDS = 5 * 60
@@ -303,29 +303,20 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     ensure_runtime_dir()
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    for attempt in range(5):
-        try:
-            tmp.write_text(payload, encoding="utf-8")
-            tmp.replace(path)
-            return
-        except FileNotFoundError:
-            if attempt == 4:
-                path.write_text(payload, encoding="utf-8")
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        for attempt in range(5):
+            try:
+                tmp.replace(path)
                 return
-            time.sleep(0.2)
-        except PermissionError:
-            if attempt == 4:
-                path.write_text(payload, encoding="utf-8")
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
-                return
-            time.sleep(0.2)
+            except (FileNotFoundError, PermissionError):
+                if attempt == 4:
+                    raise
+                time.sleep(0.2)
+    finally:
+        # Never truncate a shared state file when Windows denies replacement.
+        # Readers must see either the complete old snapshot or the complete new one.
+        tmp.unlink(missing_ok=True)
 
 
 class QueueLockTimeout(RuntimeError):
@@ -1149,8 +1140,7 @@ def clear_submission_rate_limit(queue: Dict[str, Any]) -> None:
 
 def next_pending_job(
     queue: Dict[str, Any],
-    *,
-    ignore_account_upload_limit: bool = False,
+    *, ignore_account_upload_limit: bool = False,
 ) -> Optional[Dict[str, Any]]:
     now = dt.datetime.now(dt.timezone.utc)
     if submission_rate_limit_cooldown_active(queue, now):
@@ -1162,11 +1152,12 @@ def next_pending_job(
             return job
         if job.get("status") == "retry_wait":
             retry_at = parse_utc_timestamp(job.get("retryAt"))
-            if retry_at is not None and retry_at <= now:
+            if (retry_at is not None and retry_at <= now) or (
+                job.get("retryKind") == "account_rolling_upload_limit" and not account_upload_limit_active(queue, now)
+            ):
                 return job
             if job.get("retryAt") and retry_at is None:
-                # A malformed timestamp must not leave an otherwise retryable
-                # upload blocked forever.
+                # A malformed timestamp must not block an otherwise retryable upload forever.
                 return job
     return None
 
@@ -2072,16 +2063,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ids", required=True)
     p.add_argument("--timeout-seconds", type=int, default=1800)
     p.set_defaults(func=lambda args: clip_candidate_queue.preview_candidates(args, sys.modules[__name__]))
-    p = sub.add_parser("cut", help="Render held topic candidates by their reserved short IDs; never auto-upload")
-    p.add_argument("--feedback-authorized", action="store_true", help="Apply explicit operator feedback publication authority; AI reviews remain advisory")
-    p.add_argument("--automatic-review", action="store_true", help="Fresh independent AI review; do not record human approval")
-    p.add_argument("--ids", required=True)
-    p.add_argument("--review-note", required=True)
-    p.add_argument("--title", default=None)
-    p.add_argument("--description", default=None)
-    p.add_argument("--cover-text", default=None)
-    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags for this candidate")
-    p.set_defaults(func=cut_candidates)
+    clip_candidate_queue.register_cut_command(sub, cut_candidates)
     clip_media_replace.add_command(sub, sys.modules[__name__])
     p = sub.add_parser("approve-review", help="Save explicit human review for a rendered own-stream clip; never uploads")
     p.add_argument("--feedback-authorized", action="store_true", help="Record feedback publication acceptance without claiming audio/visual review")

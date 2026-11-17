@@ -823,7 +823,9 @@ async def main():
             return 1
         args.source = args.source or clips[0].get('source') or ''
         args.prefix = resolve_upload_prefix(args.prefix, clips[0].get('prefix'))
-        tags = tag_override or clips[0].get('tags') or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+        # Queue IDs bind reviewed arrays; the comma-delimited CLI copy is lossy.
+        tags = clips[0].get('tags') if args.queue_ids is not None else tag_override or clips[0].get('tags')
+        tags = tags or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
         args.tid = args.tid or int(clips[0].get('tid') or 21)
         args.streamer_name = args.streamer_name or clips[0].get('streamerName') or None
         args.room_id = args.room_id or clips[0].get('roomId') or None
@@ -1144,7 +1146,7 @@ async def main():
     if rate_limited:
         # EX_TEMPFAIL: callers should preserve state and retry after a cooldown.
         return 75
-    return 2 if title_conflicts or any(r['status'] == 'quality_policy_hold' for r in results) else 0
+    return 2 if title_conflicts or fail or any(r['status'] in ('no_file', 'no_cover', 'invalid_video') for r in results) else 0
 
 
 if __name__ == '__main__':

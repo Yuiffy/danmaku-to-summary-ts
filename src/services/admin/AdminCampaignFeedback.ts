@@ -28,6 +28,8 @@ export class AdminCampaignFeedback {
     if (body.publishApproved !== true) throw new AdminError('请明确授权制作完成后投稿');
     const note = body.note === undefined || body.note === '' ? '投' : body.note;
     if (typeof note !== 'string' || !note.trim() || note.length > 1000 || note.includes('\0')) throw new AdminError('修改意见无效（最多 1000 字）');
+    if (body.peerCoverageOverride !== undefined && typeof body.peerCoverageOverride !== 'boolean') throw new AdminError('同题二次放行标记无效');
+    const peerCoverageOverride = body.peerCoverageOverride === true;
     const edits: Record<string, unknown> = {};
     if (body.title !== undefined) {
       if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 300 || body.title.includes('\0')) throw new AdminError('标题无效（最多 300 字）');
@@ -36,7 +38,8 @@ export class AdminCampaignFeedback {
     const registration = this.candidates.registration(id, body.revision);
     const previous = this.jobs.latest('campaign-feedback-publish', id);
     if (previous && ['queued', 'running'].includes(previous.status)) {
-      if (previous.note !== note.trim() || JSON.stringify(previous.edits || {}) !== JSON.stringify(edits)) throw new AdminError('此候选正在处理，请完成后再修改意见', 409);
+      if (previous.note !== note.trim() || JSON.stringify(previous.edits || {}) !== JSON.stringify(edits)
+        || previous.peerCoverageOverride !== peerCoverageOverride) throw new AdminError('此候选正在处理，请完成后再修改意见', 409);
       return structuredClone(previous);
     }
     const assertEditable = () => {
@@ -49,7 +52,7 @@ export class AdminCampaignFeedback {
     };
     assertEditable();
     const validate = () => { this.candidates.registration(id, body.revision); assertEditable(); };
-    return this.jobs.submitOperation('campaign-feedback-publish', id, { note: note.trim(), edits, revision: body.revision }, async (output, update) => {
+    return this.jobs.submitOperation('campaign-feedback-publish', id, { note: note.trim(), edits, revision: body.revision, peerCoverageOverride }, async (output, update) => {
       let clipId = this.clipId(registration.metadataPath);
       if (!clipId) {
         update({ phase: '正在登记所选候选' });
@@ -68,7 +71,8 @@ export class AdminCampaignFeedback {
       update({ plan: { clipId, feedbackRevision } });
       validate();
       return this.feedback.execute(clipId, note.trim(), feedbackRevision, edits, output,
-        value => update({ ...value, ...(value.plan ? { plan: { ...value.plan, clipId, feedbackRevision } } : {}) }));
+        value => update({ ...value, ...(value.plan ? { plan: { ...value.plan, clipId, feedbackRevision } } : {}) }),
+        undefined, peerCoverageOverride);
     }, validate);
   }
 }

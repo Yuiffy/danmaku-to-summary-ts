@@ -28,10 +28,19 @@ export function asrHistoryMetrics(meta: Data): Pick<AsrHistoryItem, 'tiers' | 's
   }
   const cpu = number(timing.handoff_cpu_audio_s), transcriptionSeconds = number(timing.handoff_transcription_s);
   const audio = cpu !== undefined && gpu !== undefined ? cpu + gpu : undefined;
+  const mediaSeconds = number(meta.mediaDurationSeconds);
+  const reusedSeconds = number(timing.handoff_reused_audio_s) ?? number(timing.live_asr_reused_audio_s);
+  // Fixed-device CPU jobs use the original pipeline, including the persistent worker.
+  // Their explicit runtime marker proves CPU use; a backend/config name does not.
+  const handoff = timing.device_handoff === 1 || Object.keys(timing).some(key => key.startsWith('handoff_'));
+  if (!handoff && timing.cpu_fallback === 1 && mediaSeconds !== undefined) {
+    const audioSeconds = Math.max(0, mediaSeconds - (reusedSeconds ?? 0));
+    if (audioSeconds > 0) tiers.push({ tier: 'cpu_background', audioSeconds });
+  }
   const speaker = meta.speakerProcessing || {};
-  return { tiers, elapsedSeconds: number(meta.elapsedSeconds), mediaSeconds: number(meta.mediaDurationSeconds),
-    transcriptionSeconds, speedX: ratio(audio, transcriptionSeconds), reusedSeconds: number(timing.handoff_reused_audio_s),
-    modelLoadSeconds: number(timing.handoff_model_load_s), speakerSeconds: number(timing.speaker_total_s),
+  return { tiers, elapsedSeconds: number(meta.elapsedSeconds), mediaSeconds,
+    transcriptionSeconds, speedX: ratio(audio, transcriptionSeconds), reusedSeconds,
+    modelLoadSeconds: number(timing.handoff_model_load_s) ?? number(timing.model_load_s), speakerSeconds: number(timing.speaker_total_s),
     switches: number(timing.handoff_switches), interruptions: number(timing.handoff_interruptions),
     speakerState: speaker.skipped === true || speaker.enabled === false || speaker.status === 'disabled' || speaker.load_policy?.enabled === false ? 'skipped'
       : number(timing.speaker_total_s) !== undefined && timing.speaker_total_s > 0 ? 'processed' : 'unknown',

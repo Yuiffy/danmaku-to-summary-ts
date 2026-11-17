@@ -12,8 +12,11 @@ export interface QQImageInputDiagnostic {
   elementAttachmentCount: number; sourceCount: number; inputPresent: boolean; invalid: boolean;
   urlDiagnosticsVersion?: 1;
   rejectedImageUrls?: Array<{ source: 'attachment' | 'element'; reason: string; shape: string; hostname?: string }>;
+  attachmentDiagnosticsVersion?: 1;
+  unclassifiedAttachments?: Array<{ source: 'attachment' | 'element'; contentType: 'missing' | 'image_noncanonical' | 'video' | 'octet_stream' | 'other'; url: 'missing' | 'allowed' | 'rejected' }>;
 }
 export const QQ_IMAGE_INPUT_LIMIT = 8;
+export const QQ_IMAGE_SOURCE_LIMIT = 24;
 export const qqImageReferenceId = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\s\p{Cc}\p{Cf}]/u.test(value);
 
@@ -40,8 +43,8 @@ export function qqImageInput(message: QQImageEnvelope): QQImageInput | undefined
   const attachments = Array.isArray(quoted) && quoted.some(isImage) ? quoted : message.attachments;
   const images = Array.isArray(attachments) ? attachments.filter(isImage) : [];
   if (!images.length && !reply) return;
-  const urls = images.slice(0, QQ_IMAGE_INPUT_LIMIT).map(item => qqImageAttachmentUrl(item.url));
-  const invalid = images.length > QQ_IMAGE_INPUT_LIMIT || urls.some(url => !url);
+  const urls = images.slice(0, QQ_IMAGE_SOURCE_LIMIT).map(item => qqImageAttachmentUrl(item.url));
+  const invalid = images.length > QQ_IMAGE_SOURCE_LIMIT || urls.some(url => !url);
   return { urls: urls.filter((url): url is string => !!url), ...(reply ? { reply } : {}), ...(invalid ? { invalid } : {}) };
 }
 
@@ -65,11 +68,20 @@ export function qqImageInputDiagnostic(message: QQImageEnvelope, input?: QQImage
   const elements = Array.isArray(message.msgElements) ? message.msgElements : [];
   const count = (items: unknown) => Array.isArray(items) ? Math.min(32, items.length) : 0;
   const rejectedImageUrls: NonNullable<QQImageInputDiagnostic['rejectedImageUrls']> = [];
+  const unclassifiedAttachments: NonNullable<QQImageInputDiagnostic['unclassifiedAttachments']> = [];
   const inspect = (items: unknown, source: 'attachment' | 'element') => {
     if (!Array.isArray(items)) return;
     for (const item of items.slice(0, 32)) {
-      if (rejectedImageUrls.length >= QQ_IMAGE_INPUT_LIMIT) break;
-      if (typeof item?.content_type !== 'string' || !item.content_type.startsWith('image/')) continue;
+      if (typeof item?.content_type !== 'string' || !item.content_type.startsWith('image/')) {
+        if (unclassifiedAttachments.length < QQ_IMAGE_INPUT_LIMIT) {
+          const type = typeof item?.content_type === 'string' ? item.content_type.trim().toLowerCase() : '';
+          unclassifiedAttachments.push({ source, contentType: !type ? 'missing' : type === 'image' || type.startsWith('image/') ? 'image_noncanonical' :
+            type.startsWith('video/') ? 'video' : type === 'application/octet-stream' ? 'octet_stream' : 'other',
+            url: !item?.url ? 'missing' : qqImageAttachmentUrl(item.url) ? 'allowed' : 'rejected' });
+        }
+        continue;
+      }
+      if (rejectedImageUrls.length >= QQ_IMAGE_INPUT_LIMIT) continue;
       const diagnostic = rejectedImageUrl(item.url);
       if (diagnostic) rejectedImageUrls.push({ source, ...diagnostic });
     }
@@ -81,6 +93,7 @@ export function qqImageInputDiagnostic(message: QQImageEnvelope, input?: QQImage
     hasReference: !!input?.reply || qqImageReferenceId(message.refMsgIdx), attachmentCount: count(message.attachments),
     elementCount: count(elements), elementAttachmentCount: Math.min(32, elements.slice(0, 32).reduce((sum, item) => sum + count(item?.attachments), 0)),
     sourceCount: input?.urls.length || 0, inputPresent: !!input, invalid: input?.invalid === true,
-    ...(rejectedImageUrls.length ? { urlDiagnosticsVersion: 1, rejectedImageUrls } : {})
+    ...(rejectedImageUrls.length ? { urlDiagnosticsVersion: 1, rejectedImageUrls } : {}),
+    ...(unclassifiedAttachments.length ? { attachmentDiagnosticsVersion: 1, unclassifiedAttachments } : {})
   };
 }

@@ -30,7 +30,7 @@ const {
 } = require('./clipping/topic_config');
 const fs = require('fs');
 const path = require('path');
-const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const { postProcessAiClipMetadata, deriveMentionedStreamerTags } = require('./ai_clip_metadata');
 const DEFAULT_TOPIC_UPLOAD_TAGS = ['虚拟主播', '直播切片'];
 const { deriveContentTags } = require('./content_tags');
 const { buildTimelineCommentSuggestions } = require('./clipping/timeline_comments');
@@ -280,8 +280,9 @@ function normalizedRegistryNames(entry = {}) {
 function resolveAiStreamerTags(config = {}, roomId = null) {
     const entry = resolveStreamerEntry(config, roomId);
     if (!entry) return [];
+    const roomTag = config.ai?.roomSettings?.[String(roomId)]?.anchorName || config.roomSettings?.[String(roomId)]?.anchorName;
     const officialNames = normalizedRegistryNames(entry);
-    const candidates = [entry.aiClipName, entry.uploadPrefix].concat(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []).map(value => String(value || '').trim()).filter(Boolean);
+    const candidates = [roomTag, entry.aiClipName, entry.uploadPrefix].concat(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []).map(value => String(value || '').trim()).filter(Boolean);
     const safeCandidates = candidates.filter(tag => !officialNames.has(tag.toLocaleLowerCase()));
     if (safeCandidates.length > 0) return Array.from(new Set(safeCandidates));
     const safeUploadTags = (Array.isArray(entry.uploadTags) ? entry.uploadTags : []).map(value => String(value || '').trim()).filter(Boolean)
@@ -341,7 +342,6 @@ function normalizeTitle(value, fallback) {
     }
     return title;
 }
-
 
 async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null, coverText = null) {
     const defaultTitle = buildDefaultTitle(window, info, streamerName, config);
@@ -406,9 +406,10 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     });
     const tags = Array.from(new Set([
         ...buildTopicUploadTags(config, info.roomId, extraTagList),
+        ...deriveMentionedStreamerTags({ matchedKeywords: window.matchedKeywords, text: sampleText }, config),
         ...contentTagList
-    ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
-    const processed = postProcessAiClipMetadata({ title, tags }, config);
+    ].map(tag => String(tag || '').trim()).filter(Boolean)));
+    const processed = postProcessAiClipMetadata({ title, tags, requiredTags: buildTopicUploadTags(config, info.roomId, extraTagList) }, config);
     return {
         title: processed.title,
         coverText: normalizeCoverText(coverText),
@@ -612,7 +613,6 @@ function resolveSubtitleBurnPlan(config = {}) {
         requestedMode
     };
 }
-
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const edit = config.editPlan ? require('./workflow-runtime').loadWorkflow('clipping/editPlan') : null;

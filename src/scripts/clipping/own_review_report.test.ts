@@ -23,6 +23,22 @@ function clip(index, start, pending = false) {
 describe('one numbered own-stream review with durable IDs', () => {
   afterEach(() => jest.restoreAllMocks());
 
+  test('new held candidates retain AI game tags and safe defaults through later review', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'own-held-tags-'));
+    try {
+      const rows = artifacts.prepareReviewResults([], { source: { mediaPath: '/fixture.flv' },
+        aiStatus: { validation: { rejected: [{ candidateIndex: 1, start: 0, end: 10, title: '卡在天上',
+          tags: ['影之刃零', '游戏BUG', '岁己'], reason: 'outside_candidate_context' }] } } },
+      { segments: [{ start: 0, end: 10, text: '什么bug都能被我碰到' }] }, directory, [], {
+        baseTags: ['小岁', 'AI切片'], rootConfig: { ai: { streamerRegistry: { sui: { displayName: '岁己', aiClipName: '小岁' } } } }
+      });
+      expect(rows[0].copy.tags).toEqual(['影之刃零', '游戏BUG', '小岁', 'AI切片']);
+      expect(rows[0].upload.tags).toEqual(rows[0].copy.tags);
+      expect(JSON.parse(fs.readFileSync(rows[0].output.metadataPath, 'utf8')).copy.tags).toEqual(rows[0].copy.tags);
+      expect(rows[0].uploadReady).toBe(false);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test('a boundary repair hold exposes the exhausted tool reason alongside the original review', () => {
     const value = { ...clip(1, 10, true), automaticBoundaryRepair: { status: 'needs_review', reason: '后续字幕已耗尽，需要复听' } };
     expect(report.reviewDetailLines(value).join('\n')).toContain('自动边界修复: 已尝试，仍待核对：后续字幕已耗尽，需要复听');

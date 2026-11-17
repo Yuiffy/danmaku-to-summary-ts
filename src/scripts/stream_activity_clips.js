@@ -10,7 +10,7 @@ function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
         const key = args[i];
-        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--review-audio', '--repair-timing', '--retry-publication', '--no-periodic', '--candidate', '--feedback-authorized'].includes(key)) options[key.slice(2)] = true;
+        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--review-audio', '--repair-timing', '--retry-publication', '--no-periodic', '--candidate', '--feedback-authorized', '--unresolved-only'].includes(key)) options[key.slice(2)] = true;
         else if (/^--[a-z-]+$/u.test(key) && args[i + 1] && !args[i + 1].startsWith('--')) options[key.slice(2)] = args[++i];
         else throw new Error(`Unknown or incomplete argument: ${key}`);
     }
@@ -109,7 +109,7 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (command === 'identify-songs') {
         if (!options.metadata) throw new Error('identify-songs requires --metadata');
-        const result = await workflow.identifyStreamSongs({ metadataPath: path.resolve(options.metadata), activityId: options['activity-id'], hint: options.hint });
+        const result = await workflow.identifyStreamSongs({ metadataPath: path.resolve(options.metadata), activityId: options['activity-id'], unresolvedOnly: options['unresolved-only'], hint: options.hint });
         console.log(`ACTIVITY_SONG_IDENTIFICATION_RESULT ${JSON.stringify(result)}`); return result;
     }
     if (command === 'restyle') {
@@ -120,7 +120,7 @@ async function main(argv = process.argv.slice(2)) {
             contentName: options['content-name'], evidenceFrame: options['evidence-frame'], evidenceNote: options['evidence-note'],
             retainActivityIds: options['retain-activity-ids'] ? options['retain-activity-ids'].split(',').map(id => id.trim()) : null,
             selectionNote: options['selection-note'],
-            titleEvidencePath: options['title-evidence'] ? path.resolve(options['title-evidence']) : null });
+            titleEvidencePath: options['title-evidence'] ? path.resolve(options['title-evidence']) : null, revisionNote: options['revision-note'] });
         console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (['run', 'plan'].includes(command)) {

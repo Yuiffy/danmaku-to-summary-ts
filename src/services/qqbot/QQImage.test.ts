@@ -5,8 +5,9 @@ import sharp from 'sharp';
 import { Response } from 'node-fetch';
 import { Readable } from 'stream';
 import { createQQImageGenerator } from './QQImage';
-import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_SOURCE_REPLY, qqImageCommandForRequest, qqImageCommandPlan, qqImageCommandReply, qqImageConfirmationReply, qqImagePlan, qqImageReferenceCreationRequested, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
+import { QQImageConfig, QQ_IMAGE_CONFIRM_PREFIX, QQ_IMAGE_SOURCE_REPLY, qqImageCommandForRequest, qqImageCommandPlan, qqImageCommandReply, qqImageConfirmationReply, qqImagePlan, qqImageReferenceCreationRequested, qqImageRecoveryRequested, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
 import { qqImageCharacters } from './QQImageCatalog';
+import { qqImageLongComicRequested, qqImagePickupRequested } from './QQImagePolicy';
 import { qqDigest, qqRequest } from './QQPolicy';
 import { QQRecords } from './QQRecords';
 import { AdminQQRecords } from '../admin/AdminQQRecords';
@@ -22,6 +23,13 @@ const request = (text: string) => qqRequest({ kind: 'group', rawEventType: 'GROU
 
 const confirmedRequest = (text: string) => request(`${QQ_IMAGE_CONFIRM_PREFIX}${text}`);
 
+test.each([
+  ['把这批图变成长图漫画', true], ['把这组图做成条漫', true], ['生成一张竖版漫画', true],
+  ['不要长漫，保留单幅图', false], ['不要竖版漫画', false], ['把这些照片拼成长图', false]
+])('long-comic layout follows explicit comic intent: %s', (text, expected) => {
+  expect(qqImageLongComicRequested(text as string)).toBe(expected);
+});
+
 test.each(['生成岁己和栞栞在wwe赛场上大战的图片', '确认按描述生图:岁己和栞栞在WWE风格摔角赛场上对战的画面'])
 ('a direct drawing request or compatible prefix authorizes creation: %s', text => {
   const original = request(text);
@@ -34,6 +42,7 @@ test.each(['生成岁己和栞栞在wwe赛场上大战的图片', '确认按描�
 test('image configuration accepts a global daily capacity of 300 and rejects an excess or fractional capacity', () => {
   expect(() => validateQQImageConfig({ ...options, dailyLimit: 300, userDailyLimit: 30 })).not.toThrow();
   for (const dailyLimit of [301, 300.5]) expect(() => validateQQImageConfig({ ...options, dailyLimit })).toThrow('Invalid QQ image configuration');
+  expect(() => validateQQImageConfig({ ...options, gifModel: 'gpt-image-2.6' })).toThrow('Invalid QQ image configuration');
 });
 
 test('direct requests can draw unfamiliar characters without vouching for their identities', () => {
@@ -77,13 +86,23 @@ test('accepts common drawing requests without treating ordinary chat as image cr
   for (const text of ['画一个星汐', '给我画小岁', '画张七海', '生成三理穿宇航服的图片']) expect(qqImageRequested(text)).toBe(true);
   for (const text of ['今天聊什么', '三理昨天画画了吗']) expect(qqImageRequested(text)).toBe(false);
 });
+test('recognizes explicit previous-image recovery without treating refusal as a resend request', () => {
+  for (const text of ['收图', '取图', '领取上一张图片', '那你把上一张结果发我呀', '发我上次的图']) expect(qqImageRecoveryRequested(text)).toBe(true);
+  for (const text of ['不要发图', '不用发图', '别把上一张图发我', '上一张图怎么样']) expect(qqImageRecoveryRequested(text)).toBe(false);
+});
+test('only explicit pickup or image progress queries may interrupt ordinary chat', () => {
+  for (const text of ['', '收图', '领取图片', '那你把上一张结果发我呀', '图画好了吗', '查询图片进度', '帮我查一下上一张图的进度',
+    '图片生成完了没？', '生图任务状态如何', '图还在排队吗', '还有多久', '好了吗', '进度呢']) expect(qqImagePickupRequested(text)).toBe(true);
+  for (const text of ['今天minimax和智谱和nvidia和amd怎么样', '你好', '这张图里有什么', '上一张图怎么样', '图片生成模型有哪些',
+    '生成图片的进度查询怎么用', '不要发图', '先不用收图，今天有什么新闻', '帮我看看']) expect(qqImagePickupRequested(text)).toBe(false);
+});
 test('combines matched character references with user scene, without matching English substrings', () => {
   const plan = qqImagePlan(confirmedRequest('生成小岁和小栞一起吃冰淇淋的图片'), options);
   expect(plan.references).toEqual(options.characters!.map(item => item.referenceImage));
   expect(plan.prompt).toContain('一起吃冰淇淋'); expect(plan.prompt).toContain('白发红瞳'); expect(plan.prompt).toContain('黄色头发');
   expect(qqImagePlan(confirmedRequest('生成 a red suit 的图片'), options).references).toEqual([]);
 });
-test.each(['变岁己', '变小岁', '请帮我变栞栞', '换成栞栞', '把图里的角色换成岁己'])
+test.each(['变岁己', '变小岁', '请帮我变栞栞', '换成栞栞', '把图里的角色换成岁己', '将这组图里的角色全部换成岁己'])
 ('replacement shorthand requires the source and binds the named target: %s', text => {
   expect(qqImageConfirmationReply(request(text), options)).toBe(QQ_IMAGE_SOURCE_REPLY);
   const edit = { ...request(text), imageInput: { urls: [], reply: 'source' } };
@@ -98,6 +117,15 @@ test.each(['变岁己', '变小岁', '请帮我变栞栞', '换成栞栞', '把�
   expect(plan.prompt).toContain('以用户明确要求为准');
   expect(plan.prompt).not.toContain('不得用新角色替换原图人物');
   expect(plan.prompt).not.toContain('补充参考图仅用于用户要求新增的角色');
+});
+
+test('将 multi-page replacement is recognized and preserves both explicitly mapped targets', () => {
+  const edit = { ...request('将这组图里前五张换成岁己、最后一张换成栞栞'), imageInput: { urls: [], reply: 'source' } };
+  expect(qqImageRequested(edit.text, edit.imageInput)).toBe(true);
+  expect(qqImageCommandForRequest(edit, { mode: 'create', instruction: edit.text, characters: [] }).mode).toBe('edit');
+  const plan = qqImageCommandPlan(edit, { mode: 'edit', instruction: edit.text, characters: [] }, options, 6);
+  expect(plan.references).toEqual(options.characters!.map(item => item.referenceImage));
+  expect(plan.prompt).toContain(edit.text);
 });
 
 test('adding a person to a quoted image is an edit rather than a new drawing', () => {
@@ -219,11 +247,53 @@ test('sends real multipart reference bytes to dedicated provider once and archiv
   expect(new AdminQQRecords(root).image('900000001', '2026-10-28', message.key)).toEqual(fs.readFileSync(result.file));
   fs.writeFileSync(result.file, 'tampered'); expect(() => new AdminQQRecords(root).image('900000001', '2026-10-28', message.key)).toThrow();
 });
+
+test('six-page comic uses portrait output and uploads every original before both character references', async () => {
+  const sources = await Promise.all(Array.from({ length: 6 }, (_, index) => sharp({ create: {
+    width: 8, height: 12, channels: 3, background: { r: index * 35, g: 80, b: 160 } } }).png().toBuffer()));
+  for (const character of options.characters!) fs.writeFileSync(path.join(root, character.referenceImage), sources[0]);
+  const message = { ...request('把这批图一起变成一个长漫，白发校服角色全部变岁己，黄发角色变栞栞'),
+    imageInput: { urls: sources.map((_, index) => `https://gchat.qpic.cn/source-${index}`) } };
+  const transport = jest.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: sources[0].toString('base64') }] })));
+  const result = await createQQImageGenerator(root, '900000001', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake' }, transport as any)
+    (message, new AbortController().signal, { mode: 'edit', instruction: message.text, characters: [] }, sources);
+  const [endpoint, init] = transport.mock.calls[0] as unknown as [string, any];
+  expect(endpoint).toContain('/images/edits');
+  const body = init.body.getBuffer().toString('latin1');
+  expect(body).toContain('name="size"\r\n\r\n1024x1536');
+  const parts = body.split(`--${init.body.getBoundary()}`).filter((part: string) => part.includes('name="image[]"'));
+  expect(parts).toHaveLength(8);
+  for (const [index, source] of sources.entries()) {
+    expect(parts[index]).toContain(`filename="source-${index + 1}.png"`);
+    expect(parts[index]).toContain(source.toString('latin1'));
+  }
+  expect(parts[6]).toContain('filename="character-1.png"');
+  expect(parts[7]).toContain('filename="character-2.png"');
+  expect(result.prompt).toContain('前6张原图按输入顺序从上到下');
+  expect(result.prompt).toContain('参考图7只用于锁定岁己');
+  expect(result.prompt).toContain('参考图8只用于锁定栞栞');
+  expect(result.prompt).toContain(message.text);
+  expect(transport).toHaveBeenCalledTimes(1);
+});
 test('generic requests use generations and never download provider-supplied URLs or retry', async () => {
   const transport = jest.fn(async () => new Response(JSON.stringify({ data: [{ url: 'http://127.0.0.1/private' }] }), { status: 200 }));
   const generate = createQQImageGenerator(root, '900000001', options, { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake' }, transport as any);
   await expect(generate(confirmedRequest('生成星空的图片'), new AbortController().signal)).rejects.toMatchObject({ diagnostic: { stage: 'image_decode', code: 'image_bytes', httpStatus: 200 } });
   expect(transport).toHaveBeenCalledTimes(1); expect((transport.mock.calls[0] as unknown as [string])[0]).toContain('/images/generations');
+});
+
+test('GIF requests route to 2.6, ask for GIF output, and reject a static GIF response', async () => {
+  const staticGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+  const transport = jest.fn(async (_url: string, init: any) => {
+    const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
+    expect(body).toMatchObject({ model: 'gpt-image-2.6-sunburst', output_format: 'gif' });
+    return new Response(JSON.stringify({ data: [{ b64_json: staticGif.toString('base64') }] }), { status: 200 });
+  });
+  const generate = createQQImageGenerator(root, '900000001', { ...options, gifModel: 'gpt-image-2.6-sunburst' },
+    { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake' }, transport as any);
+  await expect(generate(request('生成一张会动的GIF图：星空闪烁'), new AbortController().signal))
+    .rejects.toMatchObject({ diagnostic: { stage: 'image_decode', code: 'image_animation' } });
+  expect(transport).toHaveBeenCalledTimes(1);
 });
 test('image HTTP failures retain status and upstream ID while omitting the provider error body', async () => {
   const transport = jest.fn(async () => new Response('private provider diagnostics fake-qq-key', { status: 503, headers: { 'x-request-id': 'image-req-123' } }));
@@ -293,9 +363,10 @@ test.each([
   ['moderation_blocked', 'rejected safety_violations=[sexual].', 'image_sexual'],
   ['moderation_blocked', 'rejected safety_violations=[violence].', 'image_moderation'],
   ['moderation_blocked', 'sexual appears in arbitrary text', 'image_moderation'],
+  [undefined, 'GIF output is not enabled for this request.', 'image_gif_unavailable'],
   ['invalid_image', 'rejected safety_violations=[sexual].', 'http_error'],
 ])('sexual-content replies require both the rejection code and the structured category', async (code, message, expected) => {
-  const transport = jest.fn(async () => new Response(JSON.stringify({ error: { code, message } }), { status: 400 }));
+  const transport = jest.fn(async () => new Response(code === undefined ? JSON.stringify({ detail: message }) : JSON.stringify({ error: { code, message } }), { status: 400 }));
   const generate = createQQImageGenerator(root, '900000001', options,
     { url: 'http://127.0.0.1:8080/v1/chat/completions', apiKey: 'fake-qq-key' }, transport as any);
   await expect(generate(confirmedRequest('生成星空图片'), new AbortController().signal))

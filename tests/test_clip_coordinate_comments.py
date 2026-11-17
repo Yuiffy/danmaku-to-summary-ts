@@ -69,6 +69,29 @@ class CoordinateCommentTests(unittest.TestCase):
             self.assertEqual(second["items"][0]["state"], "unknown")
             self.assertEqual(send.call_count, 1)
 
+    def test_interrupted_publication_is_durably_unknown_without_sending(self):
+        clip = self.clip()
+        suggestion = clip["commentSuggestions"][0]
+        key = comments.suggestion_key("BV1abc", suggestion)
+        with tempfile.TemporaryDirectory() as directory, patch.object(comments.comment, "send_comment") as send:
+            journal = Path(directory) / f"{key}.json"
+            journal.write_text(json.dumps({
+                "schemaVersion": 1, "key": key, "bvid": "BV1abc", "aid": "123",
+                "suggestion": suggestion, "state": "publishing", "startedAt": 1234,
+            }), encoding="utf-8")
+            for _ in range(2):
+                result = asyncio.run(comments.publish_coordinate_comments(
+                    clip, {"bvid": "BV1abc", "aid": 123}, object(),
+                    {"clipTopics": {"coordinateComments": {"enabled": True, "mode": "auto"}}},
+                    journal_directory=Path(directory),
+                ))
+                self.assertEqual(result["items"][0]["state"], "unknown")
+                saved = json.loads(journal.read_text(encoding="utf-8"))
+                self.assertEqual(saved["state"], "unknown")
+                self.assertEqual(saved["startedAt"], 1234)
+                self.assertIn("unknownAt", saved)
+            send.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

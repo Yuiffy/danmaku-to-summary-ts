@@ -1,4 +1,27 @@
-import { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
+import { projectRetainedSubtitleEvidence, projectRenderedSubtitleEvidence } from './subtitleWindowEvidence';
+
+test('actor evidence uses rendered corrections while preserving original groups, voice and source identity', () => {
+    const original = fixture(), before = JSON.stringify(original.cues);
+    const artifact: any = { window: { start: 10, end: 18 }, renderedSubtitles: { version: 1,
+        revision: 2, renderedRevision: 2, sha256: 'bound', renderedSha256: 'bound', sourceSha256: original.sourceSha256,
+        window: { start: 10, end: 18 }, cues: [{ start: 3, end: 5, text: '蚊子停在麦克风' }], edits: [
+            { authority: 'user', changes: [{ start: 13, end: 15, before: '蚊子趴上麦克风', after: '蚊子停在麦克风' }] }
+        ] } };
+    const projected = projectRenderedSubtitleEvidence(original, artifact);
+    expect(projected.sourceSha256).toBe(original.sourceSha256);
+    expect(projected.cues[0].id).toBe('G8');
+    expect(projected.cues[0].text).toContain('蚊子停在麦克风');
+    expect(projected.cues[0].items[1].speakerEvidence).toBe(original.cues[0].items[1].speakerEvidence);
+    expect(JSON.stringify(original.cues)).toBe(before);
+    const change = artifact.renderedSubtitles.edits[0].changes[0];
+    for (const patch of [
+        { renderedRevision: 1 }, { sourceSha256: 'changed' }, { renderedSha256: 'changed' },
+        { cues: [{ start: 3, end: 5, text: '未经渲染的另一句话' }] },
+        { edits: [{ authority: 'user', changes: [{ ...change, before: '不是原话' }] }] },
+        { edits: [{ authority: 'user', changes: [{ ...change, start: 14 }] }] }
+    ]) expect(() => projectRenderedSubtitleEvidence(original, { ...artifact,
+        renderedSubtitles: { ...artifact.renderedSubtitles, ...patch } })).toThrow();
+});
 
 function fixture() {
     const items = [

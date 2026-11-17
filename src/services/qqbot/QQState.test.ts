@@ -51,7 +51,7 @@ test('image reservations survive restart and legacy daily image counts remain co
   } finally { await store.close(); }
 });
 
-test.each([null, 'invalid', [-1], [1.5], Array(11).fill(1)])('invalid image windows cannot silently reset admission: %j', imageStarts => {
+test.each([null, 'invalid', [-1], [1.5], Array(51).fill(1)])('invalid image windows cannot silently reset admission: %j', imageStarts => {
   const state = newQQState('900000001');
   state.users['a'.repeat(64)] = { count: 0, starts: [], imageStarts: imageStarts as number[] };
   expect(() => validateQQState(state, state.appId)).toThrow('Invalid QQ user state');

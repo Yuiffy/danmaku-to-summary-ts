@@ -45,8 +45,10 @@ test.each(['recovered', 'invalid_again', 'qa_rejected', 'resumed', 'source_incom
     const baseline = { uploadReady: true, window: { start: 100, end: 130, duration: 30, index: 1 },
         copy: { title: '考对方辨认假虫', description: '完整起因和揭晓', coverText: '原来是假的' }, output };
     const context: any = { config: { enhancements: { creative: { style: 'compact' }, budget: {} } }, info: {},
-        parsed: { segments: cues.map(c => ({ ...c, start: c.start + 100, end: c.end + 100 })) }, danmaku: [],
-        source: { mediaPath: source }, options: { srtPath: srt },
+        parsed: { segments: cues.map(c => ({ ...c, start: c.start + 100, end: c.end + 100 })) },
+        danmaku: [{ time: 99, text: '窗外之前' }, { time: 105, text: '本人完整回复' },
+            { time: 114, text: '删去支线中的弹幕' }, { time: 120.5, text: '结尾回复' }, { time: 131, text: '窗外之后' }],
+        source: { mediaPath: source }, options: { srtPath: srt, creativeEditorialFeedback: '保留开头和揭晓，删除中间支线' },
         clip: { attributionReview: { claims: [{ cueIds: ['G1'] }] } },
         subtitleEvidence: { byId: new Map([['G1', { start: 100, end: 110.45, text: '受保护的整组证据' }]]) },
         topic: { parseTopicSrt: () => ({ segments: cues }), cutClipMedia: jest.fn(),
@@ -64,8 +66,14 @@ test.each(['recovered', 'invalid_again', 'qa_rejected', 'resumed', 'source_incom
         const stage = phase.replace(/^creative-/, '').replace(/-1$/, ''); stages.push(stage);
         let value;
         if (stage.startsWith('story')) {
+            expect(prompt).toContain('保留开头和揭晓，删除中间支线');
             expect(prompt).toContain('protectedCues');
             expect(prompt).toContain('"cueIds":["C1","C2","C3"]');
+            expect(prompt).toContain('本人完整回复');
+            expect(prompt).toContain('删去支线中的弹幕');
+            expect(prompt).not.toContain('窗外之前');
+            expect(prompt).not.toContain('窗外之后');
+            if (stage === 'story-qa') expect(prompt).toContain('二者均不表示已选入或已烧录的弹幕');
         }
         switch (stage) {
         case 'story': value = draft(); break;
@@ -86,6 +94,11 @@ test.each(['recovered', 'invalid_again', 'qa_rejected', 'resumed', 'source_incom
     }) };
     try {
         const result = await runCreativeEnhancement(baseline, context, dependencies);
+        const packet = JSON.parse(fs.readFileSync(path.join(dir, 'temp', 'clip-creative', 'story-qa-input.json'), 'utf8'));
+        expect(packet.audience).toEqual([{ time: 5, text: '本人完整回复' }, { time: 14, text: '删去支线中的弹幕' }, { time: 20.5, text: '结尾回复' }]);
+        expect(packet.retainedAudience.map(row => row.text)).toEqual(['本人完整回复', '结尾回复']);
+        expect(packet.retainedAudience[1].sourceTime).toBe(20.5);
+        expect(packet.retainedAudience[1].time).toBeLessThan(20.5);
         if (outcome === 'repair_request_fails') {
             expect(result.creativeResult.reason).toContain('删除无关的开头C1');
             expect(result.creativeResult.reason).toContain('invalid_structured_json');

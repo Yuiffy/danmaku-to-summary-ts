@@ -1,5 +1,13 @@
 import { qqImageAttachmentUrl, qqImageInput, qqImageInputDiagnostic } from './QQImageInputPolicy';
 
+test('all original URLs survive up to 24 inputs and larger requests remain invalid rather than silently dropping pages', () => {
+  const attachments = Array.from({ length: 24 }, (_, index) => ({ content_type: 'image/png', url: `https://gchat.qpic.cn/page-${index}` }));
+  const input = qqImageInput({ attachments });
+  expect(input?.urls).toEqual(attachments.map(item => item.url));
+  expect(input?.invalid).toBeUndefined();
+  expect(qqImageInput({ attachments: [...attachments, attachments[0]] })?.invalid).toBe(true);
+});
+
 test.each(['https://', 'http://', '//'])('accepts the authenticated QQ multimedia .com.cn attachment with prefix %s', prefix => {
   const url = `${prefix}multimedia.nt.qq.com.cn/download?appid=1406&fileid=fixture&rkey=private-token`;
   const expected = 'https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=fixture&rkey=private-token';
@@ -54,4 +62,27 @@ test('accepted attachment URLs keep the existing count-only diagnostics', () => 
   expect(diagnostic).toMatchObject({ sourceCount: 1, invalid: false });
   expect(diagnostic.rejectedImageUrls).toBeUndefined();
   expect(JSON.stringify(diagnostic)).not.toMatch(/private-|token=|gchat/u);
+});
+
+test('unclassified quote attachment diagnostics explain missing sources using bounded categories without changing admission', () => {
+  const message = { msgType: 103, refMsgIdx: 'private-reference', msgElements: [{ attachments: [
+    { content_type: '', url: 'https://gchat.qpic.cn/private-path?token=private-token' },
+    { content_type: 'image', url: '' },
+    { content_type: ' Image/PNG ', url: 'https://bad.invalid/private-path' },
+    { content_type: 'application/octet-stream', url: '' },
+    ...Array.from({ length: 35 }, () => ({ content_type: 'private-value', url: 'private-url' }))
+  ] }] };
+  const input = qqImageInput(message);
+  expect(input).toEqual({ reply: 'private-reference', urls: [] });
+  const diagnostic = qqImageInputDiagnostic(message, input);
+  expect(diagnostic.unclassifiedAttachments).toHaveLength(8);
+  expect(diagnostic).toMatchObject({ attachmentDiagnosticsVersion: 1, sourceCount: 0, invalid: false,
+    unclassifiedAttachments: [
+      { source: 'element', contentType: 'missing', url: 'allowed' },
+      { source: 'element', contentType: 'image_noncanonical', url: 'missing' },
+      { source: 'element', contentType: 'image_noncanonical', url: 'rejected' },
+      { source: 'element', contentType: 'octet_stream', url: 'missing' },
+      ...Array.from({ length: 4 }, () => ({ source: 'element', contentType: 'other', url: 'rejected' }))
+    ] });
+  expect(JSON.stringify(diagnostic)).not.toMatch(/private-|token=|https?:|gchat|bad\.invalid/u);
 });

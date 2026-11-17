@@ -1452,9 +1452,9 @@
           "小岁"
         ],
         "referenceImages": [
-          "src/scripts/reference_images/25788785.png"
+          "public/reference_images/sui_jk_official_standing.png"
         ],
-        "characterDescription": "岁己SUI，白发红瞳女生，虚拟主播，气质可爱又有点帅气。"
+        "characterDescription": "岁己SUI，白发带粉色挑染、红瞳的女生，JK新衣为白衬衫、灰色菱格针织背心、粉色条纹领结、深蓝百褶裙、黑色过膝袜与黑色乐福鞋，配粉色书包和金色光环，具体外观以参考图为准。"
       },
       "shiori": {
         "displayName": "栞栞",
@@ -1922,8 +1922,8 @@
       },
       "25788785": {
         "audioOnly": false,
-        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
-        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "referenceImage": "public/reference_images/sui_jk_official_standing.png",
+        "characterDescription": "岁己SUI（白发带粉色挑染、红瞳的女生，JK新衣为白衬衫、灰色菱格针织背心、粉色条纹领结、深蓝百褶裙、黑色过膝袜与黑色乐福鞋，配粉色书包和金色光环，具体外观以参考图为准），饼干岁（有细细四肢的小小的饼干状生物）",
         "multiReferenceImages": {
           "enabled": false,
           "maxExtraCharacters": 2,
@@ -2336,7 +2336,7 @@
           "普雅之魂": "芙娅之魂",
           "抚雅之魂": "芙娅之魂"
         },
-        "enabled": true,
+        "enabled": false,
         "sourceUrl": "https://www.bilibili.com/opus/1261857375818612759",
         "startsAt": "2026-10-22T10:51:05+08:00",
         "endsAt": "2026-11-06T00:00:00+08:00",

@@ -12,7 +12,7 @@ import { subtitleRepairEvidenceDigest, subtitleDiagnosticEvidence } from './ownS
 import { sourceTimingMetadata, validateRenderedTimingRepair } from './publicationTiming';
 import { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
 import { collectClipIntentSignals, clipIntentForWindow, clipIntentReasons } from './clipIntent';
-export { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
+export { projectRetainedSubtitleEvidence, projectRenderedSubtitleEvidence } from './subtitleWindowEvidence';
 
 export interface AutomaticPublicationConfig extends PublicationConfig {
     activatedAt?: string; authorizationNote?: string; concurrency?: number;

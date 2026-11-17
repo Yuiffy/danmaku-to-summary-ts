@@ -110,3 +110,15 @@ export function campaignReviewContext(config: Data, options: CampaignSource): Da
         overview: summary.content.overview, coverage: 'verified_recording_context_only',
         sourceSha256: summary.source.sourceSha256 };
 }
+
+/** Actual-play context for per-clip AI tags; never tags every window automatically. */
+export function recordingContentTagContext(options: CampaignSource): Data | null {
+    try {
+        const base = path.join(path.dirname(options.mediaPath || ''), path.parse(options.mediaPath || '').name);
+        const summary = JSON.parse(fs.readFileSync(options.liveContentSummaryPath || `${base}_LIVE_CONTENT.json`, 'utf8'));
+        const games = summary.content?.games;
+        if (!Array.isArray(games) || !games.length || games.some((name: unknown) => typeof name !== 'string' || !name.trim())
+            || !checkCampaignContent({ campaignContentGate: { requiredGames: games } }, options).allowed) return null;
+        return { actualGames: games, coverage: 'verified_recording_context_only', sourceSha256: summary.source.sourceSha256 };
+    } catch { return null; }
+}

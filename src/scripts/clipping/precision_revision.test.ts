@@ -4,7 +4,7 @@ const { renderPrecisionRevision } = require('./precision_revision');
 const { fileDigest } = require('./source_snapshot');
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
-test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
+test.each(['edited', 'rebuilt', 'local_rebuilt', 'single_host', 'campaign', 'campaign_wrong_date', 'no_attribution_review', 'sound_override', 'invalid_sound_override', 'automatic_edited', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline', 'fallback', 'source_changed', 'stale_subtitles', 'pending', 'foreign_inset'])('precision revision %s preserves the published record and ordinary artifacts', async outcome => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-revision-'));
     const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
     const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
@@ -36,7 +36,7 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
         fs.writeFileSync(path.join(oldScratch, 'qa-response.json'), JSON.stringify({ text: '{"approved":true}' }));
         if (outcome === 'automatic_missing_baseline') delete original.enhancement.baseline;
     }
-    if (outcome === 'rebuilt') {
+    if (outcome === 'rebuilt' || outcome === 'local_rebuilt') {
         const { copyDigest } = require('./actor_review');
         original.attributionRequired = true;
         original.attributionReview = { ...original.attributionReview, version: 1, status: 'passed', start: 100, end: 160,
@@ -46,6 +46,14 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
         original.publicationReview = { status: 'passed', issues: [], technical: { passed: true }, artifactWindow: { start: 100, end: 160 },
             checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true },
             ...await require('../workflow-runtime').loadWorkflow('clipping/publicationRuntime').publicationSnapshot(original) };
+        if (outcome === 'local_rebuilt') {
+            original.uploadReady = false;
+            original.attributionReview.artifactWindow = { start: 100, end: 160 };
+            original.attributionReview.artifactDigests = { video: fileDigest(output.mediaPath), subtitles: fileDigest(output.srtPath) };
+            Object.assign(original.renderedSubtitles, { path: output.srtPath, sha256: fileDigest(output.srtPath),
+                revision: 0, renderedRevision: 0, renderedSha256: fileDigest(output.srtPath) });
+            original.publicationReview = { status: 'needs_review', issues: ['precision_not_completed'] };
+        }
     }
     if (outcome === 'single_host') {
         original.uploadReady = false;
@@ -85,6 +93,7 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
         expect(baseline.output.mediaPath).toBe(output.mediaPath);
         expect(baseline.precisionExperiment.selected).toBe(true);
         expect(baseline.creativeResult).toBeUndefined();
+        if (outcome === 'local_rebuilt') expect(baseline.uploadReady).toBe(true);
         if (outcome === 'source_changed') fs.appendFileSync(source.srtPath, 'modified');
         if (outcome === 'fallback') return { ...baseline, creativeResult: { status: 'kept_original', reason: 'invalid plan' } };
         const mediaPath = path.join(path.dirname(baseline.output.metadataPath), 'edited.mp4');
@@ -106,7 +115,8 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
         const insetPlanPath = outcome === 'foreign_inset' ? path.join(dir, 'inset.json') : undefined;
         if (insetPlanPath) fs.writeFileSync(insetPlanPath, JSON.stringify({ version: 1, clipId: 17,
             sourceMetadataSha256: '0'.repeat(64), timelineSha256: '1'.repeat(64), insets: [] }));
-        const promise = renderPrecisionRevision({ id: 17, registryPath, note: '重做精切', insetPlanPath, resumeFrom, soundLevelOverridesPath,
+        const promise = renderPrecisionRevision({ id: 17, registryPath, note: '重做精切', insetPlanPath, resumeFrom, soundLevelOverridesPath, contentOnly: outcome === 'edited',
+            localClipNote: outcome === 'local_rebuilt' ? '用户点名本地精切' : undefined,
             singleHostNote: outcome === 'single_host' ? '用户确认单人游戏直播，含NPC台词' : undefined,
             coverTextPosition: outcome === 'sound_override' ? 'bottom' : undefined }, dependencies);
         if (outcome === 'campaign_wrong_date') await expect(promise).rejects.toThrow('Creative enhancement is not enabled for this room');
@@ -118,6 +128,16 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
             if (outcome === 'rebuilt') expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
             expect(saved.uploadReady).toBe(false); expect(saved.precisionRevision.uploadAuthorized).toBe(false);
             expect(saved.precisionRevision.clipId).toBe(17);
+            if (outcome === 'edited') {
+                expect(saved.precisionRevision).toMatchObject({ contentOnly: true, musicDisabled: true });
+                expect(enhance.mock.calls[0][1].options.creativeContentOnly).toBe(true);
+            }
+            if (outcome === 'local_rebuilt') {
+                expect(enhance).toHaveBeenCalledTimes(1);
+                expect(saved.precisionRevision.localClipBaseline).toMatchObject({ note: '用户点名本地精切',
+                    scope: 'local_precision_revision_only', audioVisualReviewed: false });
+                expect(saved.precisionRevision.attributionExemption).toBeUndefined();
+            }
             if (outcome === 'single_host') {
                 expect(saved.attributionRequired).toBe(false);
                 expect(saved.attributionReview).toBeUndefined();
@@ -144,6 +164,11 @@ test.each(['edited', 'rebuilt', 'single_host', 'campaign', 'campaign_wrong_date'
         if (['stale_subtitles', 'pending', 'foreign_inset', 'invalid_sound_override', 'automatic_tampered', 'automatic_copy_changed', 'automatic_missing_baseline'].includes(outcome)) expect(enhance).not.toHaveBeenCalled();
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test.each([{ insetPlanPath: 'inset.json' }, { chatInset: true }, { contextDanmakuAt: 10 }, { speedPlanPath: 'speed.json' }])(
+    'content-only precision rejects conflicting overlays or speed options %j before reading artifacts', async extra => {
+        await expect(renderPrecisionRevision({ id: 17, contentOnly: true, ...extra })).rejects.toThrow('Content-only precision cannot add');
+    });
 
 test('keyword topic precision accepts a manual-cut candidate without an own-stream plan', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-revision-'));
@@ -222,7 +247,7 @@ test('keyword topic precision honors feedback acceptance recorded on the rendere
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('keyword topic precision accepts a feedback-reviewed rebuilt baseline for local editing', async () => {
+test.each(['keyword', 'manual'])('%s precision accepts a feedback-reviewed rebuilt baseline for local editing', async kind => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precision-topic-feedback-'));
     const metadataPath = path.join(dir, 'original.json'), registryPath = path.join(dir, 'registry.json');
     const source = { mediaPath: path.join(dir, 'recording.mp4'), srtPath: path.join(dir, 'recording.srt') };
@@ -238,6 +263,13 @@ test('keyword topic precision accepts a feedback-reviewed rebuilt baseline for l
         renderedSubtitles: { version: 1, sourceSha256: buildSubtitleEvidence(sourceCues).sourceSha256,
             sourceSnapshot: snapshot, window: { start: 100, end: 160 },
             review: { note: '用户反馈接受当前底版', acceptanceMode: 'feedback' } } };
+    if (kind === 'manual') {
+        original.mode = 'manual_clip_queue'; delete original.publicationKind;
+        original.attributionRequired = true;
+        original.attributionReview = { start: 90, end: 170, claims: [{ cueIds: ['G1'] }] };
+        Object.assign(original.renderedSubtitles, { path: output.srtPath, sha256: fileDigest(output.srtPath),
+            renderedSha256: fileDigest(output.srtPath), revision: 0, renderedRevision: 0 });
+    }
     fs.writeFileSync(metadataPath, JSON.stringify(original));
     fs.writeFileSync(registryPath, JSON.stringify({ clips: { 4100: { metadataPath, reviewIndex: 1, status: 'review' } } }));
     const enhance = jest.fn(async baseline => {
@@ -253,9 +285,15 @@ test('keyword topic precision accepts a feedback-reviewed rebuilt baseline for l
         parseTopicSrt: file => ({ segments: file === source.srtPath ? sourceCues : [{ start: 1, end: 3, text: '歌曲引入' }] }),
         parseDanmakuXml: async () => [] } };
     try {
-        const result = await renderPrecisionRevision({ id: 4100, registryPath, note: '反馈底版直接制作本地精切' }, dependencies);
+        const result = await renderPrecisionRevision({ id: 4100, registryPath, note: '反馈底版直接制作本地精切',
+            localClipNote: kind === 'manual' ? '用户点名本片精切' : undefined }, dependencies);
         expect(result.status).toBe('pending_review');
         expect(enhance.mock.calls[0][1].clip).toMatchObject({ start: 100, end: 160, title: original.copy.title });
+        if (kind === 'manual') {
+            expect(enhance.mock.calls[0][1].clip.attributionRequired).toBe(false);
+            expect(enhance.mock.calls[0][1].clip.attributionReview).toBeUndefined();
+            expect(enhance.mock.calls[0][0].precisionRevision.attributionExemption.previousReview).toEqual(original.attributionReview);
+        }
         expect(fs.readFileSync(registryPath, 'utf8')).toContain('"status":"review"');
         expect(fs.readFileSync(metadataPath, 'utf8')).toBe(JSON.stringify(original));
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }

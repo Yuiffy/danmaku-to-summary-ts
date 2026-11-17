@@ -24,9 +24,17 @@ def publication_errors(api, clips, registry=None, *, manual_enqueue=False):
     # The worker checks every finished artifact after rendering and before upload.
     quality_clips = [clip for clip in clips if not (manual_enqueue and
                      (clip.get('pendingCut') or clip.get('pendingRebuild')))]
-    return (title_errors(clips)
+    return (title_errors(clips) + tag_errors(clips)
             + duplicate_errors(clips, registry.get('clips', {}).values(), read_metadata)
             + quality_policy_errors(api, quality_clips))
+
+
+def tag_errors(clips):
+    """Validate reviewed arrays without silently changing public copy at upload."""
+    return [f"clip {clip.get('id')}: tags must be a list of at most 10 nonempty strings"
+            for clip in clips if clip.get('tags') is not None and (
+                not isinstance(clip['tags'], list) or len(clip['tags']) > 10
+                or any(not isinstance(tag, str) or not tag.strip() for tag in clip['tags']))]
 
 
 def title_errors(clips):

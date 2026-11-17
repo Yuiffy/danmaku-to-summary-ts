@@ -48,7 +48,7 @@ test('optional platform nicknames are bounded display data and never change iden
 test('validates bounded operator configuration', () => {
   expect(() => validateQQConfig(config)).not.toThrow();
   for (const extra of [{ maxQueue: 0 }, { maxUserQueue: 21 }, { dailyTokenBudget: 4095 },
-    { privateReply: '' }, { privateReply: 'api key' }, { knowledge: { runtimeConfigPath: 'x', roomId: 'oops', collaborationRooms: [] } }]) {
+    { privateReply: '' }, { privateReply: 'api key' }, { notificationConfigPath: '' }, { knowledge: { runtimeConfigPath: 'x', roomId: 'oops', collaborationRooms: [] } }]) {
     expect(() => validateQQConfig({ ...config, ...extra })).toThrow();
   }
 });

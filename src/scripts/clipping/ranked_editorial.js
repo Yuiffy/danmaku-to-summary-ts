@@ -141,6 +141,7 @@ function detailResponseFormat(candidates, cueIds) {
     const string = { type: 'string' }, strings = { type: 'array', items: string };
     const properties = { candidateIndex: { type: 'integer', enum: candidates.map(c => Number(c.index)) },
         startCueId: string, endCueId: string, topicEditPlan: require('./topic_edit_plan').planSchema(cueIds), title: string, coverText: string, description: string, reason: string,
+        tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 30 }, maxItems: 6 },
         evidenceCueIds: strings, evidenceDanmakuIds: strings,
         sourceKind: { type: 'string', enum: ['live_speech', 'recount', 'playback', 'audience', 'uncertain'] }, score: { type: 'number' } };
     return { type: 'json_schema', name: 'selected_clip_details', strict: true,

@@ -123,7 +123,7 @@ function validateCreativePlan(raw, moments, sourceId, duration, settings, assets
             || row.frameIds.some(id => ![0, 1, 2].map(i => `${moment.id}F${i}`).includes(id))) throw new Error('Missing visual evidence');
         const effect = { ...moment, reason: row.reason, frameIds: row.frameIds };
         if (row.focusInset != null) {
-            if (row.zoom || row.faceInset) throw new Error('Choose one focus presentation per moment');
+            if (row.zoom) throw new Error('Choose one full-frame zoom or inset presentation per moment');
             effect.focusInset = require('./focus_inset').validateFocusInset(row.focusInset);
             if (effect.focusInset.target === 'chat' && !settings.chatInset) throw new Error(
                 `${moment.id}.focusInset target=chat is disabled for this edit: enlarging the chat column never isolates one line `
@@ -375,7 +375,7 @@ function assertRenderPlan(plan, duration, rawSettings, assets = {}, allowEmpty =
         if (!finite(row.start, 0, duration) || !finite(row.end, row.start + .6 - 1e-6, Math.min(duration, row.start + limits.maxEffectSeconds + 1e-6))
             || (index && round(row.start - plan.effects[index - 1].end) < limits.minGapSeconds)
             || (!row.zoom && !row.faceInset && !row.focusInset && !row.sticker && !row.danmaku && !row.filter && !row.sound)) throw new Error('Invalid creative render timing');
-        if (row.focusInset) { if (row.zoom || row.faceInset) throw new Error('Conflicting focus operations'); require('./focus_inset').validateFocusInset(row.focusInset); }
+        if (row.focusInset) { if (row.zoom) throw new Error('Conflicting full-frame zoom and inset operations'); require('./focus_inset').validateFocusInset(row.focusInset); }
         if (row.faceInset) { if (row.zoom && (row.faceInset.mode !== 'retain' || row.zoom.target !== 'detail')) throw new Error('Inset conflicts with full-frame zoom'); require('./face_inset').validateFaceInset(row.faceInset); }
         if (row.zoom && (!finite(row.zoom.scale, 1.15, limits.maxZoom) || !finite(row.zoom.x, 0, 1) || !finite(row.zoom.y, 0, 1))) throw new Error('Invalid render zoom');
         if (row.sticker && ((!isSticker(row.sticker.id) && assets[row.sticker.id]?.kind !== 'sticker') || !finite(row.sticker.x, row.sticker.anchorBox != null ? .02 : .1, row.sticker.anchorBox != null ? .98 : .9)

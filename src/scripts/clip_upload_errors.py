@@ -26,6 +26,9 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "video too short",
     "无法创建封面",
     "no_cover",
+    "tags 不合法",
+    "tags 不能为空",
+    "tags must be a list of at most 10 nonempty strings",
     "submission recovery conflict",
     "submission recovery authorization invalid",
     "automatic publication authorization invalid",
@@ -53,7 +56,7 @@ def terminal_upload_error_reason(output: str) -> str:
     lowered = text.lower()
     for marker in TERMINAL_UPLOAD_ERROR_MARKERS:
         if marker.lower() in lowered:
-            if marker in ("无法读取上传资料", "上传资料校验失败"):
+            if marker in ("无法读取上传资料", "上传资料校验失败", "tags 不合法"):
                 detail = next(line.strip() for line in text.splitlines() if marker in line)
                 return f"deterministic uploader error: {detail[:1000]}"
             return f"deterministic uploader error: {marker}"

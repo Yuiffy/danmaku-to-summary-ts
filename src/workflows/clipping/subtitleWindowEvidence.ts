@@ -1,5 +1,42 @@
 type Data = Record<string, any>;
 
+/** Project a rendered numeric revision without changing its source IDs or voice evidence. */
+export function projectRenderedSubtitleEvidence<T extends { sourceSha256?: string; cues?: Data[] }>(evidence: T,
+    artifact: Data): T {
+    const draft = artifact.renderedSubtitles;
+    const edits = draft?.edits || [];
+    if (!edits.length) return evidence;
+    if (draft.version !== 1 || draft.renderedRevision !== draft.revision || draft.renderedSha256 !== draft.sha256
+        || draft.sourceSha256 !== evidence.sourceSha256 || draft.window?.start !== artifact.window?.start
+        || draft.window?.end !== artifact.window?.end) throw new Error('Rendered subtitle evidence is stale');
+    const textKey = (text: string) => text.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '');
+    const changes = edits.flatMap((edit: Data) => (edit.changes || []).map((change: Data) => ({ ...change, authority: edit.authority })));
+    if (!changes.length || changes.some((row: Data) => row.authority !== 'user'
+        || !Number.isFinite(row.start) || !Number.isFinite(row.end) || row.end <= row.start
+        || typeof row.before !== 'string' || typeof row.after !== 'string')) throw new Error('Invalid rendered subtitle corrections');
+    const matched = new Set<Data>();
+    const cues = (evidence.cues || []).map(cue => {
+        const items = (cue.items || []).map((item: Data) => {
+            const local = changes.filter((row: Data) => Math.abs(Math.max(item.start, artifact.window.start) - row.start) <= .003
+                && Math.abs(Math.min(item.end, artifact.window.end) - row.end) <= .003);
+            if (!local.length) return item;
+            let text = item.text;
+            for (const row of local) {
+                if (matched.has(row) || textKey(text) !== textKey(row.before)) throw new Error('Rendered correction no longer matches source cue');
+                matched.add(row); text = row.after;
+            }
+            const current = draft.cues?.filter((row: Data) => Math.abs(artifact.window.start + row.start - local[0].start) <= .003
+                && Math.abs(artifact.window.start + row.end - local[0].end) <= .003);
+            if (current?.length !== 1 || textKey(current[0].text) !== textKey(text)) throw new Error('Rendered correction differs from current captions');
+            return { ...item, text, renderedSubtitleCorrections: local };
+        });
+        return items.every((item: Data, index: number) => item === cue.items[index]) ? cue
+            : { ...cue, items, text: items.map((item: Data) => item.text.trim()).join(' ') };
+    });
+    if (matched.size !== changes.length) throw new Error('Rendered subtitle correction has no unique source cue');
+    return { ...evidence, cues, byId: new Map(cues.map(cue => [cue.id, cue])) };
+}
+
 /** Split only existing source groups at retained ASR row boundaries; never crop or invent a word. */
 export function projectRetainedSubtitleEvidence<T extends { cues?: Data[] }>(evidence: T,
     window: { start: number; end: number }): T {

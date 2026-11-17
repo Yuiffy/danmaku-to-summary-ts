@@ -77,7 +77,7 @@ export class AdminJobs {
     return this.submitOperation(command.action, command.target, { note: noteFlag < 0 ? undefined : command.args[noteFlag + 1], titleChoice },
       async output => this.run(command, output), validate);
   }
-  submitOperation(action: string, target: string, input: Pick<AdminJob, 'note' | 'revision' | 'edits' | 'titleChoice'>,
+  submitOperation(action: string, target: string, input: Pick<AdminJob, 'note' | 'revision' | 'edits' | 'peerCoverageOverride' | 'titleChoice'>,
     execute: (output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void) => Promise<number>, validate = () => {}): AdminJob {
     if (this.pending >= 200) throw new AdminError('管理操作队列已满', 429);
     const now = new Date().toISOString(), job: AdminJob = { id: randomUUID(), action, target, ...input,

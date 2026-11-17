@@ -22,10 +22,13 @@
 
 ## 从弹幕和歌词识别歌名
 
-`identify-songs --metadata <songs.json> [--activity-id <id>] [--hint <用户线索>]`
-是只读检索命令。它先读取本段附近的选歌讲话、弹幕点歌、ASR 歌词和本场
+`identify-songs --metadata <songs.json> [--activity-id <id>] [--unresolved-only] [--hint <用户线索>]`
+是只读检索命令。`--unresolved-only` 仅检索缺少名称且没有已保存名称证据的活动；
+反馈“投”的自动补名使用该选项，保留已有歌名。它先读取本段附近的选歌讲话、弹幕点歌、ASR 歌词和本场
 `LIVE_CONTENT.json.content.songs` 候选，再由模型提出最多 4 个有本地引用的搜索词，
-请求公开歌曲目录及歌词。摘要歌名只作受限候选，不能单独发布；目录歌词仍需和原字幕
+请求公开歌曲目录及歌词。摘要歌名只作受限候选，不能单独发布。局部搜索优先于摘要候选；
+最多 4 次搜索轮流分配总计 12 个歌词比对名额，避免无关摘要候选占满预算、
+挤掉已命中的歌词结果。目录歌词仍需和原字幕
 交叉核对。完整清晰歌词默认要求至少 3 句不同歌词、3 条不同源字幕、30 个匹配字符并
 跨越实际演唱时段。若 ASR 歌词过短或乱码，但摘要候选与演唱前后原字幕的报幕明确相符，
 且唯一目录作品与该候选归一到同一作品，流程可保存 `catalog_title_context_match` 证据，
@@ -36,6 +39,8 @@
 结果通过 `ACTIVITY_SONG_IDENTIFICATION_RESULT` 返回，研究记录和 `title-evidence.json`
 写到原包 `temp/song-research/`，不改包或队列。确认匹配后用现有
 `restyle --metadata <songs.json> --title-evidence <返回路径>` 更新标题、简介、封面和 P 标题。
+已批准但尚未投稿的包需先撤回活动上传任务、等待取消确认，再加 `--revision-note <修改理由>`
+创建包装修订；它备份旧版本、清除旧批准并保留视频，重新批准后才可按原 ID 入队。
 `catalog_lyric_match` 绑定源字幕摘要、目录来源、歌词摘要和逐句对应关系；
 重用包装及 Python 投稿审核均重新验证。它不替代独立原音、完整边界或最终成片审核。
 边界修复后可直接 `restyle --metadata ...` 重绑已知目录歌曲：先验证旧证据的原文与摘要，

@@ -36,6 +36,7 @@ const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const { deriveContentTags, normalizeAiContentTags, contentTagsPromptLines } = require('./content_tags');
 const fullLiveContext = require('./full_live_context');
 const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues, resolveEvidenceBoundaries,
     linkClipEvidence, revalidateClipEvidence, parseClipResponse } = require('./clipping/subtitle_evidence');
@@ -68,7 +69,7 @@ function getOwnStreamClipLabel(rootConfig = {}, roomId = null, streamerName = ''
     return String(entry?.aiClipName || streamerName || '小岁').trim() || '小岁';
 }
 
-function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI', boundaryFields = 'startTime-endTime') {
+function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI', boundaryFields = 'startTime-endTime', tagContext = null) {
     const hostName = String(streamerName || '主播').trim() || '主播';
     return [
         `片段时间与文案必须一一对应：先读取当前 clips 对象 ${boundaryFields} 范围内的直播音轨字幕和同一范围内的观众弹幕，再填写该对象的 title、coverText、description 和 reason。`,
@@ -77,6 +78,7 @@ function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI'
         ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: hostName }),
         ...generator.buildCoverTextPromptLines(),
         ...generator.buildClipDescriptionPromptLines(),
+        ...contentTagsPromptLines(tagContext),
         '字段必须分工：description 是公开简介，只写片中具体内容；reason 是内部选材理由，可记录字幕完整性、弹幕反应和情绪信号。不得把 reason 复述或改写进 description。',
         '听闻或转述不等于亲历；说出或引用一句话不等于现场创作。回忆/转述要交代语境，没有直接证据不要写现编、原创、亲自体验。',
         '人物指代要具体：片内原话和指代链已能确认被提及的人或转述对象时，title、description优先写其公开称呼，不能把可确认的人名泛化成对方、有人或某位朋友；coverText涉及该人时也保留称呼。',
@@ -84,7 +86,6 @@ function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI'
         '多个人或多次事件必须保留谁先做什么、后来谁回应什么；不合并成同一次因果关系。观众意见不是主播行为。'
     ];
 }
-
 
 function buildCutClipMediaConfig(config = {}, options = {}) {
     return {
@@ -235,18 +236,12 @@ function buildClipDescription({ streamerName, streamTitle, recordedAt, start, en
     return lines.join('\n');
 }
 
-function buildClipTags(config, roomId, streamerName, clipConfig = getOwnStreamClipsConfig(config, roomId)) {
-    const registryTags = topicClipper.resolveStreamerTags(config || {}, roomId);
-    const tags = Array.from(new Set([
-        ...registryTags,
-        ...(clipConfig.uploadTags || []),
+function buildClipTags(config, roomId, streamerName, clipConfig = getOwnStreamClipsConfig(config, roomId), evidence = {}) {
+    const requiredTags = [...topicClipper.resolveStreamerTags(config || {}, roomId),
+        ...topicClipper.resolveStreamerOrganizationTags(config || {}, roomId), ...(clipConfig.uploadTags || []),
         ...(String(roomId || '') === '25788785' ? ['小岁', '岁AI切片'] : []),
-        streamerName,
-        '虚拟主播',
-        '直播切片',
-        'AI切片'
-    ].map(tag => String(tag || '').trim()).filter(Boolean)));
-    return postProcessAiClipMetadata({ tags }, config || {}).tags;
+        streamerName, '虚拟主播', '直播切片', 'AI切片'];
+    return postProcessAiClipMetadata({ tags: [...deriveContentTags(evidence), ...requiredTags], requiredTags }, config || {}).tags;
 }
 
 async function parseDanmakuXml(xmlPath) {
@@ -387,8 +382,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                 '本阶段只召回事件及证据，不写发布标题、封面或简介。event 用一句简短事实描述，不能把推测写成确定事实。',
                 '{"clips":[{"startCueId":"G1","endCueId":"G20","event":"片内事件","evidenceCueIds":["G8"],"sourceKind":"recount","score":90}]}'
             ] : [
-                ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startCueId/endCueId 所界定的'),
-                '{"clips":[{"startCueId":"G1","endCueId":"G20","title":"标题","coverText":"第一行\\n第二行","description":"简介","reason":"内部理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"live_speech","score":90}]}'
+                ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startCueId/endCueId 所界定的', info.contentTagContext),
+                '{"clips":[{"startCueId":"G1","endCueId":"G20","title":"标题","coverText":"第一行\\n第二行","description":"简介","tags":["片内话题"],"reason":"内部理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"live_speech","score":90}]}'
             ]),
             ''
         ].join('\n');
@@ -443,6 +438,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                         { cueIds: allowedIds, danmakuIds: chunk.allowedDanmakuIds }),
                     coverText: config.recallOnly ? '' : topicClipper.normalizeCoverText(clip.coverText),
                     description: config.recallOnly ? '' : String(clip.description || '').trim(),
+                    tags: config.recallOnly ? [] : normalizeAiContentTags(clip.tags),
                     reason: String(clip.reason || clip.event || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
                     modelScore: Number(clip.score || 0),
@@ -519,8 +515,8 @@ async function planClipsWithAIFullContext(
         '所有输出片段必须互不重叠；同一话题可以有多个片段，只要各自独立成立且时间不重叠。',
         '请给每段 1-100 的全场相对分数，并按 score 从高到低输出。',
         '输出纯 JSON，不要 Markdown，不要解释：',
-        ...buildOwnStreamClipCopyPromptLines(generator, hostName),
-        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","score":95}]}'
+        ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startTime-endTime', info.contentTagContext),
+        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","tags":["片内话题"],"reason":"内部选材理由","score":95}]}'
     ].join('\n');
     const prompt = `${fullContext.sharedPrefix}\n\n${taskSuffix}`;
     const experiment = rootConfig.ai?.roomSettings?.[String(info?.roomId || '')]?.fullLiveContextExperiment || {};
@@ -562,6 +558,7 @@ async function planClipsWithAIFullContext(
                 title: String(clip.title || '').trim() || `${clipLabel}：直播有趣片段`,
                 coverText: topicClipper.normalizeCoverText(clip.coverText),
                 description: String(clip.description || '').trim(),
+                tags: normalizeAiContentTags(clip.tags),
                 reason: String(clip.reason || '').trim(),
                 score: Number(clip.score || (100 - index)),
                 selectionSource: 'model_full_context',
@@ -724,8 +721,8 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '输出纯 JSON，不要 Markdown：',
         ...CUE_BOUNDARY_PROMPT_LINES,
         '',
-        ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startCueId/endCueId 所界定的'),
-        '{"clips":[{"candidateIndex":1,"startCueId":"G1","endCueId":"G20","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"recount","score":95}]}',
+        ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startCueId/endCueId 所界定的', info.contentTagContext),
+        '{"clips":[{"candidateIndex":1,"startCueId":"G1","endCueId":"G20","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","tags":["片内话题"],"reason":"内部选材理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"recount","score":95}]}',
         ''
     ].join('\n');
     const prompt = [
@@ -897,6 +894,7 @@ function fallbackClipsFromCandidates(candidates, config, streamerLabel = '小岁
                 title: publicCopyPending ? `${streamerLabel}：待生成发布文案` : title || buildFallbackTitle(candidate, streamerLabel),
                 coverText: publicCopyPending ? '' : topicClipper.normalizeCoverText(candidate.coverText),
                 description: publicCopyPending ? '' : String(candidate.description || '').trim(),
+                tags: publicCopyPending ? [] : normalizeAiContentTags(candidate.tags),
                 ...(publicCopyPending ? { publicCopyPending: true, event } : {}),
                 reason: candidate.reason,
                 candidateIndex: candidate.index,
@@ -1224,7 +1222,8 @@ async function generateOwnStreamClipJob(context) {
             description: clip.description,
             emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
         }),
-        tags: buildClipTags(options.config || {}, info.roomId, streamerName, config)
+        tags: buildClipTags(options.config || {}, info.roomId, streamerName, config,
+            { streamTitle: info.streamTitle, matchedKeywords: window.matchedKeywords, text: window.allSegmentTexts.join('\n'), aiTags: clip.tags })
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
     const copy = { ...rawCopy, ...processedCopy };
@@ -1441,6 +1440,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
     }
     const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
+    info.contentTagContext = require('./workflow-runtime').loadWorkflow('clipping/ownCampaign').recordingContentTagContext?.({ ...options, roomId: info.roomId });
     publicationPolicy.resolvePolicy({ ...config.publicationPolicy,
         ...(options.publicationMode ? { mode: options.publicationMode } : {}) }, info.roomId);
     const requestedStreamerName = String(options.streamerName || '').trim();
@@ -1656,7 +1656,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         ordinaryReady: async results => {
             if (publicationRuntime) return;
             const artifacts = require('./clipping/own_review_state');
-            const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot, danmaku);
+            const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot, danmaku, { rootConfig, baseTags: buildClipTags(rootConfig, info.roomId, streamerName, config), streamTitle: info.streamTitle });
             artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata, buildReviewMarkdown);
             const registry = options.registerUpload === false ? null : registerReviewForUpload(reviewMetadata.reviewPath, rows, reviewMetadata);
             if (registry) reviewMetadata.uploadRegistry = registry;
@@ -1676,7 +1676,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         evidence: buildSubtitleEvidence, audience: parseDanmakuXml, copyHelpers: { buildClipDescription, buildCoverTitle } });
     if (timingRuntime) results = timingRuntime.retainUnrecoveredTimingRows(results, options.timingRecovery);
     const artifacts = require('./clipping/own_review_state');
-    const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot, danmaku);
+    const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot, danmaku, { rootConfig, baseTags: buildClipTags(rootConfig, info.roomId, streamerName, config), streamTitle: info.streamTitle });
     artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata, buildReviewMarkdown);
     const residualReview = writeResidualAuditForOwnStream({
         options,

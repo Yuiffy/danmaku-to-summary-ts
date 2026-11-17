@@ -11,7 +11,7 @@ import { QQImageInputs } from './QQImageInputs';
 import { qqRequest } from './QQPolicy';
 
 const project = path.resolve(__dirname, '../../..');
-const skins = ['小红帽', '小花帽', '小蓝帽', '小猫帽'];
+const skins = ['小红帽', '小花帽', '小蓝帽', '小猫帽', 'JK单马尾无外套', '地雷双马尾黑外套', '地雷长发双啾啾', 'JK小揪揪外套', 'JK小粉帽外套玩手机', 'JK小粉帽无外套'];
 let root: string, config: QQImageConfig;
 const at = Date.parse('2026-10-30T10:00:00Z');
 function request(text: string, edit = false) {
@@ -39,7 +39,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
-test('the maintained QQ configuration resolves four distinct skin references and keeps the default unchanged', async () => {
+test('the maintained QQ configuration resolves distinct skin references and keeps the default unchanged', async () => {
   expect(() => validateQQImageConfig(config)).not.toThrow();
   const characters = qqImageCharacters(root, config);
   expect(characters.filter(item => item.skin).map(item => item.skin)).toEqual(skins);
@@ -77,6 +77,24 @@ test.each(skins)('%s replaces the default reference even if the agent selects th
   expect(plan.prompt).toContain('用户指定的皮肤是该角色的具体衣装与造型');
   expect(plan.prompt).toContain('默认保留原图的画风');
   expect(plan.prompt).not.toContain('参考图3只用于锁定岁己SUI');
+});
+
+test.each([
+  ['小粉帽', 'JK小粉帽外套玩手机', '小粉帽无外套JK', 'JK小粉帽无外套'],
+  ['地雷帽', '地雷双马尾黑外套', '地雷长发双啾啾', '地雷长发双啾啾']
+])('%s discovers and selects one default outfit while specific names still select their own reference', async (alias, skin, specific, specificSkin) => {
+  const options = { ...config, characters: qqImageCharacters(root, config) };
+  const original = request(`生成${alias}看星星的图片`);
+  const tools = createQQImageTools(original, options, jest.fn(), jest.fn()).tools;
+  const result = await tools.find(tool => tool.name === 'find_image_characters')!.execute({ query: alias });
+  expect(result).toMatchObject({ characters: [{ name: `岁己·${skin}`, skin }] });
+  expect((result as { characters: unknown[] }).characters).toHaveLength(1);
+  const reference = config.characters!.find(item => item.skin === skin)!.referenceImage;
+  expect(qqImagePlan(original, options).references).toEqual([reference]);
+  expect(qqImageCommandPlan(original, { mode: 'create', instruction: original.text, characters: [alias] }, options, 0).references)
+    .toEqual([reference]);
+  expect(qqImagePlan(request(`生成${specific}看星星的图片`), options).references)
+    .toEqual([config.characters!.find(item => item.skin === specificSkin)!.referenceImage]);
 });
 
 test('one explicit skin keeps other characters and two explicitly requested skins remain distinct', () => {

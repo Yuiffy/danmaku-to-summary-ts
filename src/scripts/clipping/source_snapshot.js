@@ -23,4 +23,13 @@ function sourceSnapshot(metadata) {
         xmlSha256: source.xmlPath ? fileDigest(source.xmlPath) : null };
 }
 
-module.exports = { fileDigest, sourceSnapshot };
+function assertRenderedRevision(metadata) {
+    const draft = metadata.renderedSubtitles;
+    if (draft && (metadata.rebuildRequired || draft.renderedSha256 !== draft.sha256
+        || draft.renderedRevision !== draft.revision || fileDigest(draft.path) !== draft.sha256
+        || fileDigest(metadata.output.srtPath) !== draft.sha256)) {
+        throw new Error('Current subtitle revision must be rendered before approving the video');
+    }
+}
+
+module.exports = { fileDigest, sourceSnapshot, assertRenderedRevision };

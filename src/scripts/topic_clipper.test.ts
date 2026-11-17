@@ -154,6 +154,36 @@ describe('topic_clipper', () => {
     expect(topicClipper.resolveAiStreamerTags(config, '1727071052')).toEqual(['小松']);
   });
 
+  test('uses room nickname tags and safe tags for mentioned formal names', async () => {
+    const config = {
+      ai: {
+        roomSettings: { '31368705': { anchorName: '米米' } },
+        streamerRegistry: {
+          miting: {
+            roomIds: ['31368705'],
+            displayName: '米汀',
+            agency: 'VirtuaReal',
+            searchTags: ['米汀', '米汀Nagisa']
+          },
+          sui: {
+            roomIds: ['25788785'],
+            displayName: '岁己SUI',
+            searchTags: ['岁己', '岁己SUI'],
+            aliases: ['小岁'],
+            aiClipName: '小岁'
+          }
+        }
+      }
+    };
+    expect(topicClipper.resolveAiStreamerTags(config, '31368705')).toEqual(['米米']);
+    const copy = await topicClipper.buildClipCopy({
+      start: 0, end: 40, matchSegments: [], allSegmentTexts: ['提到岁己之后继续聊天'],
+      preContext: [], postContext: [], matchedKeywords: ['岁己']
+    }, { roomId: '31368705', recordedAt: '2026-11-10', streamTitle: '普通聊天' }, '米汀', config, null, null, ['米米']);
+    expect(copy.tags).toEqual(expect.arrayContaining(['米米', '小岁', 'VirtuaReal', 'AI切片']));
+    expect(copy.tags).not.toContain('岁己');
+  });
+
   test('always includes AI切片 in generated topic clip tags', async () => {
     const copy = await topicClipper.buildClipCopy({
       start: 10,
@@ -258,6 +288,23 @@ describe('topic_clipper', () => {
       streamTitle: '普通聊天',
       text: '今天聊工作安排'
     })).toEqual([]);
+  });
+
+  test('keeps bounded AI subject tags while reserving organization membership for configuration', () => {
+    expect(contentTags.deriveContentTags({ aiTags: ['影之刃零', '游戏BUG', '影之刃零', null, {}, '#搞笑#', 'VirtuaReal', 'one,two'] }))
+      .toEqual(['影之刃零', '游戏BUG', '搞笑']);
+    expect(contentTags.normalizeAiContentTags('影之刃零,搞笑')).toEqual([]);
+    expect(contentTags.normalizeAiContentTags(Array.from({ length: 20 }, (_, i) => `主题${i}`))).toHaveLength(6);
+  });
+
+  test.each(['我说我是赛四爱', '都不认识什么叫四爱', '聊到4i'])
+    ('normalizes both discovery labels from subtitle evidence: %s', text => {
+      expect(contentTags.deriveContentTags({ text })).toEqual(['4i', '四爱']);
+    });
+
+  test('recognizes the confirmed subtitle spelling of 假追追', () => {
+    expect(contentTags.deriveContentTags({ text: '哦他买假锥锥干嘛买假锥锥' }))
+      .toEqual(['假追追']);
   });
 
   test('derives topic tags and a relative coordinate comment from explicit evidence', async () => {

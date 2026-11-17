@@ -112,6 +112,7 @@ export interface AdminJob {
   phase?: string;
   plan?: Record<string, unknown>;
   edits?: Record<string, unknown>;
+  peerCoverageOverride?: boolean;
   titleChoice?: TitleDecision;
 }
 export interface ReminderView {

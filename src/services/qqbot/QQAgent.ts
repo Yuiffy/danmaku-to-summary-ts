@@ -15,6 +15,7 @@ import { organizeQQImageIntent } from './QQImageIntent';
 import { QQModelBudget } from './QQAgentModel';
 import type { QQChatReader } from './QQChatArchive';
 import type { QQKnowledgeBase } from './QQKnowledgeBase';
+import { qqVideoMentioned } from './QQVideoPolicy';
 const outputType = { type: 'json_schema' as const, name: 'qq_answer', strict: true,
   schema: { type: 'object' as const, additionalProperties: false as const,
     properties: { answer: { type: 'string' }, basis: { type: 'string', enum: ['general', 'evidence', 'insufficient'] },
@@ -40,7 +41,7 @@ export function createQQAnswerer(settings: ReturnType<typeof questionProviderSet
       session = knowledge?.(request, signal);
       const citations = new Set<string>(), operations = new Set<string>();
       let evidenceBytes = 6000;
-      const imageRequest = !!images && qqImageRequested(request.text, request.imageInput);
+      const imageRequest = !!images && !qqVideoMentioned(request.text) && qqImageRequested(request.text, request.imageInput);
       const budget: QQModelBudget = { reserved: 0, turns: 0 };
       let imageIntent: Awaited<ReturnType<typeof organizeQQImageIntent>> | undefined;
       const recordModelCall = async (call: NonNullable<QQAgentTrace['calls']>[number]) => {

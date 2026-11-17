@@ -91,6 +91,7 @@ export function bundleCommand(id: string, body: any, category: 'activity' | 'gam
   if (action === 'identify-songs' && category === 'activity') {
     const args = ['src/scripts/stream_activity_clips.js', 'identify-songs', '--metadata', metadataPath];
     if (body.activityId) args.push('--activity-id', text(body, 'activityId', 100));
+    if (body.unresolvedOnly === true) args.push('--unresolved-only');
     if (body.hint) args.push('--hint', text(body, 'hint', 1000));
     return { executable: 'node', args, action, target: id };
   }
@@ -101,6 +102,7 @@ export function bundleCommand(id: string, body: any, category: 'activity' | 'gam
     const args = [`src/scripts/stream_${category}_clips.js`, action === 'restyle' ? 'restyle' : 'approve', '--metadata', metadataPath];
     if (action === 'approve-review') args.push('--note', text(body, 'note', 1000));
     else {
+      if (body.note) args.push('--revision-note', text(body, 'note', 1000));
       if (body.titleEvidencePath) args.push('--title-evidence', text(body, 'titleEvidencePath'));
       if (body.contentName) args.push('--content-name', text(body, 'contentName', 300), '--evidence-frame', text(body, 'evidenceFrame'), '--evidence-note', text(body, 'note', 1000));
     }

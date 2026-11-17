@@ -98,9 +98,11 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
 
 async function runCreativeAttempt(baseline, context, dependencies) {
     const { config, info, parsed, danmaku, source, options, topic, clip, subtitleEvidence, execution } = context;
+    const contentOnly = options.creativeContentOnly === true;
     const settings = config.enhancements, creativeOptions = { ...(clip.topicEditPlan
         ? { ...settings.creative, style: 'compact' } : settings.creative),
-        ...(options.creativeNoMusic === true ? { music: false } : {}) };
+        ...(options.creativeNoMusic === true || contentOnly ? { music: false } : {}),
+        ...(contentOnly ? { style: 'compact', variety: false } : {}) };
     // Enlarging the chat column is opt-in: a quoted line reads better as a danmaku
     // flythrough or bubble, so it only turns on when the operator asks for it by name.
     // Free-text inference was a footgun — the negative phrasing operators actually write
@@ -116,6 +118,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         ? { enabled: true, mode: 'radio', fps: 30, fontScale: 1, ...(typeof options.creativeRadioDanmaku === 'object' ? options.creativeRadioDanmaku : {}) }
         : null;
     if (radioDanmakuSettings) creativeOptions.danmakuRequired = false;
+    if (contentOnly) creativeOptions.danmakuRequired = false;
     const noSticker = options.creativeNoSticker === true;
     const operatorEffectFilter = draft => {
         if (!draft || !Array.isArray(draft.effects)) return draft;
@@ -364,7 +367,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
         const visualPages = await contactPages(sourceStrips, moments.map(row => row.id), 'source-page');
         const visuals = [...visualPages, ...(assetSheet ? [assetSheet] : [])];
         const preferredLaugh = draft => rotateLaughter(draft, assets, settings.creative, moments, profile);
-        let raw = preferredLaugh(operatorEffectFilter(await request('visual-plan', 'effects', prompt, visuals))), plan;
+        let raw = contentOnly ? { effects: [] } : preferredLaugh(operatorEffectFilter(await request('visual-plan', 'effects', prompt, visuals))), plan;
         const { prepareCreativeDraft, shouldConvertAvatarZoom } = require('./creative_preflight');
         const validateDraft = draft => prepareCreativeDraft(draft, { moments, sourceId, duration, settings: limits, assets,
             resolution: sourceResolution, subtitleAss, subtitleStyle,
@@ -585,7 +588,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             const mediaPath = path.join(directory, `${name}.creative.mp4`);
             const mediaReview = await require('./creative_media_review').renderAndAuditCreative(plan, {
                 history,
-                forceAudioAudit: Boolean(baseline.candidateBundle),
+                forceAudioAudit: Boolean(baseline.candidateBundle) || contentOnly,
                 render: checkedPlan => withMedia(mediaProfile => topic.cutClipMedia(source, baseline.window, renderSrt, mediaPath,
                     { ...mediaConfig(mediaProfile), creativePlan: checkedPlan, creativeSettings: limits, creativeAssets: assets,
                         burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false,
@@ -707,9 +710,12 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             writeJsonAtomic(path.join(scratch, `${qaPrefix}-input.json`), qaInput);
             let qa = await request(visualAttempt === 0 ? 'qa' : 'qa-final', 'approved',
                 '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
+                + '先对照上排源画面区分原直播界面与后期效果：源画面已有的聊天、礼物和弹幕不是新增弹幕卡，不因保留原界面而判计划外效果。新增弹幕卡的遮挡和可读性仍按 plan.effects 核对；若后期放大、裁切使原界面遮住主体或截掉眼睛、嘴部和下巴，仍须拒绝并指出实际节点。'
                 + (radioDanmakuSettings ? '' : '检查弹幕呈现：引用的聊天原话是否逐条可读、是否只讲一条重点、有没有一次堆三四条；弹幕是否避开人物脸和底部字幕。')
                 + (radioDanmakuSettings ? '画面上半透明横向滚动的弹幕文字是运营要求的通用弹幕层：全部真实观众弹幕按真实时间轴自动叠加，不属于 plan.effects，渲染时由通用工具生成，加速段内弹幕随倍速压缩滚动也是设计行为。不要把它当作计划外效果、弹幕卡或遮挡问题驳回，也不要检查它的逐条可读性或要求它出现在计划里；弹幕层半透明盖住画面局部属正常。' : '弹幕只在有真实观众聊天可引用的节点出现，某节点附近没有候选时省略属正常，不要因为没有弹幕或没有笑声判不通过——效果的取舍由程序按证据核对，你只判画面呈现。')
-                + '放大只应出现在人物表情/头像上；若仍出现放大的聊天列，或战斗中聊天列被放大挡住游戏，一律算错。'
+                + (options.creativeChatInset === true
+                    ? '本次运营明确要求同时放大人脸和左侧真实聊天行；focusInset=chat属于有意效果，只在聊天行截断、放大框遮住人脸或底部对白字幕时判错，不要因聊天行被放大本身判错或移除。'
+                    : '放大只应出现在人物表情/头像上；若仍出现放大的聊天列，或战斗中聊天列被放大挡住游戏，一律算错。')
                 + '检查贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
                 + '贴纸必须贴着它要说明的人物或物体：飘在无关空景里、离人物头部有明显距离，都算错位，请指出并建议移除或改贴到人物头部侧上方。'
                 + '若有contextQuestion，CTX行是片头前情提要三帧；核对标为观众弹幕、与证据一致、可读且不挡主体和对白字幕，问答衔接完整。'
@@ -747,7 +753,10 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 try {
                     repair = await request('qa-repair', 'repairs',
                         '依据独立成片审核意见做最小修复，只允许移除造成问题的可选filter、sticker、zoom、faceInset或focusInset。'
-                        + '放大框错位、挡住关键物体或裁切错误时，删除相应放大字段以恢复该节点原画面；禁止修改坐标、倍率、安全标记、时间轴、对白或音效。'
+                        + (options.creativeChatInset === true
+                            ? '本次运营明确要求保留人脸窗与真实聊天行放大；只有聊天行截断、遮住人脸或底部对白字幕时才删除focusInset，不能仅因聊天列被放大而删除。'
+                            : '放大框错位、挡住关键物体或裁切错误时，删除相应放大字段以恢复该节点原画面；')
+                        + '禁止修改坐标、倍率、安全标记、时间轴、对白或音效。'
                         + '保留其他有效效果；不能通过撤销这些可选视觉效果解决时返回空repairs。每个节点至多一项，返回'
                         + ' {"repairs":[{"momentId":"M1","remove":["filter"],"reason":"审核指出滤镜误导语气，恢复原色"}]}。\n'
                         + JSON.stringify({ qa, plan, speech, profile }), [...comparisonPages, current.output.coverPath]);

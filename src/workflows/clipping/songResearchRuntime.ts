@@ -48,10 +48,13 @@ function write(file: string, value: unknown): void {
   finally { if (fs.existsSync(staged)) fs.unlinkSync(staged); }
 }
 /** Read/research only. A later supported restyle binds accepted evidence to the existing package. */
-export async function identifyActivitySongs(metadataPath: string, options: { activityId?: string; hint?: string }, io: SongResearchAdapters) {
+export async function identifyActivitySongs(metadataPath: string, options: { activityId?: string; hint?: string; unresolvedOnly?: boolean }, io: SongResearchAdapters) {
   const original = fs.readFileSync(metadataPath, 'utf8'), metadata = JSON.parse(original);
   if (metadata.type !== 'stream_activity_submission' || metadata.kind !== 'songs') throw new Error('Song research requires a registered song submission');
-  const events = metadata.activities.filter((event: any) => event.kind === 'song' && (!options.activityId || event.id === options.activityId));
+  const existingTitles = titleItems(metadata.presentation?.titleEvidence || null);
+  const events = metadata.activities.filter((event: any) => event.kind === 'song' && (!options.activityId || event.id === options.activityId)
+    && (!options.unresolvedOnly || (typeof event.name !== 'string' || !event.name.trim())
+      && !existingTitles.some(item => item.activityId === event.id && item.name.trim())));
   if (!events.length || events.length > 12) throw new Error('Select between one and twelve existing song activities');
   const transcript = metadata.transcript;
   if (!transcript?.path || lyricDigest(fs.readFileSync(transcript.path, 'utf8')) !== transcript.sha256) throw new Error('Song research transcript changed');
@@ -64,7 +67,7 @@ export async function identifyActivitySongs(metadataPath: string, options: { act
     { propose: io.propose, catalog: io.catalog || createSongCatalog() }) });
   if (fs.readFileSync(metadataPath, 'utf8') !== original || lyricDigest(fs.readFileSync(transcript.path, 'utf8')) !== transcript.sha256
     || xml && lyricDigest(fs.readFileSync(xml, 'utf8')) !== xmlHash) throw new Error('Song source changed during research');
-  const items = titleItems(metadata.presentation?.titleEvidence || null).map(item => ({ ...item }));
+  const items = existingTitles.map(item => ({ ...item }));
   for (const result of results) if (result.status === 'identified') {
     const at = items.findIndex(item => item.activityId === result.activityId);
     if (at >= 0) items[at] = result.item; else items.push(result.item);

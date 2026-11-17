@@ -102,6 +102,12 @@ export function createFtsSearch(config: RecordingFtsConfig, room: string, roots:
       if (date) { constraints.push('s.date LIKE ?'); values.push(date + '%'); }
       if (focus.kind !== 'all') { constraints.push('s.kind=?'); values.push(focus.kind); }
       if (focus.session) { constraints.push('s.session=?'); values.push(recordingSessionKey(focus.session)); }
+      if (focus.files) {
+        // Apply source restrictions before BM25 truncation; unrelated dates must not crowd out the event.
+        const files = [...focus.files];
+        if (files.length) { constraints.push(`s.file IN (${files.map(() => '?').join(',')})`); values.push(...files); }
+        else constraints.push('0');
+      }
       const normalized = [...new Set(terms.map(term => term.normalize('NFKC').trim()).filter(Boolean))];
       if (!normalized.length) return { ...unavailable, available: true, indexedFiles: state.files };
       // Terms include alternative phrasings and ASR variants, not mandatory simultaneous facts.

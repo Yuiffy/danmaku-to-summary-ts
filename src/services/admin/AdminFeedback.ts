@@ -17,6 +17,10 @@ export class AdminFeedback {
     if (body.publishApproved !== true) throw new AdminError('请明确授权修改完成后投稿');
     if (typeof body.note !== 'string' || !body.note.trim() || body.note.length > 1000 || body.note.includes('\0')) throw new AdminError('请填写修改意见（最多 1000 字）');
     const note = body.note.trim(), revision = body.revision;
+    if (body.peerCoverageOverride !== undefined && typeof body.peerCoverageOverride !== 'boolean') {
+      throw new AdminError('同题二次放行标记无效');
+    }
+    const peerCoverageOverride = body.peerCoverageOverride === true;
     const validate = () => {
       if (this.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再提交', 409);
       this.assertEditable(id);
@@ -40,17 +44,18 @@ export class AdminFeedback {
     }
     const previous = this.jobs.latest('feedback-publish', id);
     if (previous && ['queued', 'running'].includes(previous.status)) {
-      if (previous.note !== note || JSON.stringify(previous.edits || {}) !== JSON.stringify(edits)) throw new AdminError('此切片正在处理已有意见，请等处理结束后再补充', 409);
+      if (previous.note !== note || JSON.stringify(previous.edits || {}) !== JSON.stringify(edits)
+        || previous.peerCoverageOverride !== peerCoverageOverride) throw new AdminError('此切片正在处理已有意见，请等处理结束后再补充', 409);
       return structuredClone(previous);
     }
-    return this.jobs.submitOperation('feedback-publish', id, { note, revision, edits, titleChoice: body.titleChoice },
-      (output, update) => this.execute(id, note, revision, edits, output, update, previous), validate);
+    return this.jobs.submitOperation('feedback-publish', id, { note, revision, edits, peerCoverageOverride, titleChoice: body.titleChoice },
+      (output, update) => this.execute(id, note, revision, edits, output, update, previous, peerCoverageOverride), validate);
   }
 
   /** Reuse the same execution within an already serialized candidate-promotion job. */
   async execute(id: string, note: string, revision: string, edits: Record<string, unknown>,
     output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
-    resumeFrom?: AdminJob): Promise<number> {
+    resumeFrom?: AdminJob, peerCoverageOverride = false): Promise<number> {
       const validate = () => {
         if (this.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再提交', 409);
         this.assertEditable(id);
@@ -62,7 +67,15 @@ export class AdminFeedback {
       const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note)
         && !missingFeedbackFields(edits, initial, true).length;
       const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update,
-        () => this.assertEditable(id), this.directFeedback, this.peerCoverageGate);
+        () => this.assertEditable(id), this.directFeedback, this.peerCoverageGate, peerCoverageOverride);
+      if (publishCurrent && initial.category === 'activity' && initial.evidence.kind === 'songs'
+        && initial.evidence.activities?.some((event: any) => (typeof event.name !== 'string' || !event.name.trim())
+          && !initial.evidence.existingActivityTitles?.some((item: any) => item.activityId === event.id && item.name?.trim()))) {
+        await session.identifySongs(undefined, true);
+        await session.revise({ useIdentifiedSongNames: true });
+        await session.enqueue();
+        return 0;
+      }
       if (resumeFrom && ['failed', 'interrupted'].includes(resumeFrom.status) && resumeFrom.note === note
         && resumeFrom.plan && initial.category === 'clip') {
         if (session.resumeReviewed(resumeFrom.plan as FeedbackPlan)) {

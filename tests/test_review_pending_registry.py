@@ -75,6 +75,21 @@ class ReviewPendingRegistryTests(unittest.TestCase):
         self.assertEqual(self.records()["1"]["uploadState"]["bvid"], "BV-preserved")
         self.assertEqual(self.records()["1"]["status"], "uploaded")
 
+    def test_pending_clip_content_tags_survive_batch_defaults_and_registration(self):
+        tags = ["影之刃零", "游戏BUG", "小岁", "AI切片"]
+        self.held_meta["copy"]["tags"] = tags
+        self.held_meta["upload"] = {"tags": tags}
+        self.held.write_text(json.dumps(self.held_meta), encoding="utf-8")
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["upload"] = {"tags": ["小岁", "直播切片"], "prefix": "【小岁】", "tid": 21}
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        held = load_upload_manifest(self.manifest, allow_pending_review=True)[1]
+        self.assertEqual(held["tags"], tags)
+        self.assertEqual(held["prefix"], "【小岁】")
+        self.assertEqual(self.invoke(["import-json", "--manifest", str(self.manifest), "--include-pending"]), 0)
+        self.assertEqual(self.records()["2"]["tags"], tags)
+        self.assertTrue(self.records()["2"]["reviewPending"])
+
     def test_force_and_dry_run_cannot_enqueue_held_material(self):
         self.invoke(["import-json", "--manifest", str(self.manifest), "--include-pending"])
         for flags in ([], ["--force"], ["--dry-run"]):

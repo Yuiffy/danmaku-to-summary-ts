@@ -7,6 +7,7 @@ import { BrowseEntry, BrowseResult, browseRefinement, parseListRecordings, parse
 import { parseReadOpenings } from './RecordingOpenings';
 import { parseRecordingCalendar } from './RecordingCalendar';
 import { isPublicToolName, parsePublicArguments, PUBLIC_QUERY_GUIDANCE, PUBLIC_SEARCH_TOOLS, PublicSearchEvidence } from './PublicSearchTools';
+import { eventTitleTerms, recordingActionTerms } from './RecordingTitleScope';
 
 export interface AgentToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export interface AgentMessage {
@@ -33,7 +34,7 @@ export interface QuestionAgentStep {
   validationIssue?: string;
   toolIssue?: 'invalid_arguments' | 'unavailable';
   browse?: { total: number; returned: number; cues: number; unfinished: number; nextOffset: number | null };
-  search?: { returned: number; limited: boolean };
+  search?: { returned: number; limited: boolean; titleScoped?: boolean };
 }
 export type QuestionAgentObserver = (step: QuestionAgentStep) => void;
 
@@ -42,7 +43,7 @@ export const RECORDING_QUESTION_TOOLS = [
   {
     type: 'function', function: {
       name: 'search_recordings', strict: true,
-      description: '只读搜索限定直播间资料。collection选择原录播recordings、精选摘要highlights、切片字幕clips。terms用于关键词召回，query是本步语义检索问题；关键词命中但答非所问时填入具体query补充语义召回，null优先关键词。withinEvidenceId只接受原录播证据ID，锁定该录播及分段；从highlight/clip查原录播时必须设null，用主题词及date定位。date为年份、年月、日期或null。limited表示覆盖受限。',
+      description: '只读搜索限定直播间资料。collection选择原录播recordings、精选摘要highlights、切片字幕clips。terms只搜索正文；titleTerms只在recordings按录播标题筛选场次，1至3个备选片段OR匹配，null不限定标题。query是本步语义检索问题；关键词命中但答非所问时填入具体query补充语义召回，null优先关键词。withinEvidenceId只接受原录播证据ID，锁定该录播及分段；从highlight/clip查原录播时必须设null，用主题词及date定位。date为年份、年月、日期或null。limited表示覆盖受限。',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
@@ -51,8 +52,9 @@ export const RECORDING_QUESTION_TOOLS = [
           date: { type: ['string', 'null'] },
           query: { type: ['string', 'null'], maxLength: 120 },
           withinEvidenceId: { type: ['string', 'null'] },
-          collection: { type: 'string', enum: ['recordings', 'highlights', 'clips'] }
-        }, required: ['terms', 'kind', 'date', 'query', 'withinEvidenceId', 'collection']
+          collection: { type: 'string', enum: ['recordings', 'highlights', 'clips'] },
+          titleTerms: { type: ['array', 'null'], items: { type: 'string', minLength: 1, maxLength: 40 }, minItems: 1, maxItems: 3 }
+        }, required: ['terms', 'kind', 'date', 'query', 'withinEvidenceId', 'collection', 'titleTerms']
       }
     }
   },
@@ -88,6 +90,7 @@ const SYSTEM_PROMPT = `你是直播间的鹿饼，可以简短聊天、回答常
 需要检索时先用问题中的关键词；必要时换同音词、缩小日期，再查看上下文。最多6次工具调用。
 搜索流程要先拆出问题的时间范围、主题、对象和所求细节；首次命中稀疏、只有泛词、只有一个日期或limited=true时，换一组互补的主题词/ASR变体或补充query，再展开最相关上下文。跨日期、比较、汇总问题要去重同场分段并保留多个独立日期；具体名称问题不能被泛类别命中提前终止。
 先判断是否需要定位事件/场次后才能回答细节。需要时分两步：首次query只描述定位目标、terms用事件词，withinEvidenceId=null；找到相关经历后，将其证据ID填入withinEvidenceId，query改为所问细节，搜索同一录播整场及已识别分段。比如先查“去体检的经历”，再限定该场查“体检有没有测身高体重”。日期已知可用date缩小定位，不能仅凭同一天把不同直播混在一起。未定位事件时不要直接追逐数字。
+用户点名新衣回、生日回、周年回等具体场次时，事件名称可能只在录播标题，不在正文。优先用titleTerms筛选标题，terms改用所求细节及短语变体，避免把整句“录语音”或主播名作为唯一关键词。人名ASR不准时，搜索动作、原因、出门等原问题已有的细节；标题只定位场次，不能当作答案。无法命中应去掉或调整标题条件再查，不得把无匹配标题当成历史不存在。
 “上次”指最近一次相关事件，不等于今天或最近一场直播；覆盖不足时不能声称已经找到最近一次。
 问本周/下次休息日或轮休时，先结合维护的主播常识，再用read_recording_calendar查看近两三周日期分布，并查近期休息/调休安排作为锚点；按周期推算具体日期，不要求主播逐字宣布目标日，也不能把轮休理解为固定星期几。夜播可用dayBoundaryHour=6观察凌晨续录；一天多段不算多天，无资料不独立证明休息。常识加近期锚点或重复周期分布可支持“按惯例预计”，长短答均保留推算条件，较新调休安排优先。
 旧资料中的今天/明天/后天/下周只相对那段资料的语境，不相对本次查询日期；尤其跨午夜时需核对录制日期和上下文。不能把旧“明天休息”直接说成现在的明天；时点不清时交叉核对日期分布或说明锚点不确定。
@@ -145,13 +148,19 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
   let lastSearchLimited = false;
   let replannedLimitedSearch = false;
   let replannedRoast = false;
-  let requireEvidenceTool: 'roast' | 'browse' | 'search' | 'public' | undefined;
+  let replannedEventSearch = false;
+  let searchedEventTitles = false;
+  let refinedEventDetails = false;
+  const titleHints = eventTitleTerms(request.question);
+  const actionTerms = recordingActionTerms(request.question);
+  let requireEvidenceTool: 'roast' | 'browse' | 'search' | 'public' | 'event' | undefined;
   for (let count = 0; count <= MAX_TOOL_CALLS; count++) {
     if (signal.aborted) throw new Error('Question cancelled');
     const modelStarted = Date.now();
     let turn: Omit<AgentMessage, 'role'>;
     try {
-      const instructions: AgentMessage[] = count ? [{ role: 'system', content: requireEvidenceTool === 'browse' ?
+      const instructions: AgentMessage[] = count ? [{ role: 'system', content: requireEvidenceTool === 'event' ?
+        `本题指定了场次，但正文搜索未定位答案。请调用search_recordings，用titleTerms按原问题的场次词筛选录播标题（候选${JSON.stringify(titleHints)}），collection=recordings、kind=subtitle，terms使用原问题所求细节或简短动作/原因词；不要只搜人名或整句，日期未知传null。标题只是定位线索，仍须用正文及上下文作答。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : requireEvidenceTool === 'browse' ?
         `浏览尚未覆盖所需资料。请选择一个只读工具继续查证，不直接回答：按原问题日期和场次选择尚未精读的候选、按nextOffset翻目录，或按nextCueOffset续读。前4份候选可能只是重复副本、断线续录或歌词，不能代表所问范围；不要重复同一操作。可根据已返回原文改用具体词搜索。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : requireEvidenceTool === 'search' ?
         `上次搜索覆盖受限，空排名不能说明没有答案。请选择一个只读工具实际补查，不直接回答：用具体query补充语义召回，换主题词、简称/ASR变体，或从精选摘要定位场次后回查原录播。问经历优先subtitle，先定位事件再查细节；没有日期线索不要擅自限定近期。不要重复同一操作。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : requireEvidenceTool === 'public' ?
         `录播已经确认了部分泛称，但用户追问具体饮品/菜品款名。请选择search_web补查相关品牌、城市/日期和泛口味的官方菜单或可靠商品资料，不直接回答；公开资料只能做可能的名称映射，不能证明主播实际点了该款。最多剩余${MAX_TOOL_CALLS - count}次工具操作。` : requireEvidenceTool ?
@@ -226,6 +235,23 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
           '上次是工具失败，尚不能得出没找到依据。请参照返回的expectedArguments修正参数，或选择其他只读资料工具，用tool JSON继续查询。不要重复同一失败操作；仍无法查询时由应用报告查询失败。' });
         continue;
       }
+      // One bounded lexical fallback for an explicitly named event. Do not depend on a second
+      // model plan preserving the title scope or spelling an ASR-mangled person's name correctly.
+      const eventDetailFallback = (review.action === 'insufficient' || review.action === 'answer' && review.certainty === 'uncertain') &&
+        titleHints.length > 0 && actionTerms.length > 0 && !refinedEventDetails && count < MAX_TOOL_CALLS;
+      if (eventDetailFallback) {
+        refinedEventDetails = true;
+        review = { action: 'search', rankedEvidenceIds: [], search: { terms: actionTerms, titleTerms: titleHints,
+          collection: 'recordings', kind: 'subtitle', date: null, query: null, withinEvidenceId: null } };
+      }
+      if (review.action === 'insufficient' && !review.rankedEvidenceIds.length && titleHints.length &&
+          !searchedEventTitles && !replannedEventSearch && count < MAX_TOOL_CALLS - 1) {
+        replannedEventSearch = true;
+        requireEvidenceTool = 'event';
+        report(count + 1, 'model', reviewStarted, 'ok', { decision: 'insufficient', validationIssue: 'event_search_needs_title_scope' });
+        messages.push({ role: 'assistant', content: turn.content });
+        continue;
+      }
       if (review.action === 'insufficient' && !review.rankedEvidenceIds.length && lastSearchLimited &&
           !replannedLimitedSearch && count < MAX_TOOL_CALLS - 1) {
         replannedLimitedSearch = true;
@@ -298,6 +324,7 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
         continue;
       }
       report(count + 1, 'model', reviewStarted, 'ok', { decision: review.action, rankedCount: review.rankedEvidenceIds.length,
+        ...(eventDetailFallback ? { validationIssue: 'event_search_needs_short_actions' } : {}),
         ...(contextFallback ? { contextFallback: true } : {}), ...(refinement ? { readFallback: true } : {}) });
       if (review.action === 'insufficient' && usedPublicSearch) return { answer: NO_PUBLIC_EVIDENCE, basis: 'public' };
       if (review.action === 'answer' || review.action === 'insufficient') return reviewedAnswer(review, reviewEvidence);
@@ -371,7 +398,13 @@ export async function runQuestionAgent(request: QuestionRequest, signal: AbortSi
         }
         lastToolFailed = false;
         lastSearchLimited = name === 'search_recordings' && !!(result as { limited?: boolean })?.limited;
-        if (name === 'search_recordings') search = { returned: (result as { hits: unknown[] }).hits.length, limited: lastSearchLimited };
+        if (name === 'search_recordings') {
+          searchedEventTitles ||= !!(args as { titleTerms?: string[] | null }).titleTerms?.length;
+          const input = args as { terms: string[]; titleTerms?: string[] | null };
+          if (input.titleTerms?.length && actionTerms.length && actionTerms.every(term => input.terms.includes(term))) refinedEventDetails = true;
+          search = { returned: (result as { hits: unknown[] }).hits.length, limited: lastSearchLimited,
+            ...((args as { titleTerms?: string[] | null }).titleTerms?.length ? { titleScoped: true } : {}) };
+        }
       }
     } catch {
       toolStatus = 'failed';

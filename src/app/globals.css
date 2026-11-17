@@ -168,6 +168,13 @@ body {
 .login-status dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; }
 .login-status dt { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .login-status dd { margin: 0; }
+.ai-video-queue table { min-width: 900px; }
+.ai-video-queue td:nth-child(2) { width: 35%; min-width: 230px; }
+.ai-video-queue .login-status dl { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 850px) {
+  .ai-video-queue .login-status { padding: 18px; }
+  .ai-video-queue .login-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .comment-replies .comment-copy { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 680px; }
 .comment-replies .comment-answer { color: var(--accent); }
 .qq-user-stats { margin: 18px 0 24px; border-block: 1px solid var(--line); padding: 14px 0; }

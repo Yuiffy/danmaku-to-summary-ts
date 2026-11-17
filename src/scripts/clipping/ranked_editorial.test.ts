@@ -44,6 +44,8 @@ test('native detail schema keeps global IDs and requires explicit source evidenc
     expect(schema.properties.clips.items.properties.candidateIndex.enum).toEqual([41, 47, 31]);
     expect(schema.properties.clips.items.required).toEqual(expect.arrayContaining(['startCueId', 'endCueId', 'evidenceCueIds', 'sourceKind']));
     expect(schema.properties.clips.items.additionalProperties).toBe(false);
+    expect(schema.properties.clips.items.required).toContain('tags');
+    expect(schema.properties.clips.items.properties.tags).toEqual({ type: 'array', items: { type: 'string', minLength: 1, maxLength: 30 }, maxItems: 6 });
 });
 test('details run concurrently, receive full original evidence and return globally scored chronological clips', async () => {
     const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: JSON.stringify({ decisions:

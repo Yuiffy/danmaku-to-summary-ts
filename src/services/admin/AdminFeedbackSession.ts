@@ -6,6 +6,8 @@ import { bundleCommand, clipCommand, OperatorCommand } from './AdminCommandPolic
 import { FeedbackPlan, missingFeedbackFields, parseFeedbackPlan } from './AdminFeedbackPolicy';
 import { activityRepairCommand } from './AdminWorkflowPolicy';
 import { PreUploadPeerCoverageGate } from './AdminPreUploadPeerCoverage';
+import { assertEditorialFulfilled, editorialRequest } from './AdminFeedbackEditorial';
+import * as path from 'path';
 
 /** One revision-bound edit session. Tools can inspect results, but cannot grant their own approval. */
 export class AdminFeedbackSession {
@@ -23,13 +25,14 @@ export class AdminFeedbackSession {
     private readonly run: CommandRunner, private readonly output: (text: string) => void,
     private readonly update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void,
     private readonly assertEditable: () => void, readonly directFeedback = false,
-    private readonly peerCoverageGate?: PreUploadPeerCoverageGate) { this.expected = revision;
+    private readonly peerCoverageGate?: PreUploadPeerCoverageGate,
+    private readonly peerCoverageOverride = false) { this.expected = revision;
         this.originalStart = this.clips.detail(this.id).source.start;
         try {
             const fs = require('fs'), path = require('path');
             const logDir = path.join(String((this.clips as unknown as { root: string }).root), 'data/runtime/admin');
             fs.mkdirSync(logDir, { recursive: true });
-            fs.appendFileSync(path.join(logDir, 'feedback-notes.jsonl'), JSON.stringify({ at: new Date().toISOString(), id: this.id, note: this.note, edits: this.edits, directFeedback }) + '\n');
+            fs.appendFileSync(path.join(logDir, 'feedback-notes.jsonl'), JSON.stringify({ at: new Date().toISOString(), id: this.id, note: this.note, edits: this.edits, directFeedback, peerCoverageOverride: this.peerCoverageOverride }) + '\n');
         } catch { /* feedback logging must never break the session */ } }
 
   validate(): void {
@@ -52,6 +55,7 @@ export class AdminFeedbackSession {
         activity: detail.evidence.activityReview?.issues, preflight: detail.evidence.aiReview,
         recovery: detail.evidence.candidateRecovery },
       reviewDetails,
+      subtitles: detail.partSubtitles || detail.subtitles,
       ...(detail.category === 'activity' ? { activities: this.clips.feedbackDetail(this.id).evidence.activities } : {}),
       reviewed: this.reviewed, ready: this.ready() };
   }
@@ -83,7 +87,7 @@ export class AdminFeedbackSession {
     await this.step('正在独立核验并修复活动边界', activityRepairCommand(this.id, body));
     return this.inspect();
   }
-  async identifySongs(activityId?: string): Promise<Record<string, unknown>> {
+  async identifySongs(activityId?: string, unresolvedOnly = false): Promise<Record<string, unknown>> {
     this.validate();
     const detail = this.clips.feedbackDetail(this.id);
     if (detail.category !== 'activity' || detail.evidence.kind !== 'songs'
@@ -91,7 +95,7 @@ export class AdminFeedbackSession {
     const metadataPath = this.clips.checkedInput(this.clips.record(this.id).metadataPath, ['.json']);
     let captured = '';
     this.update({ phase: '正在结合弹幕、歌词搜索歌名' });
-    const code = await this.run(bundleCommand(this.id, { action: 'identify-songs', activityId, hint: this.note }, 'activity', metadataPath),
+    const code = await this.run(bundleCommand(this.id, { action: 'identify-songs', activityId, unresolvedOnly, hint: this.note }, 'activity', metadataPath),
       chunk => { captured = (captured + chunk).slice(-128000); this.output(chunk); });
     this.validate();
     if (code !== 0) throw new AdminError('歌名检索未完成，原意见和当前成片保留');
@@ -113,8 +117,12 @@ export class AdminFeedbackSession {
     this.validate();
     const detail = this.clips.feedbackDetail(this.id), record = this.clips.record(this.id);
     if (detail.category !== 'clip' || !detail.media || !detail.cover || detail.pendingRebuild || record.pendingCut
-      || record.reviewPending || record.editorialExclusion) throw new AdminError('当前版本尚未达到可恢复投稿状态，请重新按意见处理');
+      || record.reviewPending || record.editorialExclusion) {
+      this.output('\n上次反馈尚未完成成片，继续按保存的意见制作并复核。\n');
+      return false;
+    }
     const savedPlan = plan && typeof plan === 'object' ? plan : {};
+    try { this.assertEditorial(); } catch { return false; }
     const expected = { title: savedPlan.title || detail.title, description: savedPlan.description || detail.description,
       coverText: savedPlan.coverText || detail.coverText,
       tags: Array.isArray((savedPlan as any).tags) ? (savedPlan as any).tags : detail.tags };
@@ -127,6 +135,44 @@ export class AdminFeedbackSession {
     this.reviewed = true;
     this.update({ phase: '正在恢复已复核版本', plan: { ...savedPlan, resume: true } });
     return true;
+  }
+  private assertEditorial(): void {
+    const record = this.clips.record(this.id), metadata = this.clips.metadata(record);
+    assertEditorialFulfilled(this.note, !!record.precisionSelection
+      && metadata.creativeResult?.status === 'edited' && metadata.qaResult?.status === 'passed',
+      metadata.coordinateCommentApproval?.authority === 'feedback'
+        && !!metadata.copy?.commentSuggestions?.length);
+  }
+  private async applyEditorial(plan: FeedbackPlan): Promise<void> {
+    if (!plan.precision && !plan.coordinateComment) return;
+    if (!this.directFeedback) throw new AdminError('精切选用与坐标评论需要明确的反馈投稿授权');
+    let precisionSelected = false;
+    if (plan.precision) {
+      this.update({ phase: '正在按反馈精切并检查成片' });
+      let captured = '';
+      const command = clipCommand(this.id, { action: 'precision', style: 'compact', note: this.note });
+      if (this.clips.metadata(this.clips.record(this.id)).mode === 'manual_clip_queue') command.args.push('--local-clip-note', this.note);
+      const code = await this.run(command, chunk => { captured = (captured + chunk).slice(-128000); this.output(chunk); });
+      this.validate(); // Local precision does not mutate this ID; external edits still stop the session.
+      const marker = captured.split(/\r?\n/u).find(line => line.startsWith('PRECISION_RESULT: '));
+      const result = marker ? JSON.parse(marker.slice('PRECISION_RESULT: '.length)) : undefined;
+      if (code === 0 && String(result?.id) === this.id && result?.status === 'pending_review' && result.qaStatus === 'passed') {
+        const metadataPath = this.clips.checkedInput(result.metadataPath, ['.json']);
+        await this.step('正在选用反馈精切成片', { executable: 'python', action: 'select-precision', target: this.id,
+          args: ['src/scripts/clip_upload_registry.py', 'select-precision', '--id', this.id, '--revision', path.dirname(metadataPath),
+            '--review-note', this.note, '--feedback-authorized'] });
+        precisionSelected = true;
+      } else if (!plan.coordinateComment || !editorialRequest(this.note).alternative) {
+        throw new AdminError('精切制作或质检未通过，保留普通版；未继续投稿');
+      } else this.output('\n精切未完成，按用户允许的替代方案安排坐标评论。\n');
+    }
+    if (plan.coordinateComment && !(precisionSelected && editorialRequest(this.note).alternative)) {
+      if (!editorialRequest(this.note).coordinate) throw new AdminError('用户未授权发布坐标评论');
+      await this.step('正在保存投稿后坐标评论', { executable: 'python', action: 'coordinate-comment', target: this.id,
+        args: ['src/scripts/clip_upload_registry.py', 'coordinate-comment', '--id', this.id,
+          '--cue', String(plan.coordinateComment.cue), '--content', plan.coordinateComment.content,
+          '--note', this.note, '--feedback-authorized'] });
+    }
   }
   private async step(phase: string, command: OperatorCommand): Promise<void> {
     this.validate(); this.update({ phase }); this.output(`\n${phase}\n`);
@@ -199,17 +245,19 @@ export class AdminFeedbackSession {
         }
         const cut = clipCommand(this.id, { action: 'cut', note: this.note, ...(record.pendingCut ? copy : {}) });
         cut.args.push(this.directFeedback ? '--feedback-authorized' : '--automatic-review');
+        if (plan.precision && this.directFeedback) cut.args.push('--precision-baseline');
         await this.step(this.directFeedback ? '正在按反馈制作成片' : '正在制作并复核成片', cut);
       }
+      await this.applyEditorial(plan);
     } else {
       const metadataPath = this.clips.checkedInput(this.clips.record(this.id).metadataPath, ['.json']);
       if (initial.category === 'activity' && plan.activityTitles) {
         const titleEvidencePath = this.clips.feedbackTitleInput(this.id, plan.activityTitles);
-        await this.step('正在修改歌名、封面和分 P 文案', bundleCommand(this.id, { action: 'restyle', titleEvidencePath }, 'activity', metadataPath));
+        await this.step('正在修改歌名、封面和分 P 文案', bundleCommand(this.id, { action: 'restyle', titleEvidencePath, note: this.note }, 'activity', metadataPath));
       }
       if (initial.category === 'activity' && plan.useIdentifiedSongNames) {
         if (!this.songEvidencePath) throw new AdminError('请先用歌名检索工具得到有歌词支持的识别结果');
-        await this.step('正在应用核验后的歌名和包装', bundleCommand(this.id, { action: 'restyle', titleEvidencePath: this.songEvidencePath }, 'activity', metadataPath));
+        await this.step('正在应用核验后的歌名和包装', bundleCommand(this.id, { action: 'restyle', titleEvidencePath: this.songEvidencePath, note: this.note }, 'activity', metadataPath));
       }
       if (!humanReview && !this.directFeedback && initial.category === 'game') throw new AdminError('游戏包需要专用完整成片审核；不能把自动分析登记为人工审核');
       await this.step('正在核验完整投稿包', bundleCommand(this.id,
@@ -225,20 +273,20 @@ export class AdminFeedbackSession {
   }
   async enqueue(): Promise<Record<string, unknown>> {
     this.validate();
+    this.assertEditorial();
     if (this.queued) throw new AdminError('本次已加入投稿队列');
     if (!this.ready()) throw new AdminError(`成片复核尚未通过，未入队：${this.clips.detail(this.id).clip.issues.join('；') || '尚未完成当前版本复核或标题与修改计划不一致'}`);
     const final = this.clips.record(this.id), detail = this.clips.detail(this.id);
-    // A direct Web feedback submission is an explicit human review and
-    // publication authorization. The peer-coverage check remains useful for
-    // automatic/ordinary flows, but must not re-gate an operator-confirmed
-    // feedback correction after the current media has passed review.
-    if (detail.category === 'clip' && !this.directFeedback && this.peerCoverageGate) {
+    if (detail.category === 'clip' && this.peerCoverageGate) {
       const peer = await this.peerCoverageGate.check(this.id, detail, this.output, value => this.update(value));
-      if (peer.status === 'covered') {
+      if (peer.status === 'covered' && !this.peerCoverageOverride) {
         throw new AdminError(`已确认 B 站存在同题成片，已执行支持并暂停投稿：${peer.reason}`);
       }
       if (peer.status === 'needs_review') {
         throw new AdminError(`投稿前 B 站同题核查未完成，已暂停投稿：${peer.reason}`);
+      }
+      if (peer.status === 'covered' && this.peerCoverageOverride) {
+        this.output('\n人工已复核同题结果，按二次授权继续投稿。\n');
       }
     }
     const command = detail.category === 'clip' ? clipCommand(this.id, { action: 'enqueue', note: this.note, publishApproved: true })

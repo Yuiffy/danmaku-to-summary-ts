@@ -27,7 +27,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const settings = rootConfig.ownStreamClips?.enhancements || {};
     const decisions = await runtime.runPeerCuration({ candidates, settings: rootConfig.clipCuration,
         cookie: rootConfig.bilibili?.cookie || '', evidencePath: path.join(directory, 'PEER_COVERAGE.json'),
-        statePath: path.resolve('data/runtime/clip_peer_support.json'), support: args.includes('--support') },
+        statePath: path.resolve('data/runtime/clip_peer_support.json'), support: args.includes('--support'),
+        streamerRegistry: rootConfig.ai?.streamerRegistry, rerankPeers: true },
     async (phase: string, prompt: string) => {
         if (rootConfig.ai?.text?.enabled === false) throw new Error('AI is disabled');
         return (await require('../../scripts/clipping/enhancement_runner').requestStage(

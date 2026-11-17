@@ -11,6 +11,25 @@ from src.scripts.clip_media_replace import (edit_payload, unchanged_archive, rec
 
 
 class SubtitleReplacementRevisionTests(unittest.TestCase):
+    def test_published_history_ignores_pending_rebuilds_that_retain_the_old_media_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            history = Path(temporary) / 'subtitle_revisions/7/history'
+            history.mkdir(parents=True)
+            published = {'uploadId': 7, 'window': {'start': 60, 'end': 100},
+                         'output': {'mediaPath': 'old.mp4'}, 'rebuildRequired': False}
+            draft = {**published, 'window': {'start': 10, 'end': 100}, 'rebuildRequired': True}
+            files = []
+            for metadata in (draft, published):
+                raw = json.dumps(metadata).encode()
+                file = history / (hashlib.sha256(raw).hexdigest() + '.json')
+                file.write_bytes(raw)
+                files.append(file)
+            clip = {'id': 7, 'uploadState': {'mediaPath': 'old.mp4'}}
+            with patch.object(Path, 'glob', return_value=iter(files)):
+                self.assertEqual(previous_uploaded_metadata(clip, Path(temporary) / 'metadata.json'), published)
+            files[1].unlink()
+            self.assertIsNone(previous_uploaded_metadata(clip, Path(temporary) / 'metadata.json'))
+
     def test_window_replacement_requires_published_history_unchanged_source_and_rendered_current_srt(self):
         with tempfile.TemporaryDirectory() as temporary:
             file = Path(temporary) / 'clip.srt'; file.write_bytes(b'earlier complete story')

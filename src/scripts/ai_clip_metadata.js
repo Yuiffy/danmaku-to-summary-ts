@@ -30,7 +30,46 @@ function explicitUploadTags(entry = {}) {
         .filter(Boolean);
 }
 
-function postProcessAiClipMetadata({ title = '', tags = [] } = {}, config = {}) {
+function resolvePublicTagCandidates(entry = {}, roomSettings = {}) {
+    const configured = [
+        roomSettings.clipTitlePrefix,
+        roomSettings.anchorName,
+        entry.aiClipName,
+        entry.uploadPrefix,
+        ...(Array.isArray(entry.aiUploadTags) ? entry.aiUploadTags : []),
+    ];
+    const official = new Set(officialNames(entry).map(value => value.toLocaleLowerCase()));
+    return Array.from(new Set(configured
+        .map(value => String(value || '').replace(/[【】]/g, '').trim())
+        .filter(value => value && !official.has(value.toLocaleLowerCase()))));
+}
+
+/**
+ * Convert formal streamer names that triggered a topic clip into the public
+ * nickname used by AI uploads. This keeps search evidence useful while the
+ * automatic pipeline is still barred from publishing formal names such as
+ * 岁己 and 栞栞.
+ */
+function deriveMentionedStreamerTags({ matchedKeywords = [], text = '' } = {}, config = {}) {
+    const haystack = [
+        ...(Array.isArray(matchedKeywords) ? matchedKeywords : []),
+        String(text || ''),
+    ].map(value => String(value || '')).filter(Boolean).join('\n');
+    if (!haystack) return [];
+    const tags = [];
+    for (const entry of registryEntries(config)) {
+        const names = Array.from(new Set([
+            ...officialNames(entry),
+            ...(Array.isArray(entry.aliases) ? entry.aliases : [])
+        ])).sort((a, b) => b.length - a.length);
+        if (!names.some(name => haystack.includes(name))) continue;
+        const candidate = resolvePublicTagCandidates(entry)[0];
+        if (candidate) tags.push(candidate);
+    }
+    return Array.from(new Set(tags));
+}
+
+function postProcessAiClipMetadata({ title = '', tags = [], requiredTags = [] } = {}, config = {}) {
     let safeTitle = String(title || '');
     const blockedTags = new Set();
     const allowedUploadTags = new Set();
@@ -62,7 +101,20 @@ function postProcessAiClipMetadata({ title = '', tags = [] } = {}, config = {}) 
             || !blockedTags.has(tag.toLocaleLowerCase())
         ))));
 
-    return { title: safeTitle, tags: safeTags };
+    // Reserve existing safe defaults before filling the SDK's ten tag slots.
+    // Keep the original order and never add a tag absent from the reviewed input.
+    const required = new Set(['AI切片', ...requiredTags]);
+    const reserved = Array.from(required).filter(tag => safeTags.includes(tag)).slice(0, 10);
+    const selected = new Set([...reserved, ...safeTags.filter(tag => !required.has(tag))
+        .slice(0, 10 - reserved.length)]);
+    return { title: safeTitle, tags: safeTags.filter(tag => selected.has(tag)) };
 }
 
-module.exports = { postProcessAiClipMetadata, officialNames, preferredName, resolveAiStreamerName };
+module.exports = {
+    postProcessAiClipMetadata,
+    officialNames,
+    preferredName,
+    resolveAiStreamerName,
+    deriveMentionedStreamerTags,
+    resolvePublicTagCandidates
+};

@@ -71,6 +71,30 @@ test('rebuilt precision uses the independently reviewed current window and copy,
     ]) expect(() => rebuiltPrecisionCandidate({ ...artifact, ...change }, 'current', snapshot)).toThrow(/review|stale/);
 });
 
+test('explicit local precision can precede precision publication QA only with a current independent actor review', () => {
+    const copy = { title: '听原唱想起翻唱', description: '此前听过翻唱版', coverText: '原来听过' };
+    const snapshot = { source: { media: 'original' }, digests: { video: 'v', subtitles: 's' } };
+    const artifact: any = { uploadReady: false, window: { start: 10, end: 50 }, copy,
+        renderedSubtitles: { version: 1, sourceSha256: 'source', window: { start: 10, end: 50 }, review: { note: '重建底片' } },
+        attributionReview: { version: 1, status: 'passed', sourceSha256: 'source', start: 10, end: 50,
+            copyDigest: copyHash(copy), artifactCopyDigest: copyHash(copy), proposedCopy: copy, issues: [],
+            artifactWindow: { start: 10, end: 50 }, artifactDigests: snapshot.digests },
+        publicationReview: { status: 'needs_review', issues: ['precision_not_completed'] } };
+    const before = JSON.stringify(artifact);
+    expect(rebuiltPrecisionCandidate(artifact, 'source', snapshot, '用户要求本地精切')).toMatchObject({
+        start: 10, end: 50, ...copy, attributionRequired: true });
+    expect(JSON.stringify(artifact)).toBe(before);
+    expect(() => rebuiltPrecisionCandidate(artifact, 'source', snapshot)).toThrow();
+    for (const patch of [
+        { publicCopyPending: true }, { rebuildRequired: true },
+        { attributionReview: { ...artifact.attributionReview, status: 'needs_review' } },
+        { attributionReview: { ...artifact.attributionReview, artifactDigests: { video: 'changed', subtitles: 's' } } },
+        { publicationReview: { status: 'needs_review', issues: ['precision_not_completed', 'source_incomplete'] } },
+        { publicationReview: { status: 'needs_review', issues: ['final_subtitles_not_passed'] } },
+        { copy: { ...copy, title: '未核对的新标题' } }
+    ]) expect(() => rebuiltPrecisionCandidate({ ...artifact, ...patch }, 'source', snapshot, '用户要求')).toThrow();
+});
+
 test('a fully attribution-reviewed batch still offers its passed clips for precision selection', () => {
     const reviewed = Array.from({ length: 23 }, (_, i) => {
         const clip = { start: i * 100, end: i * 100 + 80, title: `Story ${i}`, coverText: 'Story', description: 'Complete story',

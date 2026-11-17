@@ -6,7 +6,7 @@ type RecordValue = Record<string, any>;
 const object = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const array = (value: unknown): RecordValue[] => Array.isArray(value) ? value.map(object) : [];
 // Mirrors clip_upload_registry.py's account guard; this projection never schedules work.
-const LIMIT = 25, WINDOW_SECONDS = 86400, BUFFER_SECONDS = 5;
+const DEFAULT_LIMIT = 45, WINDOW_SECONDS = 86400, BUFFER_SECONDS = 5;
 function time(value: unknown): number | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   const normalized = value.trim().replace(/(\.\d{3})\d+/u, '$1');
@@ -30,6 +30,7 @@ function reason(job: RecordValue): string {
 export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, now = Date.now(), telemetry?: UploadTelemetry): UploadQueueStatus {
   const queue = object(queueValue), records = object(recordsValue), jobs = array(queue.jobs);
   const guard = object(queue.accountRollingUploadGuard), cooldown = object(queue.submissionRateLimit);
+  const limit = Number.isSafeInteger(guard.limit) && guard.limit > 0 ? guard.limit : DEFAULT_LIMIT;
   const cutoff = now - WINDOW_SECONDS * 1000;
   const merged = new Map<string, UploadSubmission>();
   function addEvent(raw: RecordValue) {
@@ -51,7 +52,7 @@ export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, no
   }
   const allEvents = [...merged.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const events = allEvents.filter(event => Date.parse(event.at) > cutoff);
-  const calculatedBlock = events.length >= LIMIT ? Date.parse(events[events.length - LIMIT].at) + (WINDOW_SECONDS + BUFFER_SECONDS) * 1000 : 0;
+  const calculatedBlock = events.length >= limit ? Date.parse(events[events.length - limit].at) + (WINDOW_SECONDS + BUFFER_SECONDS) * 1000 : 0;
   const rollingUntil = Math.max(calculatedBlock, time(guard.blockedUntil) || 0);
   const cooldownUntil = time(cooldown.cooldownUntil) || 0;
   const globalUntil = Math.max(now, rollingUntil, cooldownUntil);
@@ -70,6 +71,7 @@ export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, no
   function eligible(job: RecordValue): number | undefined {
     if (job.status === 'pending') return globalUntil;
     if (job.status !== 'retry_wait') return undefined;
+    if (job.retryKind === 'account_rolling_upload_limit' && rollingUntil <= now) return globalUntil;
     const retry = time(job.retryAt);
     // Matches next_pending_job: a malformed nonempty timestamp is retryable, a missing one is not.
     return retry !== undefined ? Math.max(globalUntil, retry) : job.retryAt ? globalUntil : undefined;
@@ -115,8 +117,8 @@ export function uploadQueueStatus(queueValue: unknown, recordsValue: unknown, no
       preuploadRateLimited: /\[rate-limit\]|您上传视频过快/u.test(output), outcomeUnknown: /submission outcome unknown/iu.test(output) } : undefined,
     rateLimit: Object.keys(cooldown).length ? { code: Number(cooldown.code) || 137022, streak: Number(cooldown.streak) || 0,
       at: iso(time(cooldown.updatedAt)), until: iso(cooldownUntil || undefined), active: cooldownUntil > now } : undefined,
-    rolling: { available: Array.isArray(guard.events), limit: LIMIT, windowSeconds: WINDOW_SECONDS, boundaryBufferSeconds: BUFFER_SECONDS,
-      count: events.length, remaining: Math.max(0, LIMIT - events.length), blockedUntil: rollingUntil > now ? iso(rollingUntil) : undefined,
+    rolling: { available: Array.isArray(guard.events), limit, windowSeconds: WINDOW_SECONDS, boundaryBufferSeconds: BUFFER_SECONDS,
+      count: events.length, remaining: Math.max(0, limit - events.length), blockedUntil: rollingUntil > now ? iso(rollingUntil) : undefined,
       nextDecreaseAt: releases[0]?.at, syncedAt: iso(time(guard.lastRemoteSyncAt)), syncFailed: !!guard.lastRemoteSyncError,
       events, releases }, queue: entries
   };

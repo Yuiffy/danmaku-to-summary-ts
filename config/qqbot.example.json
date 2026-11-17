@@ -1,13 +1,18 @@
 {
   "secretConfigPath": "config/secret.json",
+  "notificationConfigPath": "config/production.json",
   "dailyTokenBudget": 40960000,
   "maxQueue": 20,
   "maxUserQueue": 2,
   "groupMessageMode": "all",
+  "mediaOperators": [
+    "1cc91f16484744dd7044cec6253a4d0fa2d6b36484134ca293aad989a783e467"
+  ],
   "privateReply": "鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～",
   "images": {
     "enabled": true,
     "model": "gpt-image-2.5-sunburst",
+    "gifModel": "gpt-image-2.6-sunburst",
     "quality": "high",
     "background": true,
     "dailyLimit": 300,
@@ -17,7 +22,11 @@
     "characters": [
       {
         "name": "岁己·小红帽",
-        "aliases": ["小红帽", "岁己小红帽", "小红帽岁己"],
+        "aliases": [
+          "小红帽",
+          "岁己小红帽",
+          "小红帽岁己"
+        ],
         "baseCharacter": "岁己SUI",
         "skin": "小红帽",
         "referenceImage": "public/reference_images/岁己小红帽立绘.png",
@@ -25,7 +34,11 @@
       },
       {
         "name": "岁己·小花帽",
-        "aliases": ["小花帽", "岁己小花帽", "小花帽岁己"],
+        "aliases": [
+          "小花帽",
+          "岁己小花帽",
+          "小花帽岁己"
+        ],
         "baseCharacter": "岁己SUI",
         "skin": "小花帽",
         "referenceImage": "public/reference_images/岁己小花帽立绘.png",
@@ -33,7 +46,11 @@
       },
       {
         "name": "岁己·小蓝帽",
-        "aliases": ["小蓝帽", "岁己小蓝帽", "小蓝帽岁己"],
+        "aliases": [
+          "小蓝帽",
+          "岁己小蓝帽",
+          "小蓝帽岁己"
+        ],
         "baseCharacter": "岁己SUI",
         "skin": "小蓝帽",
         "referenceImage": "public/reference_images/岁己小蓝帽三视图.png",
@@ -41,11 +58,93 @@
       },
       {
         "name": "岁己·小猫帽",
-        "aliases": ["小猫帽", "岁己小猫帽", "小猫帽岁己"],
+        "aliases": [
+          "小猫帽",
+          "岁己小猫帽",
+          "小猫帽岁己"
+        ],
         "baseCharacter": "岁己SUI",
         "skin": "小猫帽",
         "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
         "description": "岁己的小猫帽皮肤，白发红瞳双马尾、黑紫色猫耳帽、紫色外套与黑色内搭、黑色厚底长靴和蝙蝠小翅膀；参考图的饼干岁只在用户要求时加入。"
+      },
+      {
+        "name": "岁己·JK单马尾无外套",
+        "aliases": [
+          "单马尾无外套JK",
+          "单马尾无外套JK岁己",
+          "JK岁己",
+          "岁己JK",
+          "岁己JK服",
+          "JK服岁己"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "JK单马尾无外套",
+        "referenceImage": "public/reference_images/sui_jk_ponytail_no_jacket.png",
+        "description": "岁己的JK单马尾无外套形象，白发红瞳、单马尾、粉色蝴蝶结、白衬衫、灰色菱格背心、深蓝格纹短裙、粉色书包、黑色长袜与黑鞋，无外套。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "岁己·地雷双马尾黑外套",
+        "aliases": [
+          "地雷岁己",
+          "地雷帽",
+          "岁己地雷",
+          "地雷岁双马尾黑外套",
+          "地雷双马尾黑外套"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "地雷双马尾黑外套",
+        "referenceImage": "public/reference_images/sui_jirai_twintails_black_jacket.png",
+        "description": "岁己的地雷双马尾黑外套形象，白发红瞳、双马尾、黑色发饰、黑色外套、黑粉色蝴蝶结与裙装、黑色厚底鞋、白色小翅膀。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "岁己·地雷长发双啾啾",
+        "aliases": [
+          "地雷岁长发双啾啾",
+          "地雷长发双啾啾",
+          "地雷岁长发双揪揪"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "地雷长发双啾啾",
+        "referenceImage": "public/reference_images/sui_jirai_long_hair_double_buns.png",
+        "description": "岁己的地雷长发双啾啾形象，白色长发红瞳、长发双啾啾与黑色发饰、露肩黑白上衣、粉色蝴蝶结、黑粉裙装、黑白长袜，无黑色外套。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "岁己·JK小揪揪外套",
+        "aliases": [
+          "小揪揪外套JK",
+          "小啾啾外套JK",
+          "JK小揪揪外套"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "JK小揪揪外套",
+        "referenceImage": "public/reference_images/sui_jk_buns_jacket.png",
+        "description": "岁己的JK小揪揪外套形象，白发红瞳、小揪揪发型、粉色宽松外套、灰色背心、白衬衫、格纹短裙与黑色长袜。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "岁己·JK小粉帽外套玩手机",
+        "aliases": [
+          "小粉帽",
+          "小粉帽外套玩手机JK",
+          "小粉帽外套JK",
+          "JK小粉帽外套玩手机"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "JK小粉帽外套玩手机",
+        "referenceImage": "public/reference_images/sui_jk_pink_hat_phone_jacket.png",
+        "description": "岁己的JK小粉帽外套玩手机形象，白发红瞳、粉色帽子、粉色外套、灰色背心与格纹短裙、粉色书包，参考图中手持手机。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "岁己·JK小粉帽无外套",
+        "aliases": [
+          "小粉帽无外套椭圆嘴",
+          "小粉帽无外套JK",
+          "JK小粉帽无外套"
+        ],
+        "baseCharacter": "岁己SUI",
+        "skin": "JK小粉帽无外套",
+        "referenceImage": "public/reference_images/sui_jk_pink_hat_no_jacket.png",
+        "description": "岁己的JK小粉帽无外套形象，白发红瞳、粉色帽子、白衬衫与灰色菱格背心、格纹短裙、粉色书包与黑色长袜，无外套，参考图为椭圆嘴表情。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
       }
     ]
   },
@@ -53,6 +152,25 @@
     "runtimeConfigPath": "data/runtime/live-vote.json",
     "roomId": "25788785",
     "allConfiguredRooms": true,
-    "collaborationRooms": ["30655190", "1791260716", "26966466"]
+    "collaborationRooms": [
+      "30655190",
+      "1791260716",
+      "26966466"
+    ]
+  },
+  "videos": {
+    "enabled": true,
+    "queuePath": "D:/files/Pictures/AI图保存/seedance/近期岁己居家下载/seedance_queue.json",
+    "voices": [
+      {
+        "name": "岁己",
+        "aliases": [
+          "岁己",
+          "岁己SUI",
+          "小岁"
+        ],
+        "audio": "D:/files/Pictures/保存素材/VirtuaReal和PSP同事/岁己SUI/饼干岁我告诉你只许喜欢我一个人，不许跟别的女人说话！.MP3"
+      }
+    ]
   }
 }

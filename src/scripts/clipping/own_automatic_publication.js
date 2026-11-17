@@ -74,9 +74,13 @@ async function reviewArtifactCopy(current, issues, context) {
             parsed.participantContext = participants.buildParticipantContext(context.rootConfig, context.info, parsed, danmaku, roster);
             const originalEvidence = keywordTopic ? require('./preflight_evidence').buildPreflightEvidence(parsed.segments)
                 : context.evidence(parsed.segments), helpers = context.copyHelpers;
-            const evidence = current.automaticSubtitleRepair
+            let evidence = current.automaticSubtitleRepair
                 ? require('../workflow-runtime').loadWorkflow('clipping/ownSubtitleRepairRuntime').projectSubtitleRepairEvidence(originalEvidence, current)
                 : originalEvidence;
+            if (current.renderedSubtitles?.edits?.length) {
+                require('./source_snapshot').assertRenderedRevision(current);
+                evidence = require('../workflow-runtime').loadWorkflow('clipping/publicationRuntime').projectRenderedSubtitleEvidence(evidence, current);
+            }
             const prefix = helpers.buildClipDescription({ streamerName: current.streamerName, streamTitle: current.streamTitle,
                 recordedAt: current.recordedAt, start: current.window.start, end: current.window.end, description: '' });
             const original = { ...current.copy, description: current.copy.description.startsWith(prefix + '\n\n')
@@ -84,6 +88,9 @@ async function reviewArtifactCopy(current, issues, context) {
             const clip = { ...original, ...current.window, attributionRequired: true, grounding: current.grounding,
                 publicationRepairFeedback: { issues, operatorIntent: operatorIntent(current),
                     instruction: '核对用户给出的修改大意及全部相关文案。保留已有支持的用户标题/看点；不能重新换题、还原相矛盾的旧简介或把播放中人物动作归给主播。仅修复具体证据不支持的文字，保留条件语气和准确数字；不能更改字幕或窗口，不能为通过审核猜测。',
+                    ...(current.renderedSubtitles?.edits?.length ? { renderedSubtitleRevision: {
+                        revision: current.renderedSubtitles.renderedRevision, edits: current.renderedSubtitles.edits },
+                    subtitleScope: '当前已渲染的字面修订已投影到对应原始G-ID；旧ASR保留为历史证据。修订不是身份或原音真值，仍须独立核验。' } : {}),
                     ...(current.automaticSubtitleRepair ? { localAudioChecks: { edits: current.automaticSubtitleRepair.edits,
                         checks: current.automaticSubtitleRepair.checks }, audioScope: '局部双模型结果仅用于标记疑词，不能据此推断人物身份。' } : {}) } };
             const [reviewed] = await require('./actor_review_runner').reviewClipActors([clip], parsed, danmaku, evidence,

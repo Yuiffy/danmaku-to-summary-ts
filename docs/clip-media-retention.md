@@ -53,6 +53,37 @@ python src/scripts/clip_media_retention.py restore --id 2018 --output-dir tmp/re
 
 聚焦验证：`python -m unittest discover -b -s tests -p test_clip_media_retention.py`。
 
+## 合并录播的 bak 备份
+
+原有 `audio_processor` 仅在音频专用房间完成转换后清理备份，或在满足归档条件
+（production 当前为 33 天）且 `deleteBakBeforeArchive` 启用时清理；项目 temp 与
+媒体工作区定时任务不会清理录播 `bak`。视频保留房间的近期备份因此可能持续堆积。
+
+独立任务 `Danmaku-Recording-Backup-Retention` 每小时及登录时检查录播根目录下的
+房间/日期/`bak`。只删除至少七天未修改的备份视频，要求对应合并视频也满七天，
+存在当前有效的 `*.sources.json`，合并文件身份、来源身份、来源时长、完整合并时长
+均匹配。身份算法与 `core/media/RecordingCoverage.ts` 的 v1 合同一致。没有清单、
+旧合并产物、损坏媒体、变化中的文件及不匹配项保留，并在报告中说明原因。
+
+原录播根文件、合并视频、XML 弹幕、字幕、封面和 JSON 始终保留。根目录、房间、
+日期或 bak 下的 `.keep` 可阻止清理；目录链接不跟随。注册表、队列、未完成任务
+及日期目录中 JSON 配方/计划引用的 bak 素材受保护。删除前在投稿队列短锁内重读
+引用、来源清单和文件身份，先写 `BAK-RETENTION.json` pending 日志，再删除单个视频，
+最后记录 deleted；失败保留 pending 并报错。不会整目录递归清空 bak。
+
+```powershell
+# 默认只预览
+python src/scripts/recording_backup_retention.py --report data/runtime/recording_backup_retention_last_run.json
+python src/scripts/recording_backup_retention.py --apply --report data/runtime/recording_backup_retention_last_run.json
+& ./scripts/install-recording-backup-retention-task.ps1
+& ./scripts/install-recording-backup-retention-task.ps1 -Disable
+python -m unittest discover -b -s tests -p test_recording_backup_retention.py
+```
+
+任务使用当前用户普通权限和 pythonw 静默运行，禁止重叠；未登录时待登录补跑。
+至少保留七天，可用 `--keep-days` 延长。最近报告包含计划/实际释放字节、逐文件来源、
+跳过原因和错误；需同时检查 Windows 任务退出码。
+
 ## 媒体制作工作目录
 
 项目 `temp/`、`tmp/` 只放脚本、研究记录、报告等小型任务文件。下载/重封装视频、

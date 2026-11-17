@@ -83,6 +83,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "socialReviewRequired": bool(clip.get("socialReviewRequired")),
             "streamerName": clip.get("streamerName") or "", "description": clip.get("description") or "",
             "commentSuggestions": clip.get("commentSuggestions") if isinstance(clip.get("commentSuggestions"), list) else [],
+            "coordinateCommentApproval": clip.get("coordinateCommentApproval"),
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
             "attributionRequired": bool(clip.get("attributionRequired")),
