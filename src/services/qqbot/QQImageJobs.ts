@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { QQRequest, QQ_LIMITS, qqDigest } from './QQPolicy';
+import { QQRequest, QQ_LIMITS, publishableQQAnswer, qqDigest } from './QQPolicy';
 import { QQImageCommand, QQImageDelivery, QQImageResult, QQImageToolResult, qqImageFailureReply, qqImageRecoveryRequested } from './QQImagePolicy';
 import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
@@ -32,6 +32,10 @@ const MAX_JOBS = 1000;
 const HASH = /^[a-f0-9]{64}$/u;
 const MAX_GENERATION_ATTEMPTS = 2;
 const conversation = (request: QQRequest) => qqDigest(JSON.stringify([request.scope, request.targetId]));
+const unsentImage = (job: Job) => job.status === 'ready' && !job.deliveryRequest;
+const hasDelivery = (job: Job) => job.status === 'delivered' || job.status === 'delivering' || !!job.deliveryRequest;
+const taskTime = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 
 /** Retry only an explicit upstream gateway failure; moderation and uncertain timeouts stay single-shot. */
 const retryableImageFailure = (failure: QQDiagnostic) => failure.stage === 'image_http' && failure.code === 'http_error' &&
@@ -238,45 +242,80 @@ export class QQImageJobs {
     if (signal.aborted) return;
     return this.pending(request, request.key);
   }
-  private latest(request: QQRequest, key?: string): Job | undefined {
-    return request.scope === 'group' ? Object.values(this.state.jobs).reverse()
-      .filter(item => (!key || item.key === key) && item.user === request.user && item.conversation === conversation(request))
-      .sort((a, b) => b.createdAt - a.createdAt)[0] : undefined;
+  private ownTasks(request: QQRequest): Job[] {
+    if (request.scope !== 'group') return [];
+    const group = conversation(request);
+    return Object.values(this.state.jobs).reverse().filter(job => job.user === request.user && job.conversation === group)
+      .sort((a, b) => b.createdAt - a.createdAt);
   }
-  async status(request: QQRequest): Promise<QQImageTaskStatus> {
+  private selectTask(request: QQRequest, position?: number): Job | undefined {
+    const jobs = this.ownTasks(request);
+    if (position !== undefined) return jobs[position - 1];
+    const latest = jobs[0];
+    return jobs.reverse().find(unsentImage) ?? latest;
+  }
+  countUnsent(request: QQRequest): number {
+    return this.ownTasks(request).filter(unsentImage).length;
+  }
+  async activeTasks(request: QQRequest): Promise<QQImageTaskStatus> {
     await this.writes;
-    const job = this.latest(request);
-    if (!job) return { status: 'none', message: '本人在本群没有可查询的图片任务。' };
+    const jobs = this.ownTasks(request);
+    const lines: string[] = [];
+    let running = 0, queued = 0;
+    for (const [index, job] of jobs.entries()) {
+      if (job.status !== 'running' && job.status !== 'queued') continue;
+      if (job.status === 'running') running++;
+      else queued++;
+      const original = publishableQQAnswer(job.input?.request.text);
+      const label = original ? Array.from(original).slice(0, 20).join('') : '';
+      lines.push(`倒数第${index + 1}张 ${taskTime.format(job.createdAt)} ${job.status === 'running' ? '生成中' : '排队中'}${label ? `「${label}」` : ''}`);
+    }
+    const summary = `本群你的生图任务有 ${running} 张生成中、${queued} 张排队、${jobs.filter(unsentImage).length} 张待领取。`;
+    return { status: running ? 'running' : queued ? 'queued' : 'none', message: [summary, ...lines].join('\n') };
+  }
+  async status(request: QQRequest, position = 1): Promise<QQImageTaskStatus> {
+    await this.writes;
+    const job = this.selectTask(request, position);
+    if (!job) return { status: 'none', message: position === 1 ?
+      '本人在本群没有可查询的图片任务。' : `没找到本群倒数第${position}张图的任务记录。` };
     const message = job.status === 'queued' ? this.receipt(job).message :
-      job.status === 'running' ? '上一张图还在后台生成，完成可能需要几分钟。' :
+      job.status === 'running' ? '这张图还在后台生成，完成可能需要几分钟。' :
       job.status === 'ready' ? '图片已经生成，可以领取。' :
       job.status === 'failed' || job.status === 'delivered' && !job.image ? qqImageFailureReply(job.failure) :
-      job.status === 'unknown' ? '上次图片任务未能确认生成结果，没有重复调用生图接口。' :
-      job.deliveryRecovery ? '上一张图已补发过一次，已停止重发。' :
-      job.status === 'delivering' ? '上一张图的发送结果尚待核对，如确认没收到可领取补发一次。' : '最近的图片已发送，如未收到可领取补发一次。';
+      job.status === 'unknown' ? '这张图的任务未能确认生成结果，没有重复调用生图接口。' :
+      job.deliveryRecovery ? '这张图已补发过一次，已停止重发。' :
+      job.status === 'delivering' ? '这张图的发送结果尚待核对，如确认没收到可领取补发一次。' : '这张图已发送，如未收到可领取补发一次。';
     return { status: job.status, message };
   }
-  async collect(request: QQRequest): Promise<QQImageDelivery | undefined> {
-    return this.pending(request, undefined, true);
+  async collect(request: QQRequest, position?: number): Promise<QQImageDelivery | undefined> {
+    await this.writes;
+    const job = this.selectTask(request, position);
+    if (!job) return request.scope === 'group' && position !== undefined && position > 1 ?
+      { text: `没找到本群倒数第${position}张图的任务记录。` } : undefined;
+    if (position === undefined && job.status === 'delivered' && job.image) {
+      return { text: '本群没有已生成且尚未发送的图。需要补发的话，可以说“补发刚才那张”。' };
+    }
+    return this.claim(request, job, position !== undefined);
   }
   async pending(request: QQRequest, key?: string, recover?: boolean): Promise<QQImageDelivery | undefined> {
     await this.writes;
-    if (request.scope !== 'group') return;
-    // Choose the latest task before checking status; a terminal task must never expose an older result.
-    const job = this.latest(request, key);
+    const job = key ? this.ownTasks(request).find(item => item.key === key) : this.selectTask(request, request.text ? 1 : undefined);
     if (!job) return;
     const recovery = recover ?? qqImageRecoveryRequested(request.text);
     if (job.status === 'delivered' && (key || !recovery)) return;
-    if (job.status === 'delivered' && !job.image) return { text: job.failure ? qqImageFailureReply(job.failure) : '最近的图片任务未能确认生成结果，没有可领取的新图。请重新艾特并说明绘图要求。' };
+    if (hasDelivery(job) && request.text && !recovery) return;
+    return this.claim(request, job, recovery);
+  }
+  private async claim(request: QQRequest, job: Job, recovery: boolean): Promise<QQImageDelivery> {
+    if (job.status === 'delivered' && !job.image) return { text: job.failure ? qqImageFailureReply(job.failure) : '这张图的任务未能确认生成结果，没有可领取的新图。请重新艾特并说明绘图要求。' };
     if (job.status === 'queued') return { text: this.receipt(job).message };
-    if (job.status === 'running') return { text: '上一张图还在后台生成，完成可能需要几分钟。稍后再艾特我领取，不用重复生图。' };
-    const uncertain = job.status === 'delivering' || !!job.deliveryRequest;
-    if (uncertain && request.text && !recovery) return;
-    if (uncertain && (!recovery || job.deliveryRecovery || !job.image)) return {
-      text: job.deliveryRecovery ? '上一张图已补发过一次，已停止重发。你可以继续聊天，或引用图片提出新的改图要求。' :
-        '上一张图的发送结果尚待核对。如确认没收到，请艾特我并说“收图”，可补发一次；也可以直接提出新问题或新的绘图要求。' };
+    if (job.status === 'running') return { text: '这张图还在后台生成，完成可能需要几分钟。稍后再艾特我领取，不用重复生图。' };
+    const previousDelivery = hasDelivery(job);
+    if (previousDelivery && (!recovery || job.deliveryRecovery || !job.image)) return {
+      text: job.deliveryRecovery ? '这张图已补发过一次，已停止重发。你可以继续聊天，或引用图片提出新的改图要求。' :
+        '这张图的发送结果尚待核对。如确认没收到，可以说“补发刚才那张”。' };
     let image: QQImageResult | undefined;
-    if (job.status === 'ready' || uncertain) {
+    if (job.status === 'ready' || previousDelivery) {
       const directory = await fs.realpath(path.join(this.root, 'data/runtime/qqbot/records', this.appId));
       const format = job.image!.format || 'png';
       const source = await fs.realpath(path.join(directory, job.date, `${job.key}.${format}`));
@@ -297,38 +336,53 @@ export class QQImageJobs {
       const current = state.jobs[job.key];
       if (current.status !== job.status || current.deliveryRequest !== job.deliveryRequest || current.deliveryRecovery !== job.deliveryRecovery) throw new Error('QQ image delivery already claimed');
       current.status = 'delivering'; current.deliveryRequest = request.key; current.updatedAt = this.io.now();
-      if (uncertain) current.deliveryRecovery = true;
+      if (previousDelivery) current.deliveryRecovery = true;
     });
-    return { text: image ? job.key === request.key ? '图片生成完成。' : '上次的图片生成完成，给你发来啦。' : job.status === 'unknown' ?
-      '上次图片任务因超时或服务中断未能确认结果，没有重复调用生图接口。如需重画，请再次艾特并说明绘图要求。' :
+    return { text: image ? job.key === request.key ? '图片生成完成。' : '这张图已生成，给你发来啦。' : job.status === 'unknown' ?
+      '这张图的任务因超时或服务中断未能确认结果，没有重复调用生图接口。如需重画，请再次艾特并说明绘图要求。' :
       qqImageFailureReply(job.failure), ...(image ? { image } : {}) };
   }
   hasReady(request: QQRequest): boolean {
-    return request.scope === 'group' && Object.values(this.state.jobs).some(job => job.status === 'ready' &&
-      !job.deliveryRequest && job.conversation === conversation(request) && (!!job.replyMsgId || job.user === request.user));
+    return request.scope === 'group' && Object.values(this.state.jobs).some(job => unsentImage(job) &&
+      job.conversation === conversation(request) && (!!job.replyMsgId || job.user === request.user));
   }
   isPending(key: string): boolean {
     return ['queued', 'running'].includes(this.state.jobs[key]?.status);
   }
   /** A borrowed window must quote the creation message. Legacy jobs can only use their owner's window. */
-  async ready(request: QQRequest, key?: string): Promise<(QQImageDelivery & { request: QQRequest }) | undefined> {
+  async ready(request: QQRequest, key?: string, ownerOnly = false): Promise<(QQImageDelivery & { request: QQRequest }) | undefined> {
     await this.writes;
     if (request.scope !== 'group') return;
-    const job = Object.values(this.state.jobs).filter(item => (item.status === 'ready' || key && ['failed', 'unknown'].includes(item.status)) && !item.deliveryRequest &&
-      item.conversation === conversation(request) && (key ? item.key === key && item.user === request.user : !!item.replyMsgId || item.user === request.user))
+    const group = conversation(request);
+    const job = Object.values(this.state.jobs).filter(item => (unsentImage(item) ||
+      key && !item.deliveryRequest && ['failed', 'unknown'].includes(item.status)) && item.conversation === group &&
+      (!key || item.key === key) && (item.user === request.user || !key && !ownerOnly && !!item.replyMsgId))
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (!job) return;
     const deliveryRequest: QQRequest = key ? request : { scope: 'group', targetId: request.targetId, msgId: request.msgId,
       replyMsgId: job.replyMsgId || request.msgId,
+      replyWindowKey: request.key,
       createdAt: request.createdAt, user: job.user, key: qqDigest(JSON.stringify(['image-delivery', request.key, job.key])),
       text: '补发本群此前已生成的图片。' };
     const result = await this.pending(deliveryRequest, job.key);
     return result && (key || result.image) ? { ...result, request: deliveryRequest,
       text: result.image ? key ? '图片生成完成。' : '本群此前的图片已生成，补发在这里。' : result.text } : undefined;
   }
-  async delivered(request: QQRequest): Promise<void> {
-    const job = Object.values(this.state.jobs).find(item => item.status === 'delivering' && item.deliveryRequest === request.key &&
+  async releaseUnsent(request: QQRequest): Promise<void> {
+    const job = this.deliveryIntent(request);
+    if (!job?.image || job.deliveryRecovery) return;
+    await this.change(state => {
+      const current = state.jobs[job.key];
+      if (current.status !== 'delivering' || current.deliveryRequest !== request.key) return;
+      current.status = 'ready'; current.updatedAt = this.io.now(); delete current.deliveryRequest;
+    });
+  }
+  private deliveryIntent(request: QQRequest): Job | undefined {
+    return Object.values(this.state.jobs).find(item => item.status === 'delivering' && item.deliveryRequest === request.key &&
       item.user === request.user && item.conversation === conversation(request));
+  }
+  async delivered(request: QQRequest): Promise<void> {
+    const job = this.deliveryIntent(request);
     if (!job) return;
     await this.change(state => { state.jobs[job.key].status = 'delivered'; state.jobs[job.key].updatedAt = this.io.now(); });
   }

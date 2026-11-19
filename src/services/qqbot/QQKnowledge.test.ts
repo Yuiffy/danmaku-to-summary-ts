@@ -143,5 +143,5 @@ test('a multi-character drawing is not blocked by the unrelated recording room l
     userDailyLimit: 30, timeoutMs: 180000, characters: [] }, load, render);
   expect(await createQQAnswerer({ url: 'http://127.0.0.1:1/v1/chat/completions', apiKey: 'fake-key' },
     knowledge, transport as any, undefined, images)(question, signal())).toBe('图片生成完成。');
-  expect(render).toHaveBeenCalledTimes(1); expect(load).not.toHaveBeenCalled(); expect(transport).toHaveBeenCalledTimes(2);
+  expect(render).toHaveBeenCalledTimes(1); expect(load).not.toHaveBeenCalled(); expect(transport).toHaveBeenCalledTimes(1);
 });

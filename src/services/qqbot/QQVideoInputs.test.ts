@@ -21,6 +21,7 @@ test('video quote selection respects explicit quote identity, MIME, URL allowlis
   expect(qqVideoInput({msgType:103,refMsgIdx:'v',msgElements:[{msg_idx:'v',attachments:[video]}]})).toEqual({urls:[url]});
   expect(qqVideoInput({refMsgIdx:'image',msgElements:[{msg_idx:'other',attachments:[video]},
     {msg_idx:'image',attachments:[{content_type:'image/png',url}]}]})).toBeUndefined();
+  expect(qqVideoInput({refMsgIdx:'missing',msgElements:[{msg_idx:'other',attachments:[video]}]})).toBeUndefined();
   expect(qqVideoInput({attachments:[{content_type:'video/mp4',url:'https://evil.invalid/video'}]})).toEqual({urls:[],invalid:true});
   expect(qqVideoInput({attachments:Array(4).fill(video)})).toMatchObject({invalid:true});
   expect(qqVideoInput({attachments:[{content_type:'text/plain',url}]})).toBeUndefined();
@@ -44,6 +45,33 @@ test('downloads and probes a real MP4 without altering reference bytes',async()=
   expect(source[0].durationMs).toBe(2000);expect(await fs.readFile(source[0].file)).toEqual(bytes);
   expect(transport.mock.calls).toHaveLength(1);
 });
+
+test('trims a long reference and renders a reordered multi-cut MP4 with the original audio', async () => {
+  const original = path.join(root, 'long.mp4');
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'color=red:size=256x256:rate=30:duration=12',
+    '-f', 'lavfi', '-i', 'color=blue:size=256x256:rate=30:duration=12',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=24',
+    '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-map', '2:a',
+    '-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p', original], { windowsHide: true });
+  const bytes = await fs.readFile(original);
+  const transport = jest.fn(async () => new Response(bytes, { headers: { 'content-type': 'video/mp4' } }));
+  const inputs = new QQVideoInputs(root, '900000001', transport as any);
+  const [automatic] = await inputs.load(req(), signal());
+  expect(automatic).toMatchObject({ durationMs: 15000, cut: '0–15秒' });
+  const reference = { ...req(), text: '截取00:15到00:20作为参考，再生成岁己的视频' };
+  const [manual] = await inputs.load(reference, signal());
+  expect(manual).toMatchObject({ durationMs: 5000, cut: '15–20秒' });
+  const edit = await inputs.edit({ ...req(), text: '保留00:18-00:20和00:02-00:05，拼起来发我' }, signal());
+  expect(edit.video).toMatchObject({ durationMs: 5000, cut: '18–20秒、2–5秒' });
+  const audio = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries',
+    'stream=codec_name', '-of', 'csv=p=0', edit.video!.file], { windowsHide: true, encoding: 'utf8' });
+  expect(audio.trim()).toBe('aac');
+  const pixel = (position: string) => execFileSync('ffmpeg', ['-v', 'error', '-ss', position,
+    '-i', edit.video!.file, '-frames:v', '1', '-vf', 'scale=2:2', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'], { windowsHide: true });
+  expect(pixel('0.5')[2]).toBeGreaterThan(200);
+  expect(pixel('2.5')[0]).toBeGreaterThan(200);
+}, 20000);
 
 test('rejects redirect, size, MIME, invalid bytes, dimensions and total duration before queue admission',async()=>{
   const bytes=Buffer.from('0000ftypisom0000'), probe=jest.fn(async()=>({width:256,height:256,durationMs:8000}));

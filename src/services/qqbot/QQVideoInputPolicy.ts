@@ -8,7 +8,8 @@ export function qqVideoInput(message: QQImageEnvelope): QQVideoInput | undefined
   const isVideo = (item: { content_type?: string }) => typeof item?.content_type === 'string' && /^video\//iu.test(item.content_type.trim());
   const elements = Array.isArray(message.msgElements) ? message.msgElements : [];
   const selected = qqImageReferenceId(message.refMsgIdx) ? elements.find(item => item?.msg_idx === message.refMsgIdx) : undefined;
-  const element = selected || elements.find(item => Array.isArray(item?.attachments) && item.attachments.some(isVideo));
+  const element = qqImageReferenceId(message.refMsgIdx) ? selected :
+    elements.find(item => Array.isArray(item?.attachments) && item.attachments.some(isVideo));
   const quoted = element?.attachments;
   const attachments = Array.isArray(quoted) && quoted.some(isVideo) ? quoted : message.attachments;
   const videos = Array.isArray(attachments) ? attachments.filter(isVideo) : [];

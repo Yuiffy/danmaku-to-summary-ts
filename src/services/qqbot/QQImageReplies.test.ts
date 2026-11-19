@@ -55,7 +55,10 @@ async function fixture(overrides: Partial<QQConfig> = {}, materials?: { sources:
     acknowledge: (request, text) => sendQQProgress(request, text, state, { now: () => now, save, record,
       stopping: () => false, sleep: async ms => { now += ms; }, send: async text => progress(request, text), report: () => {} }),
     pendingImage: request => jobs.pending(request), enqueueImage: (request, command) => jobs.enqueue(request, command),
-    readImageTask: request => jobs.status(request), collectImage: request => jobs.collect(request),
+    readImageTask: (request, position) => position === undefined ? jobs.activeTasks(request) : jobs.status(request, position),
+    collectImage: (request, position) => jobs.collect(request, position),
+    imagePickup: { count: request => jobs.countUnsent(request), next: request => jobs.ready(request, undefined, true),
+      release: request => jobs.releaseUnsent(request) },
     hasReadyImage: request => jobs.hasReady(request), imagePending: key => jobs.isPending(key), readyImage: (request, key) => jobs.ready(request, key) });
   runtime.worker = worker;
   cleanup = async () => { worker.stop(); await worker.idle(); await jobs.close(); };
@@ -82,8 +85,8 @@ async function fixture(overrides: Partial<QQConfig> = {}, materials?: { sources:
     const finished = new Promise<void>(resolve => { completed.set(request.key, resolve); });
     failures.get(request.key)!(error); await finished; await worker.idle();
   };
-  const taskAnswer = (action: 'read' | 'collect') => answer.mockImplementationOnce(async (_request, _signal, _execute, tasks) =>
-    ({ text: (await tasks![action]()).message, tokens: 100 }));
+  const taskAnswer = (action: 'read' | 'collect', position?: number) => answer.mockImplementationOnce(async (_request, _signal, _execute, tasks) =>
+    ({ text: (await tasks![action](position)).message, tokens: 100 }));
   return { worker, jobs, state, send, answer, taskAnswer, save, record, generate, progress, message, submit, complete, journal,
     fail, timers, now: () => now, advance: (ms: number) => {
       now += ms;
@@ -164,11 +167,43 @@ test.each(['queued', 'ready', 'failed'] as const)('agent collection reports the 
 test('agent status query reads a completed task without delivering it or borrowing the window for another image', async () => {
   const f = await fixture(); const original = await f.submit('original');
   f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(original);
-  const before = await f.journal(); f.taskAnswer('read');
+  const before = await f.journal(); f.taskAnswer('read', 1);
   f.worker.receive(f.message('query', '刚才那单到哪一步了？')); await f.worker.idle();
   expect(f.send).toHaveBeenCalledTimes(1); expect(f.send.mock.calls[0][1]).toContain('可以领取');
   expect(f.send.mock.calls[0][2]).toBeUndefined(); expect(await f.journal()).toEqual(before);
   expect(f.generate).toHaveBeenCalledTimes(1); expect(f.state.images).toBe(1);
+});
+
+test.each(['ready', 'failed'] as const)('an explicit older pickup reports the %s task even after a newer image was delivered', async status => {
+  const f = await fixture(); const previous = await f.submit('previous');
+  f.advance(1000);
+  const latest = await f.submit('latest'); await f.complete(latest);
+  f.advance(QQ_LIMITS.maxAgeMs + 1);
+  if (status === 'ready') await f.complete(previous);
+  else await f.fail(previous, qqFailure('image_http', 'image_moderation', { httpStatus: 400 }));
+  f.send.mockClear();
+  const before = await f.journal();
+  expect(before.jobs[latest.key].status).toBe('delivered');
+
+  f.taskAnswer('read', 2);
+  f.worker.receive(f.message('query-previous', '再上一张到哪了？')); await f.worker.idle();
+  expect(f.send.mock.calls[0][1]).toContain(status === 'ready' ? '可以领取' : '过不了审核');
+  expect(f.send.mock.calls[0][2]).toBeUndefined();
+  expect(await f.journal()).toEqual(before);
+
+  f.taskAnswer('collect', 2);
+  f.worker.receive(f.message('pickup-previous', '领取再上一张')); await f.worker.idle();
+  expect(f.send).toHaveBeenCalledTimes(2);
+  if (status === 'ready') expect(f.send.mock.calls[1][2]?.sha256).toBe(qqDigest(Buffer.from(`image for ${previous.key}`)));
+  else {
+    expect(f.send.mock.calls[1][1]).toContain('过不了审核');
+    expect(f.send.mock.calls[1][2]).toBeUndefined();
+  }
+  const after = await f.journal();
+  expect(after.jobs[previous.key].status).toBe('delivered');
+  expect(after.jobs[latest.key]).toEqual(before.jobs[latest.key]);
+  expect(await f.jobs.collect(previous, 3)).toEqual({ text: expect.stringContaining('没找到') });
+  expect(f.generate).toHaveBeenCalledTimes(2); expect(f.state.images).toBe(2);
 });
 
 test('a claimed image still arrives when the model fails after calling collect', async () => {
@@ -186,7 +221,7 @@ test('collection is single-use per message and prevents a later generation call 
   const f = await fixture(); const original = await f.submit('original');
   f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(original);
   f.answer.mockImplementationOnce(async (_request, _signal, execute, tasks) => {
-    expect((await tasks!.collect()).status).toBe('collected');
+    expect((await tasks!.collect()).status).toBe('ready');
     expect((await tasks!.collect()).message).toContain('不能重复');
     expect((await execute!({ mode: 'create', instruction: '生成星空图片', characters: [] })).status).toBe('blocked');
     return { text: '取到了。', tokens: 100 };
@@ -384,19 +419,90 @@ test('unknown supplemental sending stops the batch and never automatically resen
   expect(f.send).toHaveBeenCalledTimes(1);
 });
 
-test.each(['收图', '图来', '图片呢', '把图发我'])('explicit pickup delivers the latest result without appending another old group image: %s', async content => {
+test.each(['收图', '图来', '图片呢', '把图发我'])('generic pickup delivers all available images in creation order: %s', async content => {
   const f = await fixture(); const old = await f.submit('old');
   f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(old);
   const latest = await f.submit('latest');
   f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(latest); f.send.mockClear();
   f.taskAnswer('collect');
-  const event = f.message('pickup', content);
-  f.worker.receive(event); await f.worker.idle();
-  expect(f.send).toHaveBeenCalledTimes(1);
-  expect(f.send.mock.calls[0][2]?.sha256).toBe(qqDigest(Buffer.from(`image for ${latest.key}`)));
+  f.worker.receive(f.message('pickup', content)); await f.worker.idle();
+  expect(f.send.mock.calls.map(([request, , image]) => [request.msgId, request.replyMsgId, image?.sha256]))
+    .toEqual([old, latest].map(request => ['pickup', request.msgId, qqDigest(Buffer.from(`image for ${request.key}`))]));
+  expect(f.send.mock.calls[0][0].key).not.toBe(f.send.mock.calls[1][0].key);
   const journal = await f.journal();
-  expect(journal.jobs[latest.key].status).toBe('delivered'); expect(journal.jobs[old.key].status).toBe('ready');
+  expect(journal.jobs[old.key].status).toBe('delivered'); expect(journal.jobs[latest.key].status).toBe('delivered');
+  f.taskAnswer('collect');
+  f.worker.receive(f.message('pickup-empty', content)); await f.worker.idle();
+  expect(f.send.mock.calls[2][1]).toContain('没有已生成且尚未发送的图');
+  expect(f.send.mock.calls[2][2]).toBeUndefined();
   expect(f.generate).toHaveBeenCalledTimes(2);
+});
+
+test.each(['running', 'delivered'] as const)('a pickup can claim an unsent result behind a newer %s job', async status => {
+  const f = await fixture();
+  const old = await f.submit('old');
+  f.advance(QQ_LIMITS.maxAgeMs + 1);
+  await f.complete(old);
+  const latest = await f.submit('latest');
+  if (status === 'delivered') {
+    // Suppress borrowing a spare reply so that the older job still needs explicit pickup.
+    f.state.receipts[latest.key].replies = 3;
+    await f.complete(latest);
+  }
+  f.send.mockClear();
+  f.taskAnswer('collect');
+  f.worker.receive(f.message('pickup', '收图')); await f.worker.idle();
+  expect(f.send.mock.calls.map(([, , image]) => image?.sha256)).toEqual([qqDigest(Buffer.from(`image for ${old.key}`))]);
+  expect((await f.journal()).jobs[latest.key].status).toBe(status);
+  expect(f.generate).toHaveBeenCalledTimes(2);
+});
+
+test('batch pickup shares the five-reply allowance and leaves overflow for the next mention', async () => {
+  const f = await fixture();
+  const requests: QQRequest[] = [];
+  for (let index = 0; index < 6; index++) {
+    const original = await f.submit(`original-${index}`); requests.push(original);
+    f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(original);
+  }
+  f.send.mockClear();
+  const event = f.message('batch', '领图');
+  f.taskAnswer('collect');
+  f.worker.receive(event); await f.worker.idle();
+  expect(f.send).toHaveBeenCalledTimes(5);
+  expect(f.state.receipts[qqRequest(event, f.now())!.key].replies).toBe(5);
+  expect(f.send.mock.calls[4][1]).toContain('还有 1 张待领');
+  expect((await f.journal()).jobs[requests[5].key].status).toBe('ready');
+  f.worker.receive(f.message('empty-pickup', '')); await f.worker.idle();
+  expect(f.send.mock.calls[5][2]?.sha256).toBe(qqDigest(Buffer.from(`image for ${requests[5].key}`)));
+});
+
+test('an uncertain batch send stops before claiming any remaining images', async () => {
+  const f = await fixture();
+  const first = await f.submit('first');
+  const second = await f.submit('second');
+  f.advance(QQ_LIMITS.maxAgeMs + 1); await f.complete(first); await f.complete(second);
+  f.send.mockClear().mockRejectedValueOnce(new Error('unknown platform receipt'));
+  f.taskAnswer('collect');
+  f.worker.receive(f.message('batch', '领图')); await f.worker.idle();
+  expect(f.send).toHaveBeenCalledTimes(1);
+  const journal = await f.journal();
+  expect(journal.jobs[first.key].status).toBe('delivering');
+  expect(journal.jobs[second.key].status).toBe('ready');
+});
+
+test('ongoing task query sends the full server list without claiming any images', async () => {
+  const f = await fixture();
+  await f.submit('first'); await f.submit('second'); await f.submit('third');
+  f.send.mockClear();
+  const before = await f.journal();
+  f.answer.mockImplementationOnce(async (_request, _signal, _execute, tasks) => {
+    await tasks!.read();
+    return { text: '有些图在生成。', tokens: 100 };
+  });
+  f.worker.receive(f.message('progress-query', '还有哪些在生成？')); await f.worker.idle();
+  expect(f.send.mock.calls[0][1]).toMatch(/2 张生成中、1 张排队、0 张待领取。\n倒数第1张 .*排队中.*\n倒数第2张 .*生成中.*\n倒数第3张 .*生成中/u);
+  expect(f.send.mock.calls[0][2]).toBeUndefined();
+  expect(await f.journal()).toEqual(before);
 });
 
 test('mention-only mode keeps ordinary chatter silent while another member mention can lend spare replies', async () => {

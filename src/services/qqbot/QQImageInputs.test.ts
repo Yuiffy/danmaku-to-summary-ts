@@ -207,7 +207,7 @@ test('downloads QQ quote or current-message attachments once without forwarding 
   }
   expect(download).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(download.mock.calls)).not.toContain(settings.apiKey);
-  expect((download.mock.calls[0] as unknown as [string, any])[1]).toMatchObject({ redirect: 'error', size: 10 * 1024 * 1024 });
+  expect((download.mock.calls[0] as unknown as [string, any])[1]).toMatchObject({ redirect: 'error', size: 32 * 1024 * 1024 });
 });
 
 test('warning-prone JPEG bytes retry through the bounded fallback decoder before provider IO', async () => {
@@ -234,7 +234,7 @@ test.each(['http://127.0.0.1/private', 'file:///secret.png', 'https://gchat.qpic
 test.each(['missing', 'tampered', 'oversized', 'invalid-image', 'redirect', 'aborted'])('source failure %s never falls back to new drawing or paid IO', async failure => {
   const download = jest.fn(async () => failure === 'redirect' ? new Response('', { status: 302, headers: { location: 'http://127.0.0.1/private' } }) :
     new Response(failure === 'invalid-image' ? 'invalid' : png, { status: 200, headers: { 'content-type': 'image/png',
-      ...(failure === 'oversized' ? { 'content-length': String(11 * 1024 * 1024) } : {}) } }));
+      ...(failure === 'oversized' ? { 'content-length': String(33 * 1024 * 1024) } : {}) } }));
   if (failure === 'tampered') { const file = await remember(); await fs.writeFile(file, Buffer.from('tampered')); }
   const request = qqRequest({ ...inbound, ...(['oversized', 'invalid-image', 'redirect'].includes(failure) ? {
     attachments: [{ content_type: 'image/png', url: 'https://gchat.qpic.cn/image' }] } : {}) }, at)!;
@@ -265,7 +265,7 @@ test.each([
       status: failure === 'http' ? 403 : 200,
       headers: { 'content-type': failure === 'http' ? `text/plain; ${privateValue}` :
         failure === 'content-type' ? `application/octet-stream; ${privateValue}` : 'image/png',
-      ...(failure === 'size' ? { 'content-length': String(11 * 1024 * 1024) } : {}) }
+      ...(failure === 'size' ? { 'content-length': String(33 * 1024 * 1024) } : {}) }
     });
     if (failure === 'body') response.buffer = async () => { throw original; };
     return response;

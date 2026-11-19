@@ -158,6 +158,20 @@ test('a reply window expiring during throttle wait suppresses the notice instead
   expect(send).not.toHaveBeenCalled(); expect(io.save).not.toHaveBeenCalled();
 });
 
+test('derived image replies charge rejection notices to the original passive window', async () => {
+  const state = newQQState('900000001'), send = jest.fn(async () => ({ id: 'notice-receipt' }));
+  const derived = { ...request, key: 'image-reply', replyWindowKey: request.key };
+  state.receipts[request.key] = { at: request.createdAt, status: 'generating', replies: 4 };
+  state.receipts[derived.key] = { at: request.createdAt, status: 'sending' };
+  const io = { now: () => request.createdAt, sleep: async () => {}, save: jest.fn(async () => {}), stopping: () => false };
+  const bot = { send, uploadMedia: jest.fn() } as any;
+  await expect(sendQQRejectionNotice(bot, derived, 'QQ拒绝发图', state, io)).resolves.toBe('sent');
+  await expect(sendQQRejectionNotice(bot, derived, 'QQ拒绝发图', state, io)).resolves.toBe('expired');
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(state.receipts[request.key].replies).toBe(5);
+  expect(state.receipts[derived.key].replies).toBeUndefined();
+});
+
 test('a notice without a confirmed ID is not reported as sent or retried', async () => {
   const state = newQQState('900000001'), send = jest.fn(async () => ({}));
   await expect(sendQQRejectionNotice({ send, uploadMedia: jest.fn() } as any, request, 'QQ拒绝发图', state,

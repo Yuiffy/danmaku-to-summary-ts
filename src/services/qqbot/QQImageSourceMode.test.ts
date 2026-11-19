@@ -27,6 +27,7 @@ afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 test.each([
   '模仿这张参考图的风格，做一张岁己的，让岁己的某个部位也出框',
   '帮我生成人物的服装设计稿，优化细节',
+  '画“岁己”',
   '生成cos图，要求人物唯美，符合3次元人物特征',
   '让栞栞咬岁己的人类耳朵，不要生成猫耳'
 ])('source-backed creation reaches the provider with the original bytes: %s', async text => {

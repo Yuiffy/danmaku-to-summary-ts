@@ -35,7 +35,7 @@ function chatMessages(request: ModelRequest): ChatMessage[] {
 export function createQQAgentModel(settings: ReturnType<typeof questionProviderSettings>, signal: AbortSignal,
   transport = fetch, observe?: (delta: Pick<Usage, 'requests' | 'inputTokens' | 'outputTokens'>) => void,
   recordCall?: (call: QQModelCall) => void | Promise<void>, allowEvidenceBytes?: (bytes: number) => void,
-  imagePreviews?: () => readonly Buffer[], sharedBudget?: QQModelBudget): Model {
+  imagePreviews?: () => readonly Buffer[], sharedBudget?: QQModelBudget, terminalToolNames: readonly string[] = []): Model {
   const agent = settings.proxy ? new HttpsProxyAgent(settings.proxy) : undefined;
   const budget = sharedBudget || { reserved: 0, turns: 0 };
   let previewSources: readonly Buffer[] | undefined, planningPreviews: readonly Buffer[] = [];
@@ -82,7 +82,14 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
           messages: [...messages, { role: 'system', content: '本轮请据已有工具资料完成最终JSON；资料不足就说明具体缺口，不能编造或继续调用工具。' }] };
         const answerCharge = chargedBytes(answerBody) + body.max_tokens + 256;
         if (tools.length && (budget.turns >= QQ_LIMITS.agentTurns - 1 || budget.reserved + charge + answerCharge + 2048 > QQ_LIMITS.reservation)) {
-          body = answerBody;
+          // A terminal tool returns a trusted receipt without another model turn. Keep submission available
+          // when exploratory tools plus a further answer no longer fit; never force a paid operation.
+          const usedTools = Array.isArray(request.input) ? request.input.filter(item => item.type === 'function_call').length : 0;
+          const terminalTools = usedTools < QQ_LIMITS.agentTurns - 1 ? tools.filter(tool => terminalToolNames.includes(tool.function.name)) : [];
+          const completionBody = { ...body, tools: terminalTools, tool_choice: 'auto', messages: [...messages,
+            { role: 'system', content: '本轮停止补查。若当前用户已明确授权生图且已有资料足够，请调用generate_image提交完整要求；工具回执将直接返回。仅看图、问用法、否定生图或要求不明确时直接回答或澄清，不得生成。不能仅因尚未调用工具就声称工具不可用。' }] };
+          body = terminalTools.length && budget.reserved + chargedBytes(completionBody) + body.max_tokens + 256 <= QQ_LIMITS.reservation
+            ? completionBody : answerBody;
           charge = chargedBytes(body) + body.max_tokens + 256;
         }
         call.requestBytes = Buffer.byteLength(JSON.stringify(body), 'utf8'); call.charge = charge;
@@ -115,19 +122,22 @@ export function createQQAgentModel(settings: ReturnType<typeof questionProviderS
         const calls = message.tool_calls;
         const output: ModelResponse['output'] = [];
         if (calls !== undefined) {
-          if (!Array.isArray(calls) || calls.length !== 1 || budget.turns >= QQ_LIMITS.agentTurns || body.tool_choice === 'none') throw qqFailure(stage, 'invalid_tool');
+          if (!Array.isArray(calls) || calls.length !== 1 || body.tool_choice === 'none') throw qqFailure(stage, 'invalid_tool');
           const call = calls[0];
           if (call.type !== 'function' || typeof call.id !== 'string' || !/^[\w-]{1,100}$/u.test(call.id) ||
-              !tools.some(tool => tool.function.name === call.function?.name) ||
+              !body.tools?.some(tool => tool.function.name === call.function?.name) ||
+              budget.turns >= QQ_LIMITS.agentTurns && !terminalToolNames.includes(call.function?.name) ||
               typeof call.function.arguments !== 'string' || call.function.arguments.length > 2000) throw qqFailure(stage, 'invalid_tool');
-          const finalMessages = [...messages, { role: 'assistant', content: null, tool_calls: [{ id: call.id, type: 'function',
-            function: { name: call.function.name, arguments: call.function.arguments } }] },
-            { role: 'tool', tool_call_id: call.id, content: '' }, answerBody.messages.at(-1)!];
-          const finalCharge = chargedBytes({ ...answerBody, messages: finalMessages }) + body.max_tokens + 256;
-          // Tool JSON becomes a JSON string in the next HTTP body: quotes/backslashes can double its size.
-          const evidenceBytes = Math.min(6000, Math.floor((QQ_LIMITS.reservation - budget.reserved - finalCharge - 128) / 2));
-          if (evidenceBytes < 256) throw qqFailure('model_budget', 'budget_exceeded');
-          allowEvidenceBytes?.(evidenceBytes);
+          if (!terminalToolNames.includes(call.function.name)) {
+            const finalMessages = [...messages, { role: 'assistant', content: null, tool_calls: [{ id: call.id, type: 'function',
+              function: { name: call.function.name, arguments: call.function.arguments } }] },
+              { role: 'tool', tool_call_id: call.id, content: '' }, answerBody.messages.at(-1)!];
+            const finalCharge = chargedBytes({ ...answerBody, messages: finalMessages }) + body.max_tokens + 256;
+            // Tool JSON becomes a JSON string in the next HTTP body: quotes/backslashes can double its size.
+            const evidenceBytes = Math.min(6000, Math.floor((QQ_LIMITS.reservation - budget.reserved - finalCharge - 128) / 2));
+            if (evidenceBytes < 256) throw qqFailure('model_budget', 'budget_exceeded');
+            allowEvidenceBytes?.(evidenceBytes);
+          }
           output.push({ type: 'function_call', callId: call.id, name: call.function.name, arguments: call.function.arguments });
         } else if (typeof message.content === 'string' && message.content.trim()) output.push({ type: 'message', role: 'assistant',
           status: 'completed', content: [{ type: 'output_text', text: message.content }] });

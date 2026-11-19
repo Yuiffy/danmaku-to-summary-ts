@@ -7,6 +7,7 @@ import { QQVideoConfig, QQVideoCommand, QQVideoResult, qqVideoPlan, qqVideoDirec
 import { unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
 import { QQVideoInputError, QQVideoSource } from './QQVideoInputs';
 import { QQMediaAccess, qqMediaOperator, QQ_MEDIA_OPERATOR_LIMITS } from './QQMediaAccess';
+import { QQ_VIDEO_CUT_HELP, QQ_VIDEO_REFERENCE_MAX_MS, qqVideoCutRequested } from './QQVideoCutPolicy';
 
 export interface QQVideoDraft { prompt: string; creativeText: string; materials: string[]; sourceCount: number; videoSourceCount?: number; command: QQVideoCommand }
 export interface QQVideoQueueReply { status: string; taskId?: string; failureCode?: string; file?: string; requiredCredits?: number; draft?: QQVideoDraft; images?: string[]; videos?: QQVideoSource[]; limitReason?: string; retryAt?: number }
@@ -75,7 +76,7 @@ export class QQVideoQueue {
     const removeVoice = qqVideoEditRequested(request.text) && /(?:不要|不用|取消|去掉|移除)(?:人物)?(?:的)?(?:声线|音色|声音参考|配音参考)/u.test(request.text);
     if (removeVoice) command = { ...command, voices: [] };
     let plan: ReturnType<typeof qqVideoPlan>;
-    try { plan = qqVideoPlan(request.text, command, this.characters); }
+    try { plan = qqVideoPlan(request.text, command, this.characters, !!request.videoInput); }
     catch (error) { return { status: 'blocked', message: (error as Error).message }; }
     if (unsafeComment(command.instruction)) return { status: 'blocked', message: '视频说明未通过检查，请按原始创作要求调整。' };
     const voices = [...new Set(command.voices)].map(name => this.config.voices.find(voice => voice.name === name));
@@ -89,6 +90,7 @@ export class QQVideoQueue {
     if (voiceRequested && !voices.length) voices.push(...namedVoices);
     if (voices.some(voice => !namedVoices.includes(voice!))) return { status: 'blocked', message: '所选声线与本次指定的人物不一致，或该声线尚未收录，请重新选择。' };
     if (voiceRequested && !voices.length) return { status: 'blocked', message: '请先选择已收录的声线；没有对应声音素材时无法使用该声线。' };
+    if (!request.videoInput && qqVideoCutRequested(request.text)) return { status: 'blocked', message: QQ_VIDEO_CUT_HELP };
     const direct = qqVideoDirectRequested(request.text);
     if (direct && !qqCanvasAccount(await this.io.account(signal))) return { status: 'blocked', message: QQ_VIDEO_AUTH_REPLY };
     let videos: QQVideoSource[] = previous?.videos || [];
@@ -112,7 +114,7 @@ export class QQVideoQueue {
     }
     const inherited = !request.imageInput ? previous?.images || [] : [];
     if (source.length + inherited.length + plan.references.length > 9) return { status: 'blocked', message: '视频最多使用9张参考图，请减少附图或角色素材。' };
-    if (videos.length > 3 || videos.reduce((sum, item) => sum + item.durationMs, 0) > 15400) return { status: 'blocked', message: '参考视频最多3段，总时长最多15.4秒，本次未提交生成。' };
+    if (videos.length > 3 || videos.reduce((sum, item) => sum + item.durationMs, 0) > QQ_VIDEO_REFERENCE_MAX_MS) return { status: 'blocked', message: '参考视频最多3段，总时长最多15.4秒，本次未提交生成。' };
     if (source.length + inherited.length + plan.references.length + videos.length + voices.length > 12) return { status: 'blocked', message: '图片、视频和声音参考合计最多12份，请减少素材。' };
     if (voices.length && !source.length && !inherited.length && !plan.references.length && !videos.length) return { status: 'blocked', message: '使用声线参考时还需附图、附视频或指定角色素材。' };
     const trustedRoot = await fs.realpath(path.join(this.root, 'public/reference_images'));
@@ -135,13 +137,15 @@ export class QQVideoQueue {
     const creativeText = previous?.draft ? `${previous.draft.creativeText}\n本次修改优先：${request.text}` : request.text;
     const prompt = [creativeText, command.instruction,
       ...plan.references.map((character, index) => `@Image ${sourceCount + index + 1} 是${character.name}的外观参考：${character.description}`),
-      ...videos.map((_, index) => `@Video ${index + 1} 是用户提供的参考视频，按照本次要求使用其画面、动作和镜头信息；指定人物外观以角色参考为准。`),
+      ...videos.map((video, index) => `@Video ${index + 1} 是用户提供的参考视频，按照本次要求使用其画面、动作和镜头信息；指定人物外观以角色参考为准。` +
+        (video.cut ? '原片截取已完成，请按此参考片段的完整内容创作。' : '')),
       ...voices.map((voice, index) => `@Audio ${index + 1} 仅参考${voice!.name}的声线，不复制样本台词，台词以本次用户要求为准。`)].join('\n');
     if (prompt.length > 3000) return { status: 'blocked', message: '完整视频prompt过长，请精简要求后再提交。' };
     const draft: QQVideoDraft = { prompt, creativeText, sourceCount, videoSourceCount: videos.length,
       materials: [...Array.from({ length: sourceCount }, (_, index) => `图片${index + 1}：用户附图${index + 1}`),
         ...plan.references.map((character, index) => `图片${sourceCount + index + 1}：${character.name}`),
-        ...videos.map((video, index) => `视频${index + 1}：用户参考视频（${video.durationMs / 1000}秒）`),
+        ...videos.map((video, index) => (!request.videoInput && previous?.draft?.materials.find(material => material.startsWith(`视频${index + 1}：`))) ||
+          `视频${index + 1}：用户参考视频（${video.durationMs / 1000}秒${video.cut ? `，取原片${video.cut}` : ''}）`),
         ...voices.map((voice, index) => `音频${index + 1}：${voice!.name}声线`)],
       command: { ...command, characters: plan.references.map(character => character.name), voices: voices.map(voice => voice!.name),
         model: plan.model, ratio: plan.ratio, duration: plan.duration } };

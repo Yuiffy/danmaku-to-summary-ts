@@ -27,7 +27,7 @@ export function createQQVideoTools(request: QQRequest, config: QQVideoConfig, qu
     'model仅seedance2.0fast_vip或seedance2.0mini；用户没指定时model、ratio、duration传null，默认Fast VIP、9:16、15秒，固定720P。' +
     '询问怎么生视频、怎么设时长或模型、举例、否定生成时只介绍用法，不能入队。领取视频或问进度用collect_video；它只读取该用户在当前群的任务，不会再次生成。' +
     '默认generate_video只保存待确认草稿并返回素材名称、完整prompt和设置，不运行生成。修改视频前先read_video_draft读取本人本群草稿，保留未修改要求，重新整理完整instruction再generate_video。用户说“确认生成视频”或单独“直接生成视频”时只用approve_video，不能新建视频；含创作内容的“直接生成”请求才可generate_video直接入队。' +
-    '当前附带或引用的视频会作为视频参考完整传入队列，用于按要求参考原片动作、镜头或情节；不能把视频当成图片或让用户改发图片。视频内容不会被图片工具读取，不臆测未观看的原片细节。参考视频最多3段、每段50MB、单段2—15.4秒且总时长不超过15.4秒；超限会明确提示，不自动裁剪。' +
+    '当前附带或引用的视频用于参考原片动作、镜头或情节。视频内容不会被图片工具读取，不臆测未观看的原片细节。参考视频最多3段，源文件每段50MB，送生成的单段2—15.4秒且总长最多15.4秒。单段长视频未指定切点时服务端取前15秒；有切点时按用户原文裁剪并展示区间。duration只填生成成片时长，ratio只填生成成片比例；参考视频的切点不填入这些参数。' +
     '视频积分由服务端按当前报价自动处理并按用户统计，无需询问用户积分确认。confirm_video只兼容旧确认消息，不主动要求用户发送。pending仅表示排队，不表示完成；草稿message由服务端完整发送，你最终简短告知检查草稿即可，不能省略或改写真实prompt。不臆测积分、不暴露路径或身份标识。每条消息最多一次生成入队尝试。', tools: [
     { name: 'read_video_sources', description: '确认当前消息附带或引用的视频素材数量和绑定状态。只读取服务端元信息，不下载、不付费、不观看画面；正式提交时校验格式、时长与大小。',
       parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
