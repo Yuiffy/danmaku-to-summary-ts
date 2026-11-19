@@ -1,4 +1,7 @@
 /** Only authenticated SDK attachment fields supply image URLs; message text is never a source. */
+export const QQ_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+export const QQ_IMAGE_NORMALIZED_BYTES = 10 * 1024 * 1024;
+export const QQ_IMAGE_TOTAL_BYTES = 64 * 1024 * 1024;
 export interface QQImageAttachment { content_type: string; url: string }
 export interface QQImageEnvelope {
   attachments?: QQImageAttachment[];

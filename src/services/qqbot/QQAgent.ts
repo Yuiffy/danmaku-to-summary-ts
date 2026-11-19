@@ -10,7 +10,7 @@ import { boundedQQEvidence, collectQQCitations } from './QQAgentEvidence';
 import { QQAgentTrace } from '../../core/admin/qqRecords';
 import { QQDiagnosticError, qqDiagnostic, qqFailure } from './QQDiagnostics';
 import { QQImageToolSession } from './QQImageTools';
-import { qqImageRequested } from './QQImagePolicy';
+import { qqGroupImageRequested } from './QQImagePolicy';
 import { organizeQQImageIntent } from './QQImageIntent';
 import { QQModelBudget } from './QQAgentModel';
 import type { QQChatReader } from './QQChatArchive';
@@ -41,7 +41,7 @@ export function createQQAnswerer(settings: ReturnType<typeof questionProviderSet
       session = knowledge?.(request, signal);
       const citations = new Set<string>(), operations = new Set<string>();
       let evidenceBytes = 6000;
-      const imageRequest = !!images && !qqVideoMentioned(request.text) && qqImageRequested(request.text, request.imageInput);
+      const imageRequest = !!images && !qqVideoMentioned(request.text) && qqGroupImageRequested(request.text, request.imageInput);
       const budget: QQModelBudget = { reserved: 0, turns: 0 };
       let imageIntent: Awaited<ReturnType<typeof organizeQQImageIntent>> | undefined;
       const recordModelCall = async (call: NonNullable<QQAgentTrace['calls']>[number]) => {
@@ -84,19 +84,25 @@ export function createQQAnswerer(settings: ReturnType<typeof questionProviderSet
       const localKnowledgeTool = knowledgeBase ? { name: 'search_local_knowledge', description: '搜索本地维护的 QQ 机器人配置、使用说明和已确认规则。返回结果可用于引用；没有命中时不要编造。',
         parameters: { type: 'object' as const, additionalProperties: false, properties: { query: { type: 'string' as const, minLength: 1, maxLength: 300 }, limit: { type: 'integer' as const, minimum: 1, maximum: 16 } }, required: ['query', 'limit'] as string[] },
         execute: async (args: any) => knowledgeBase.search(String(args.query), Number(args.limit)).map(hit => ({ evidenceId: hit.evidenceId, title: hit.title, text: hit.text, source: hit.source, updatedAt: hit.updatedAt })) } : undefined;
+      let imageReceipt: string | undefined;
+      const terminalTools = images?.tools.some(definition => definition.name === 'generate_image') ? ['generate_image'] : [];
       const agent = new Agent({ name: '鹿饼问答', instructions: system, outputType,
+        toolUseBehavior: () => imageReceipt === undefined ? { isFinalOutput: false, isInterrupted: undefined } : {
+          isFinalOutput: true, isInterrupted: undefined,
+          finalOutput: JSON.stringify({ answer: imageReceipt, basis: 'general', evidenceIds: [] }) },
         model: createQQAgentModel(settings, signal, transport, usage => {
           trace.modelCalls += usage.requests; trace.inputTokens += usage.inputTokens; trace.outputTokens += usage.outputTokens;
         }, async call => {
           if (!trace.calls!.includes(call)) trace.calls!.push(call);
           await persistTrace();
-        }, bytes => { evidenceBytes = bytes; }, images?.previews, budget), modelSettings: { parallelToolCalls: false },
+        }, bytes => { evidenceBytes = bytes; }, images?.previews, budget, terminalTools), modelSettings: { parallelToolCalls: false },
         tools: [...session?.tools || [], ...(chatTool ? [chatTool] : []), ...(localKnowledgeTool ? [localKnowledgeTool] : []), ...images?.tools || []].map(definition => tool({ name: definition.name, description: definition.description,
           parameters: definition.parameters as any, strict: true,
           execute: async args => {
             signal.throwIfAborted();
             const started = Date.now();
             const step: QQAgentTrace['tools'][number] = { name: definition.name, status: 'failed', elapsedMs: 0 };
+            let receipt: string | undefined;
             trace.tools.push(step);
             try {
               const key = JSON.stringify([definition.name, args]);
@@ -105,7 +111,13 @@ export function createQQAnswerer(settings: ReturnType<typeof questionProviderSet
                 return { error: '重复操作或已达到工具上限，请据现有资料回答或说明缺口。' };
               }
               operations.add(key);
-              const result = boundedQQEvidence(await definition.execute(args), evidenceBytes);
+              const raw = await definition.execute(args);
+              if (terminalTools.includes(definition.name) && raw && typeof raw === 'object' &&
+                  ['pending', 'generated', 'failed', 'blocked'].includes((raw as any).status) &&
+                  typeof (raw as any).message === 'string' && (raw as any).message.trim()) {
+                receipt = Array.from((raw as { message: string }).message).slice(0, LIMITS.outputChars).join('');
+              }
+              const result = boundedQQEvidence(raw, evidenceBytes);
               signal.throwIfAborted();
               collectQQCitations(result.data, citations);
               step.status = 'ok'; return { untrustedEvidence: result.data, truncated: result.truncated };
@@ -117,7 +129,10 @@ export function createQQAnswerer(settings: ReturnType<typeof questionProviderSet
               }
               signal.throwIfAborted(); return { error: '工具失败；尚未取得可靠结果，可修正参数、缩小范围或改用其他可用工具；图片不得重复付费尝试。' };
             }
-            finally { step.elapsedMs = Math.max(0, Date.now() - started); await persistTrace(); }
+            finally {
+              step.elapsedMs = Math.max(0, Date.now() - started); await persistTrace();
+              if (step.status === 'ok' && receipt !== undefined) imageReceipt = receipt;
+            }
           }, errorFunction: (_context, error) => {
             if (error instanceof QQDiagnosticError && error.diagnostic.code === 'record_failed') throw error;
             if (trace.failures!.length < 6) trace.failures!.push(qqDiagnostic(error, 'tool', 'invalid_tool'));

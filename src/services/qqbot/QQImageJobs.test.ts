@@ -214,6 +214,8 @@ test('status reads and collection remain bound to the authenticated owner and gr
     for (const other of [f.request('other-owner', 'member-b'), f.request('other-group', 'member-a', 'group-b'),
       { ...f.request('private'), scope: 'c2c' as const }]) {
       expect(await f.jobs.status(other)).toMatchObject({ status: 'none' });
+      expect((await f.jobs.activeTasks(other)).status).toBe('none');
+      expect(f.jobs.countUnsent(other)).toBe(0);
       expect(await f.jobs.collect(other)).toBeUndefined();
     }
     expect(await fs.readFile(f.journal, 'utf8')).toBe(before);
@@ -225,7 +227,7 @@ test('status reads and collection remain bound to the authenticated owner and gr
   } finally { await f.jobs.close(); }
 });
 
-test.each(['收图', '图来', '能交货了吗', '刚才那份给一下'])('agent collection can resend only the latest delivered image once, including after restart: %s', async content => {
+test('explicit resend of a delivered image is limited to one attempt, including after restart', async () => {
   const f = fixture(); await f.jobs.open();
   const latest = f.request('latest'); await f.jobs.enqueue(latest, command);
   f.finish(await f.artifact(latest)); await f.jobs.idle();
@@ -233,10 +235,10 @@ test.each(['收图', '图来', '能交货了吗', '刚才那份给一下'])('age
   const recovered = new QQImageJobs(root, appId, 900000, f.io); await recovered.open();
   try {
     expect(await recovered.pending(f.request('chat', 'member-a', 'group-a', '你好'))).toBeUndefined();
-    const pickup = f.request('pickup', 'member-a', 'group-a', content);
-    expect((await recovered.collect(pickup))?.image?.sha256).toBe(qqDigest(Buffer.from('test image bytes')));
+    const pickup = f.request('pickup', 'member-a', 'group-a', '补发刚才那张');
+    expect((await recovered.collect(pickup, 1))?.image?.sha256).toBe(qqDigest(Buffer.from('test image bytes')));
     await recovered.delivered(pickup);
-    expect(await recovered.collect(f.request('again', 'member-a', 'group-a', content))).toEqual({ text: expect.stringContaining('已停止重发') });
+    expect(await recovered.collect(f.request('again', 'member-a', 'group-a', '补发刚才那张'), 1)).toEqual({ text: expect.stringContaining('已停止重发') });
     expect(f.io.generate).toHaveBeenCalledTimes(1);
   } finally { await recovered.close(); }
 });

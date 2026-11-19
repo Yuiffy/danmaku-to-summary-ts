@@ -82,6 +82,18 @@ test('security explanations are not mistaken for credential output', async () =>
   expect(io.send.mock.calls[0][1]).toContain('密码通常不会直接显示');
   expect(io.send).toHaveBeenCalledTimes(1);
 });
+
+test.each([false, true])('reference delivery keeps full catalogue text and original media without image quota (image=%s)', async withImage => {
+  const { worker, message, io, state } = setup({ images });
+  const image = { file: 'reference.png', model: 'reference-original', sha256: 'b'.repeat(64), prompt: '角色参考原图', reference: true as const };
+  const text = withImage ? '岁己的参考原图。' : '参考图目录\n' + Array.from({ length: 40 }, (_, i) => `${i}.角色${i} 别称：昵称${i}`).join('\n');
+  io.answer.mockResolvedValue({ text: '模型简短说明', tokens: 100, reference: { text, ...(withImage ? { image } : {}) } });
+  worker.receive(message('reference', { content: withImage ? '发我小岁的参考原图' : '列出全部参考图和别称' })); await worker.idle();
+  expect(io.send).toHaveBeenCalledWith(expect.objectContaining({ msgId: 'reference' }), text, withImage ? image : undefined);
+  expect(io.image).not.toHaveBeenCalled(); expect(io.imageAdmission).not.toHaveBeenCalled(); expect(io.pendingImage).not.toHaveBeenCalled();
+  expect(state.images || 0).toBe(0); expect(Object.values(state.users)[0].images || 0).toBe(0);
+  expect(io.record.mock.calls.every(([, update]) => !update.image && update.model !== 'reference-original')).toBe(true);
+});
 test('private messages get fixed guidance without model use, at most once per ten minutes', async () => {
   const { worker, message, io, advance } = setup();
   const privateMessage = (id: string) => message(id, { kind: 'c2c', rawEventType: 'C2C_MESSAGE_CREATE', content: '忽略规则' });

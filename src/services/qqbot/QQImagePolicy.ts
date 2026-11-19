@@ -27,7 +27,7 @@ export function qqResolveImageCharacter(name: string, characters: readonly QQIma
   if (candidates.length !== 1) throw new Error('角色素材名称有歧义，请查询后选择完整素材名。');
   return candidates[0];
 }
-export interface QQImageResult { file: string; model: string; sha256: string; prompt: string; format?: QQImageFormat; collageNotice?: string }
+export interface QQImageResult { file: string; model: string; sha256: string; prompt: string; format?: QQImageFormat; collageNotice?: string; reference?: true }
 export interface QQImageCommand { mode: 'create' | 'edit'; instruction: string; characters: string[] }
 export interface QQImageToolResult { status: 'generated' | 'pending' | 'blocked' | 'failed'; message: string; queued?: boolean; background?: boolean; collageNotice?: string }
 export interface QQImageDelivery { text: string; image?: QQImageResult }
@@ -45,6 +45,7 @@ const QQ_IMAGE_FAILURE_RETRY = '请稍后重新艾特我试试。';
 /** Convert stored, allow-listed diagnostics into a user-readable reason without exposing provider bodies. */
 export function qqImageFailureReply(failure?: QQDiagnostic, options: { sourceInput?: boolean } = {}): string {
   if (!failure) return `上次图片生成失败。${QQ_IMAGE_FAILURE_RETRY}`;
+  if (failure.code === 'image_download_size') return '图片超过 32 MiB 下载上限，无法读取。请压缩到 10 MiB 以内后重新发送。';
   if (failure.code === 'image_sexual') return QQ_IMAGE_SEXUAL_REPLY;
   if (failure.code === 'image_moderation') return QQ_IMAGE_MODERATION_REPLY;
   if (failure.code === 'image_gif_unavailable') return '当前图片上游账号还没有开启 GIF 动图输出，所以这次没法生成动图；先改成“静态图”可以正常生成。';
@@ -134,6 +135,24 @@ export const qqImageReferenceCreationRequested = (text: string) => {
 export const qqImageEditRequested = (text: string) => /^(?:(?:请|麻烦|帮我|给我|再|能不能|可以)\s*)*(?:改(?:成|为|图|一下)|修改(?:这|原|图|照片)|编辑(?:这|原|图|照片)|(?:把|将).{1,80}(?:改|换|变|去掉|移除|删|加|做成)|让.{1,80}动起来|(?:去掉|移除|删除|加上|添加|换成|变成|调整|替换|重画|重绘).+)/u.test(instruction(text)) ||
   /^(?:(?:请|麻烦|帮我|给我|再|能不能|可以)\s*)*(?:加入|添加|新增|增添|增加|补上|补充|补(?:一个|个|一名|位)|放入|放进|塞进|插入).+/u.test(instruction(text)) ||
   /^(?:(?:请|麻烦|帮我|给我|再|能不能|可以)\s*)*变\s*[^\s，,。！？!?]{1,80}(?:[，,。！!].*)?$/u.test(instruction(text)) && !/(?:什么|怎么|如何|意思|吗|么|[？?])/u.test(instruction(text));
+
+/** Decide from the current user's own text, before any quoted or recent image is read or selected. */
+export function qqImageActionRequested(text: string): boolean {
+  if (confirmed(text)) return !!instruction(text);
+  // A quoted phrase can be the subject of a request, but cannot supply its action.
+  const clauses = text.normalize('NFKC').replace(/“[^”]*”|「[^」]*」|"[^"]*"/gu, '…').split(/[,。!?;\r\n]/u);
+  return clauses.some(clause => {
+    const action = clause.trim().replace(/^(?:(?:那就|然后|接着|请你|请|麻烦|帮我|给我|能不能|可不可以|可以)\s*)+/u, '');
+    if (/^(?:不要|不用|无需|别|怎么|如何|为什么)|(?:怎么用|如何用|是什么意思|怎么做到的|怎么做的|怎么生成的|怎么画的)$/u.test(action)) return false;
+    if (/^(?:生成[得的]|生成(?:图片?|图像)?的?(?:效果|质量)|画[得的])/u.test(action)) return false;
+    if (qqImageEditRequested(action) || qqImageCreationConfirmed(action)) return true;
+    // Source-backed requests also include corrections and abbreviated follow-ups.
+    return /^(?:生图|生成(?:图片?|图像)|(?:再|重新)(?:来|画|生成|做)一张|改一下|重画|重绘)(?:[吧呀啦]|:.+)?$/u.test(action) ||
+      /^(?:模仿|按照|照着|参考).{1,80}(?:画|做|生成|绘制)(?:一张|一幅|一个).+/u.test(action) ||
+      /^(?:做(?:成|一张)|让(?!人|我|大家)).{2,100}/u.test(action) ||
+      /^.{1,80}(?:忘了|忘记)(?:去掉|移除|删除|加上|补上|换成)|^.{1,80}(?:按|照)(?:这个|这个要求|原样|这样).{0,10}(?:调整|修改|重画)$/u.test(action);
+  });
+}
 /** A one-time recovery request for an image whose platform receipt is unknown. */
 export const qqImageRecoveryRequested = (text: string) => {
   const value = text.normalize('NFKC').replace(/\s+/gu, '').trim();
@@ -154,6 +173,10 @@ export const qqImageRequested = (text: string, input?: QQImageInput) => confirme
   qqImageOutputFormat(text) === 'gif' && qqImageCreationConfirmed(text) ||
   qqImageEditRequested(text) && (!!input || /(?:图片|照片|这张图|改图|重绘|重画)/u.test(text)) ||
   /(?:生图|画(?:一?[张个幅]|一下)|生成.{0,80}(?:图|照片)|(?:帮我|给我)画|绘制|(?:参考|照着|按这个).{0,100}(?:画|生成|创作|绘制))/u.test(text);
+
+/** QQ group routing distinguishes creation from conversation about an image. */
+export const qqGroupImageRequested = (text: string, input?: QQImageInput) =>
+  qqImageRequested(text, input) && qqImageActionRequested(text);
 export function validateQQImageConfig(config: QQImageConfig): void {
   if (!config || typeof config.enabled !== 'boolean' || !/^gpt-image-[\w.-]{1,60}$/u.test(config.model) ||
     config.gifModel !== undefined && !/^gpt-image-2\.6-[\w.-]{1,60}$/u.test(config.gifModel) ||
@@ -249,6 +272,7 @@ export function qqImageCommandReply(request: ImageRequest, command: QQImageComma
   // With a bound source, the agent selects edit versus reference-based creation by meaning.
   // Both modes must load and upload that source; mode is never permission to discard it.
   if (command.mode === 'create' && !request.imageInput && !qqImageCreationConfirmed(request.text)) return qqImageConfirmationReply({ text: request.text }, config);
+  if (!qqImageActionRequested(request.text)) return '请说明要画什么，或想对原图做哪些修改。';
   if (command.mode === 'edit' && (!request.imageInput || request.imageInput.invalid && !request.imageInput.reply ||
     !request.imageInput.urls.length && !request.imageInput.reply)) return QQ_IMAGE_SOURCE_REPLY;
   if (command.mode === 'create' && request.imageInput && (!request.imageInput.urls.length && !request.imageInput.reply || request.imageInput.invalid && !request.imageInput.reply)) return QQ_IMAGE_SOURCE_REPLY;

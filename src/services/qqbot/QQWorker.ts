@@ -1,5 +1,5 @@
 import { SAFETY_NOTICE, shanghaiDay, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
-import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_REPLY, publishableQQAnswer, publishableQQVideoReview, qqFixedReply, qqRequest, qqImageReplyTrigger } from './QQPolicy';
+import { QQConfig, QQInbound, QQRequest, QQ_FAILURE_REPLY, QQ_LIMITS, QQ_QUOTA_REPLY, publishableQQAnswer, publishableQQVideoReview, publishableQQReferenceReply, qqFixedReply, qqRequest, qqImageReplyTrigger } from './QQPolicy';
 import { QQState } from './QQState';
 import { QQRecordUpdate } from './QQRecords';
 import { QQ_MODEL } from './QQPolicy';
@@ -13,14 +13,14 @@ import type { QQSendReceiptDiagnostic } from './QQSendReceipt';
 import { QQSendRejectedError } from './QQSendReceipt';
 import type { QQImageRejectionEvent } from './QQImageRejections';
 import type { QQVideoResult } from './QQVideoPolicy';
-import { qqVideoMentioned, qqVideoRequested, qqVideoConfirmRequested } from './QQVideoPolicy';
-import { qqImageRequested, qqImageCreationConfirmed, qqImageEditRequested } from './QQImagePolicy';
+import { qqVideoMentioned, qqVideoRequested, qqVideoConfirmRequested, qqVideoStandaloneEdit } from './QQVideoPolicy';
+import { qqGroupImageRequested, qqImageCreationConfirmed, qqImageEditRequested } from './QQImagePolicy';
 import type { QQImageTaskActions, QQImageTaskStatus } from './QQImageTaskTools';
 import { qqMediaOperator, QQ_MEDIA_OPERATOR_LIMITS } from './QQMediaAccess';
 import { QQ_IMAGE_QUEUE } from './QQImageSchedule';
 import { qqReplyParts } from './QQReplyDelivery';
 
-export type QQTextAnswer = string | { text: string; tokens: number; video?: QQVideoResult; videoReview?: boolean };
+export type QQTextAnswer = string | { text: string; tokens: number; video?: QQVideoResult; videoReview?: boolean; reference?: QQImageDelivery };
 export interface QQLogEvent {
   event: string; scope?: string; requestId?: string; failure?: QQDiagnostic; agent?: QQAgentTrace;
   queuedMs?: number; elapsedMs?: number; route?: 'image' | 'text';
@@ -34,6 +34,8 @@ export interface QQLogEvent {
   mediaSourceAwarenessVersion?: 1;
   imageCharacterAliasesVersion?: 1;
   imageSourceModeVersion?: 1;
+  imageCompletionVersion?: 1;
+  imageLargeInputVersion?: 1;
   sendReceiptDiagnosticsVersion?: 1;
   sendRejectionIsolationVersion?: 1;
   imageRejectionNotificationsVersion?: 1;
@@ -57,8 +59,13 @@ export interface QQWorkerIO {
   answer(request: QQRequest, signal: AbortSignal, executeImage?: QQExecuteImage, imageTasks?: QQImageTaskActions): Promise<QQTextAnswer>;
   image?(request: QQRequest, signal: AbortSignal, command?: QQImageCommand): Promise<QQImageResult>;
   pendingImage?(request: QQRequest): Promise<QQImageDelivery | undefined>;
-  readImageTask?(request: QQRequest): Promise<QQImageTaskStatus>;
-  collectImage?(request: QQRequest): Promise<QQImageDelivery | undefined>;
+  readImageTask?(request: QQRequest, position?: number): Promise<QQImageTaskStatus>;
+  collectImage?(request: QQRequest, position?: number): Promise<QQImageDelivery | undefined>;
+  imagePickup?: {
+    count(request: QQRequest): number;
+    next(request: QQRequest): Promise<(QQImageDelivery & { request: QQRequest }) | undefined>;
+    release(request: QQRequest): Promise<void>;
+  };
   imageAdmission?(request: QQRequest): string | undefined;
   enqueueImage?(request: QQRequest, command: QQImageCommand): Promise<QQImageToolResult>;
   waitImage?(request: QQRequest, signal: AbortSignal, waitMs: number): Promise<QQImageDelivery | undefined>;
@@ -125,7 +132,8 @@ export class QQWorker {
       if (trigger && this.io.hasReadyImage?.(trigger)) request = trigger;
     }
     const imageSubmission = request?.scope === 'group' && this.config.images?.enabled && !qqVideoMentioned(request.text) &&
-      qqImageRequested(request.text, request.imageInput) && (qqImageCreationConfirmed(request.text) || qqImageEditRequested(request.text));
+      !qqVideoStandaloneEdit(request.text, !!request.videoInput) &&
+      qqGroupImageRequested(request.text, request.imageInput) && (qqImageCreationConfirmed(request.text) || qqImageEditRequested(request.text));
     const userQueue = Math.max(this.config.maxUserQueue, imageSubmission ? QQ_IMAGE_QUEUE.waiting : 0,
       request && qqMediaOperator(this.config, request.user) ? QQ_MEDIA_OPERATOR_LIMITS.maxUserQueue : 0);
     if (!request || this.state.receipts[request.key] || this.pending.has(request.key) || this.pending.size >= this.config.maxQueue ||
@@ -224,12 +232,16 @@ export class QQWorker {
     let pendingMessage: string | undefined;
     let collageNotice: string | undefined, collageNotified = false;
     let imageQueued = false, imageTaskUsed = false;
+    let pickupCount = 0;
     let imageTaskMessage: string | undefined;
     let imageLimitMessage: string | undefined;
+    const videoEdit = this.config.videos?.enabled && qqVideoStandaloneEdit(request.text, !!request.videoInput);
     const imageRequest = request.scope === 'group' && this.config.images?.enabled && !qqVideoMentioned(request.text) &&
-      qqImageRequested(request.text, request.imageInput) && (qqImageCreationConfirmed(request.text) || qqImageEditRequested(request.text));
+      !videoEdit &&
+      qqGroupImageRequested(request.text, request.imageInput) && (qqImageCreationConfirmed(request.text) || qqImageEditRequested(request.text));
     if (request.scope === 'group' && this.config.images?.enabled && !request.text.trim()) {
-      const delivery = await this.io.pendingImage?.(request);
+      pickupCount = this.io.imagePickup?.count(request) || 0;
+      const delivery = pickupCount ? undefined : await this.io.pendingImage?.(request);
       if (delivery) {
         imageTaskUsed = true;
         answer = delivery.text; image = delivery.image;
@@ -271,7 +283,8 @@ export class QQWorker {
           if (this.lifetime.signal.aborted) {
             state.receipts[request.key].status = 'skipped'; await checkpoint(); return;
           }
-          const progress = this.config.videos?.enabled && (qqVideoRequested(request.text) || qqVideoConfirmRequested(request.text))
+          const progress = videoEdit && request.videoInput ? '收到剪辑要求，正在处理原视频。'
+            : this.config.videos?.enabled && (qqVideoRequested(request.text) || qqVideoConfirmRequested(request.text))
             ? '收到视频要求，正在处理；需要确认的草稿会先发给你检查。'
             : imageRequest ? '收到生图要求，正在处理。' : undefined;
           if (progress && this.io.acknowledge && !await this.io.acknowledge(request, progress)) {
@@ -355,16 +368,23 @@ export class QQWorker {
               return { status: 'generated', message: (image.collageNotice || '') + (command.mode === 'edit' ? '原图编辑完成。' : '图片生成完成。') };
             };
             const imageTasks: QQImageTaskActions | undefined = this.config.images?.enabled && this.io.collectImage ? {
-              read: async () => {
+              read: async position => {
                 controller.signal.throwIfAborted(); imageTaskUsed = true;
-                return this.io.readImageTask?.(request) ?? { status: 'none', message: '图片任务查询未启用。' };
+                const result = await this.io.readImageTask?.(request, position) ?? { status: 'none', message: '图片任务查询未启用。' };
+                if (position === undefined && !collected && !imageAttempted) imageTaskMessage = result.message;
+                return result;
               },
-              collect: async () => {
+              collect: async position => {
                 controller.signal.throwIfAborted(); imageTaskUsed = true;
                 if (collected || imageAttempted) return { status: 'none', message: '本条消息已经领取或提交图片任务，不能重复操作。' };
                 collected = true;
                 try {
-                  const delivery = await this.io.collectImage!(request);
+                  if (position === undefined) pickupCount = this.io.imagePickup?.count(request) || 0;
+                  if (pickupCount) {
+                    imageTaskMessage = `有 ${pickupCount} 张成图待领取。`;
+                    return { status: 'ready', message: imageTaskMessage };
+                  }
+                  const delivery = await this.io.collectImage!(request, position);
                   imageTaskMessage = delivery?.text || '本人在本群没有可领取的图片任务。'; image = delivery?.image;
                   if (image) await this.io.record(request, { status: 'generating', model: image.model,
                     image: { sha256: image.sha256, prompt: image.prompt, ...(image.format ? { format: image.format } : {}) } });
@@ -374,9 +394,11 @@ export class QQWorker {
             } : undefined;
             const result = await this.io.answer(request, controller.signal, this.config.images?.enabled ? executeImage : undefined, imageTasks);
             controller.signal.throwIfAborted();
-            answer = imageTaskMessage || pendingMessage || imageLimitMessage || (typeof result !== 'string' && result.videoReview ? publishableQQVideoReview(result.text) : publishableQQAnswer(typeof result === 'string' ? result : result.text));
+            const reference = typeof result !== 'string' && !imageTaskUsed && !imageAttempted && !result.video && !result.videoReview ? result.reference : undefined;
+            answer = imageTaskMessage || pendingMessage || imageLimitMessage || (reference ? publishableQQReferenceReply(reference.text) : typeof result !== 'string' && result.videoReview ? publishableQQVideoReview(result.text) : publishableQQAnswer(typeof result === 'string' ? result : result.text));
             if (!answer) throw qqFailure('answer_validation', 'unsafe_answer');
             if (typeof result !== 'string') {
+              if (reference) image = reference.image;
               video = result.video;
               if (!Number.isSafeInteger(result.tokens) || result.tokens < 1 || result.tokens > QQ_LIMITS.reservation) throw qqFailure('answer_validation', 'invalid_tokens');
               // The full ceiling is durable before IO. Settle a successful run only; failures retain it.
@@ -415,6 +437,10 @@ export class QQWorker {
     if (!answer || state.paused || this.lifetime.signal.aborted || this.io.now() - request.createdAt >= QQ_LIMITS.maxAgeMs) {
       state.receipts[request.key].status = 'skipped'; await checkpoint(); return;
     }
+    if (pickupCount && this.io.imagePickup) {
+      await this.sendImageBatch(request, pickupCount, this.io.imagePickup);
+      await checkpoint(); return;
+    }
     if (pendingMessage && !image && this.io.readyImage) {
       if (collageNotice && !collageNotified) await this.sendReply(request, collageNotice);
       await checkpoint(); this.watchImage(request); return;
@@ -424,6 +450,30 @@ export class QQWorker {
     if (!pendingMessage && !imageTaskUsed && state.receipts[request.key].status === 'sent') await this.supplement(request);
   }
   private remainingReplies(request: QQRequest): number { return 5 - (this.state.receipts[request.key]?.replies || 0); }
+  private async sendImageBatch(trigger: QQRequest, expected: number, pickup: NonNullable<QQWorkerIO['imagePickup']>): Promise<void> {
+    const state = this.state;
+    const limit = Math.min(expected, this.remainingReplies(trigger), QQ_LIMITS.maxReceipts - Object.keys(state.receipts).length);
+    const triggerReceipt = state.receipts[trigger.key];
+    triggerReceipt.status = 'skipped';
+    for (let index = 0; index < limit; index++) {
+      const earliestSend = Math.max(this.io.now(), state.lastSendAt + QQ_LIMITS.sendIntervalMs);
+      if (state.paused || this.lifetime.signal.aborted || earliestSend - trigger.createdAt >= QQ_LIMITS.maxAgeMs) break;
+      const item = await pickup.next(trigger);
+      if (!item?.image) break;
+      const receipt: QQState['receipts'][string] = { at: this.io.now(), status: 'accepted' };
+      state.receipts[item.request.key] = receipt;
+      try {
+        await this.io.record(item.request, { status: 'accepted' });
+        const remaining = index + 1 === limit ? pickup.count(trigger) : 0;
+        const more = remaining > 0 ? `还有 ${remaining} 张待领，再艾特我领图即可。` : '';
+        await this.sendReply(item.request, `待领成图 ${index + 1}/${limit}。${more}`, item.image, undefined, trigger);
+      } finally {
+        if (receipt.status === 'accepted' || receipt.status === 'skipped') await pickup.release(item.request);
+      }
+      if (receipt.status === 'sent' || receipt.status === 'unknown') triggerReceipt.status = receipt.status;
+      if (receipt.status !== 'sent') break;
+    }
+  }
   private async supplement(trigger: QQRequest): Promise<void> {
     if (!this.io.readyImage || trigger.scope !== 'group') return;
     // Borrow at most one reply per trigger, keeping one for a possible image-rejection notice.
@@ -462,7 +512,8 @@ export class QQWorker {
     // Save intent before a single passive reply. An uncertain send is never retried.
     state.receipts[trigger.key].replies = (state.receipts[trigger.key].replies || 0) + count;
     state.lastSendAt = this.io.now(); state.receipts[request.key].status = 'sending'; await this.io.save(state);
-    await this.io.record(request, { status: 'sending', answer, ...(image ? { model: image.model,
+    // Reference originals are catalogue reads, not generated-image records or model usage.
+    await this.io.record(request, { status: 'sending', answer, ...(image && !image.reference ? { model: image.model,
       image: { sha256: image.sha256, prompt: image.prompt, ...(image.format ? { format: image.format } : {}) } } : {}) });
     try {
       if (video) await this.io.send(request, answer, image, video);

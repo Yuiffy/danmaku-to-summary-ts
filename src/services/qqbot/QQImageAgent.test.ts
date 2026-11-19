@@ -8,7 +8,7 @@ import { createQQImageTools } from './QQImageTools';
 import { createQQImageGenerator } from './QQImage';
 import { QQImageInputs } from './QQImageInputs';
 import { QQImageConfig, QQImageToolResult } from './QQImagePolicy';
-import { qqImageCommandPlan } from './QQImagePolicy';
+import { qqImageCommandPlan, qqImageCommandReply } from './QQImagePolicy';
 import { QQ_LIMITS, qqRequest, QQ_PRIVATE_REPLY } from './QQPolicy';
 import { QQWorker } from './QQWorker';
 import { newQQState } from './QQState';
@@ -135,7 +135,7 @@ test.each([1, 2, 3])('agent independently chooses %i tools and original image by
   });
   worker.receive(inbound); await worker.idle();
   expect(state.paused).toBe(false); expect(state.images).toBe(1);
-  expect(model).toHaveBeenCalledTimes(count + 1); expect(paid).toHaveBeenCalledTimes(1); expect(download).toHaveBeenCalledTimes(1);
+  expect(model).toHaveBeenCalledTimes(count); expect(paid).toHaveBeenCalledTimes(1); expect(download).toHaveBeenCalledTimes(1);
   const [url, init] = paid.mock.calls[0] as unknown as [string, any];
   expect(url).toContain('/images/edits'); expect(init.body.getBuffer().toString('latin1')).toContain(png.toString('latin1'));
   expect(init.body.getBuffer().toString()).toContain('source-1.png');
@@ -184,12 +184,27 @@ test.each(['quote', 'attachment'])('replacement via %s sends source then target 
   expect(init.body.getBuffer().toString()).toContain(request.text);
 });
 
-test('the same available image tools can be skipped entirely for ordinary chat', async () => {
-  const request = qqRequest({ ...inbound, content: '这张图真好看' }, at)!;
+test.each(['这效果太好', '这张图真好看', '生成的图片也太好看了', '生成得太好了', '这张图是怎么生成的？', '太好看了，别再画了'])
+('a quoted image receives a text reply without offering generation for %s', async content => {
+  const request = qqRequest({ ...inbound, content }, at)!;
+  expect(request.imageInput?.reply).toBe('private-reference');
   const load = jest.fn(), render = jest.fn();
-  const model = jest.fn(async () => response({ content: JSON.stringify({ answer: '喜欢就好呀。', basis: 'general', evidenceIds: [] }) }));
-  await createQQAnswerer(settings, undefined, model as any, undefined, createQQImageTools(request, config, load, render))(request, new AbortController().signal);
+  const model = jest.fn(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    const names = body.tools.map((tool: any) => tool.function.name);
+    expect(names).toContain('read_image_sources');
+    expect(names).not.toContain('generate_image');
+    return response({ content: JSON.stringify({ answer: '这张的效果我也挺喜欢。', basis: 'general', evidenceIds: [] }) });
+  });
+  await expect(createQQAnswerer(settings, undefined, model as any, undefined,
+    createQQImageTools(request, config, load, render))(request, new AbortController().signal)).resolves.toBe('这张的效果我也挺喜欢。');
   expect(load).not.toHaveBeenCalled(); expect(render).not.toHaveBeenCalled(); expect(model).toHaveBeenCalledTimes(1);
+});
+
+test.each(['create', 'edit'] as const)('a model-selected %s cannot charge for praise on a quoted image', async mode => {
+  const request = qqRequest({ ...inbound, content: '这效果太好' }, at)!;
+  expect(qqImageCommandReply(request, { mode, instruction: '照着原图再生成一张', characters: [] }, config))
+    .toBe('请说明要画什么，或想对原图做哪些修改。');
 });
 
 test('a visual follow-up supplies real image pixels to the answering model after source discovery without rendering', async () => {
@@ -235,12 +250,15 @@ test('unreadable sources and invented names cannot spend image budget in either 
   expect(render).not.toHaveBeenCalled();
 });
 
-test('a clear addition to a quoted source is corrected to edit before rendering', async () => {
-  const request = qqRequest({ ...inbound, content: '加入一个饼干人作为老公' }, at)!;
+test.each([
+  ['加入一个饼干人作为老公', 'create'],
+  ['这效果太好了，再把背景换成蓝色', 'edit']
+] as const)('a clear edit to a quoted source reaches rendering as an edit: %s', async (content, mode) => {
+  const request = qqRequest({ ...inbound, content }, at)!;
   const load = jest.fn(async () => [png]);
   const render = jest.fn<Promise<QQImageToolResult>, any[]>(async () => ({ status: 'generated', message: 'done' }));
   const generate = createQQImageTools(request, config, load, render).tools.find(tool => tool.name === 'generate_image')!;
-  expect(await generate.execute({ mode: 'create', instruction: request.text, characters: [] }))
+  expect(await generate.execute({ mode, instruction: request.text, characters: [] }))
     .toEqual({ status: 'generated', message: 'done' });
   expect(load).toHaveBeenCalledTimes(1);
   expect(render).toHaveBeenCalledWith({ mode: 'edit', instruction: request.text, characters: [] });

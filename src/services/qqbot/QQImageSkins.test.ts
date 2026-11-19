@@ -9,9 +9,13 @@ import { createQQImageTools } from './QQImageTools';
 import { createQQImageGenerator } from './QQImage';
 import { QQImageInputs } from './QQImageInputs';
 import { qqRequest } from './QQPolicy';
+import { qqVideoPlan } from './QQVideoPolicy';
 
 const project = path.resolve(__dirname, '../../..');
-const skins = ['小红帽', '小花帽', '小蓝帽', '小猫帽', 'JK单马尾无外套', '地雷双马尾黑外套', '地雷长发双啾啾', 'JK小揪揪外套', 'JK小粉帽外套玩手机', 'JK小粉帽无外套'];
+const skins = [
+  '小红帽', '小花帽', '小蓝帽', '小猫帽', 'JK单马尾无外套', '地雷双马尾黑外套', '地雷长发双啾啾',
+  'JK小揪揪外套', 'JK小粉帽外套玩手机', 'JK小粉帽无外套', '黑皮运动岁己露肩晒痕版', '黑皮运动岁己外套版'
+];
 let root: string, config: QQImageConfig;
 const at = Date.parse('2026-10-30T10:00:00Z');
 function request(text: string, edit = false) {
@@ -59,12 +63,13 @@ test.each(skins)('queries %s as a skin of 岁己 without generating or exposing 
   const tools = createQQImageTools(request('岁己有哪些皮肤参考？'), { ...config, characters: qqImageCharacters(root, config) }, load, render).tools;
   const find = tools.find(tool => tool.name === 'find_image_characters')!;
   const result = await find.execute({ query: skin });
-  expect(result).toMatchObject({ characters: [{ name: `岁己·${skin}`, baseCharacter: '岁己SUI', skin }] });
+  const outfit = config.characters!.find(item => item.skin === skin)!;
+  expect(result).toMatchObject({ characters: [{ name: outfit.name, baseCharacter: '岁己SUI', skin }] });
   expect(JSON.stringify(result)).not.toMatch(/reference_images|\.png|private-token/u);
-  const all = await find.execute({ query: '岁己' }) as { characters: Array<{ skin?: string }> };
-  expect(all.characters.filter(item => item.skin).map(item => item.skin)).toEqual(skins);
-  const byAlias = await find.execute({ query: '小岁' }) as { characters: Array<{ skin?: string }> };
-  expect(byAlias.characters.filter(item => item.skin).map(item => item.skin)).toEqual(skins);
+  const all = await find.execute({ query: '岁己' }) as { characters: Array<{ skin?: string }>; limited: boolean };
+  expect(all.limited).toBe(true);
+  expect(all.characters.filter(item => item.skin).map(item => item.skin)).toEqual(skins.slice(0, 11));
+  expect(await find.execute({ query: '小岁' })).toEqual(all);
   expect(render).not.toHaveBeenCalled(); expect(load).not.toHaveBeenCalled();
 });
 
@@ -72,11 +77,31 @@ test.each(skins)('%s replaces the default reference even if the agent selects th
   const characters = qqImageCharacters(root, config), options = { ...config, characters };
   const original = request(`变岁己${skin}，保留黑白画风和构图`, true);
   const plan = qqImageCommandPlan(original, { mode: 'edit', instruction: original.text, characters: ['岁己SUI'] }, options, 1);
-  expect(plan.references).toEqual([config.characters!.find(item => item.skin === skin)!.referenceImage]);
-  expect(plan.prompt).toContain(`参考图2只用于锁定岁己·${skin}`);
+  const outfit = config.characters!.find(item => item.skin === skin)!;
+  expect(plan.references).toEqual([outfit.referenceImage]);
+  expect(plan.prompt).toContain(`参考图2只用于锁定${outfit.name}`);
   expect(plan.prompt).toContain('用户指定的皮肤是该角色的具体衣装与造型');
   expect(plan.prompt).toContain('默认保留原图的画风');
   expect(plan.prompt).not.toContain('参考图3只用于锁定岁己SUI');
+});
+
+test('黑皮运动岁己 and 运动岁己 select distinct references for images and video', async () => {
+  const prior = { name: '运动岁己', aliases: ['运动岁己'], baseCharacter: '岁己SUI', skin: '运动岁己',
+    referenceImage: 'public/reference_images/sui_legacy_sports.png', description: '早期运动服形象' };
+  const characters = qqImageCharacters(root, { ...config, characters: [...config.characters!, prior] });
+  const options = { ...config, characters };
+  const find = createQQImageTools(request('查岁己参考图'), options, jest.fn(), jest.fn()).tools
+    .find(tool => tool.name === 'find_image_characters')!;
+  for (const [alias, name] of [
+    ['运动岁己', prior.name], ['黑皮运动岁己', '黑皮运动岁己·露肩晒痕版'], ['黑皮运动岁己外套版', '黑皮运动岁己·外套版']
+  ]) {
+    const reference = characters.find(item => item.name === name)!.referenceImage;
+    expect(await find.execute({ query: alias })).toMatchObject({ characters: [{ name }], limited: false });
+    expect(qqImagePlan(request(`生成${alias}挥手的图片`), options).references).toEqual([reference]);
+    expect(qqVideoPlan(`生成${alias}挥手的视频`, {
+      instruction: '挥手', characters: [], voices: [], model: null, ratio: null, duration: null
+    }, characters).references.map(item => item.referenceImage)).toEqual([reference]);
+  }
 });
 
 test.each([
@@ -129,10 +154,11 @@ test.each(skins.flatMap(skin => [false, true].map(edit => ({ skin, edit }))))
   expect(url).toContain('/images/edits');
   const parts = init.body.getBuffer().toString('latin1').split(`--${init.body.getBoundary()}`).filter((part: string) => part.includes('name="image[]"'));
   expect(parts).toHaveLength(edit ? 2 : 1);
-  const reference = await fs.readFile(path.join(root, config.characters!.find(item => item.skin === skin)!.referenceImage));
+  const outfit = config.characters!.find(item => item.skin === skin)!;
+  const reference = await fs.readFile(path.join(root, outfit.referenceImage));
   expect(parts.at(-1)).toContain(reference.toString('latin1'));
   if (edit) expect(parts[0]).toContain(source.toString('latin1'));
-  expect(init.body.getBuffer().toString()).toContain(`只用于锁定岁己·${skin}`);
+  expect(init.body.getBuffer().toString()).toContain(`只用于锁定${outfit.name}`);
   expect(download).toHaveBeenCalledTimes(edit ? 1 : 0); expect(paid).toHaveBeenCalledTimes(1);
 });
 

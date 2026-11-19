@@ -2,12 +2,12 @@ import { createHash } from 'crypto';
 import { QQ_AGENT_LIMITS } from '../../core/admin/qqDiagnostics';
 import { QQ_RECORD_ANSWER_CHARS } from '../../core/admin/qqRecords';
 import { CommentReplyConfig, LIMITS, unsafeComment } from '../bilibili/comment-replies/CommentPolicy';
-import { QQImageConfig, qqImageRequested, validateQQImageConfig } from './QQImagePolicy';
+import { QQImageConfig, qqGroupImageRequested, validateQQImageConfig } from './QQImagePolicy';
 import { QQImageEnvelope, QQImageInput, qqImageInput } from './QQImageInputPolicy';
 import { QQVideoInput, qqVideoInput } from './QQVideoInputPolicy';
 import type { QQChatMessage } from './QQChatTypes';
 import { QQMediaAccess, validateQQMediaAccess } from './QQMediaAccess';
-import { QQVideoConfig, validateQQVideoConfig, qqVideoMentioned, qqVideoRequested, qqVideoCollectRequested, qqVideoConfirmRequested } from './QQVideoPolicy';
+import { QQVideoConfig, validateQQVideoConfig, qqVideoMentioned, qqVideoRequested, qqVideoCollectRequested, qqVideoConfirmRequested, qqVideoStandaloneEdit } from './QQVideoPolicy';
 
 export const QQ_MODEL = 'gpt-6-luna';
 export const QQ_PRIVATE_REPLY = '鹿饼现在只在群聊里回答问题，请把我邀请进群，再艾特我来聊天吧～';
@@ -42,6 +42,8 @@ export interface QQRequest {
   key: string; user: string; scope: 'group' | 'c2c'; targetId: string; msgId: string;
   /** Server-owned native quote; msgId still owns the current passive reply window. */
   replyMsgId?: string;
+  /** Derived replies share the authenticated trigger's passive reply allowance. */
+  replyWindowKey?: string;
   text: string; createdAt: number; senderName?: string;
   chatContext?: QQChatMessage[];
   imageInput?: QQImageInput;
@@ -90,8 +92,14 @@ export function publishableQQVideoReview(value: unknown): string | undefined {
   if (typeof value !== 'string') return;
   const text = value.trim();
   if (!text || Array.from(text).length > QQ_RECORD_ANSWER_CHARS || /[\p{Cc}\p{Cf}]/u.test(text.replace(/\n/gu, '')) ||
-    /@/u.test(text.replace(/@(Image|Audio) \d+/gu, '')) || QQ_UNSAFE_OUTPUT.test(text)) return;
+    /@/u.test(text.replace(/@(Image|Video|Audio) \d+/gu, '')) || QQ_UNSAFE_OUTPUT.test(text)) return;
   return text;
+}
+
+/** Only server-formatted reference catalogues can use the archive's longer text capacity. */
+export function publishableQQReferenceReply(value: unknown): string | undefined {
+  if (typeof value !== 'string' || /@/u.test(value)) return;
+  return publishableQQVideoReview(value);
 }
 
 /** Only call on authenticated SDK events. Nickname/plain-text @ strings grant no authority. */
@@ -130,7 +138,8 @@ export function qqImageReplyTrigger(message: QQInbound, now: number, botId?: str
 export function qqFixedReply(request: QQRequest, config: QQConfig): string | undefined {
   if (request.scope === 'c2c') return config.privateReply;
   if (!request.text) return '我在～在艾特后面写上想聊的话，或者带上主播、原话和日期来提问吧。';
-  if ((qqVideoRequested(request.text) || qqVideoCollectRequested(request.text) || qqVideoConfirmRequested(request.text)) && !config.videos?.enabled) return '视频功能暂未开启，可以先在群里艾特我聊天或生图。';
-  if (!qqVideoMentioned(request.text) && qqImageRequested(request.text, request.imageInput) && !config.images?.enabled) return QQ_IMAGE_REPLY;
+  if ((qqVideoRequested(request.text) || qqVideoCollectRequested(request.text) || qqVideoConfirmRequested(request.text) ||
+    qqVideoStandaloneEdit(request.text, !!request.videoInput)) && !config.videos?.enabled) return '视频功能暂未开启，可以先在群里艾特我聊天或生图。';
+  if (!qqVideoMentioned(request.text) && qqGroupImageRequested(request.text, request.imageInput) && !config.images?.enabled) return QQ_IMAGE_REPLY;
   return undefined;
 }

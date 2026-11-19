@@ -145,6 +145,22 @@
         "skin": "JK小粉帽无外套",
         "referenceImage": "public/reference_images/sui_jk_pink_hat_no_jacket.png",
         "description": "岁己的JK小粉帽无外套形象，白发红瞳、粉色帽子、白衬衫与灰色菱格背心、格纹短裙、粉色书包与黑色长袜，无外套，参考图为椭圆嘴表情。以参考图为准；只还原用户要求的画面，不复制未要求的道具或表情。"
+      },
+      {
+        "name": "黑皮运动岁己·露肩晒痕版",
+        "aliases": ["黑皮运动岁己", "黑皮运动岁己露肩版", "黑皮运动岁己露肩晒痕版"],
+        "baseCharacter": "岁己SUI",
+        "skin": "黑皮运动岁己露肩晒痕版",
+        "referenceImage": "public/reference_images/sui_jk_trackwear_off_shoulder.png",
+        "description": "岁己的运动服二设。暖铜棕肤色，银白粉挑染单马尾、粉色蝴蝶结、黑猫发夹、红瞳、金色麦穗光环。白色蓝边一字领运动衫露出双肩，浅色肩带晒痕越过肩顶延伸到上背，宝蓝外套系在腰间，搭配蓝白跑步短裤和跑鞋。三视图用于核对同一套造型，输出采用用户指定的构图。"
+      },
+      {
+        "name": "黑皮运动岁己·外套版",
+        "aliases": ["黑皮运动岁己外套版", "黑皮运动岁己穿外套版"],
+        "baseCharacter": "岁己SUI",
+        "skin": "黑皮运动岁己外套版",
+        "referenceImage": "public/reference_images/sui_jk_trackwear_jacket.png",
+        "description": "岁己的运动服二设。暖铜棕肤色，银白粉挑染单马尾、粉色蝴蝶结、黑猫发夹、红瞳、金色麦穗光环。宝蓝运动外套穿在身上，立领、双白袖条，拉链敞开露出白色蓝边内搭，配蓝白跑步短裤和跑鞋。三视图用于核对同一套造型，输出采用用户指定的构图。"
       }
     ]
   },

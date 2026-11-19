@@ -7,7 +7,9 @@ const request: QQRequest = { key: 'receipt', user: 'private-user-digest', scope:
   msgId: 'private-message', text: '图来', createdAt: Date.parse('2026-11-17T12:51:00Z') };
 const settings = { url: 'http://offline.invalid/v1/chat/completions', apiKey: 'offline-secret' };
 const response = (message: unknown, finish_reason = 'stop') => ({ ok: true, json: async () => ({ choices: [{ message, finish_reason }] }) });
-const call = (name: string, id: string) => response({ tool_calls: [{ id, type: 'function', function: { name, arguments: '{}' } }] }, 'tool_calls');
+const call = (name: string, id: string, position: number | null = null) => response({ tool_calls: [
+  { id, type: 'function', function: { name, arguments: JSON.stringify({ position }) } }
+] }, 'tool_calls');
 const final = (answer: string) => response({ content: JSON.stringify({ answer, basis: 'general', evidenceIds: [] }) });
 function fixture() {
   const actions = { read: jest.fn<ReturnType<QQImageTaskActions['read']>, []>(async () => ({ status: 'ready', message: '图片已完成，可以领取。' })),
@@ -31,12 +33,24 @@ test.each(['图来', '我刚才没收到，能给我一下吗', '把刚才那份
     expect(body.tools.map((item: any) => item.function.name)).toEqual(expect.arrayContaining(['read_image_job', 'collect_image']));
     expect(init.body).not.toMatch(/private-user-digest|private-group|private-message|offline-secret/u);
     for (const item of body.tools.filter((item: any) => ['read_image_job', 'collect_image'].includes(item.function.name))) {
-      expect(item.function.parameters).toMatchObject({ properties: {}, additionalProperties: false });
+      expect(item.function.parameters).toMatchObject({
+        properties: { position: { type: ['integer', 'null'], minimum: 1 } }, required: ['position'], additionalProperties: false
+      });
     }
   }
+  expect(f.actions.collect).toHaveBeenCalledWith();
   const last = JSON.parse(model.mock.calls.at(-1)![1].body);
   expect(last.messages.filter((item: any) => item.role === 'tool').map((item: any) => JSON.parse(item.content).untrustedEvidence.status))
     .toEqual(['ready', 'collected']);
+});
+
+test('agent can collect the second newest task when asked for the image before the latest one', async () => {
+  const f = fixture();
+  const model = jest.fn().mockResolvedValueOnce(call('collect_image', 'pickup', 2)).mockResolvedValueOnce(final('给你发来了。'));
+  await createQQAnswerer(settings, undefined, model as any, undefined, f.session)
+    ({ ...request, text: '领取再上一张' }, new AbortController().signal);
+  expect(f.actions.collect).toHaveBeenCalledWith(2);
+  expect(f.load).not.toHaveBeenCalled(); expect(f.generate).not.toHaveBeenCalled();
 });
 
 test('ordinary chat can ignore task tools even if its text contains an old pickup command', async () => {

@@ -1,17 +1,20 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { Readable } from 'stream';
 import fetch from 'node-fetch';
 import sharp from 'sharp';
 import { QQRequest, qqDigest } from './QQPolicy';
 import { QQImageResult } from './QQImagePolicy';
-import { QQ_IMAGE_SOURCE_LIMIT, qqImageAttachmentUrl, qqImageReferenceId } from './QQImageInputPolicy';
+import { QQ_IMAGE_SOURCE_LIMIT, QQ_IMAGE_DOWNLOAD_BYTES, QQ_IMAGE_NORMALIZED_BYTES, QQ_IMAGE_TOTAL_BYTES,
+  qqImageAttachmentUrl, qqImageReferenceId } from './QQImageInputPolicy';
 import { QQDiagnostic } from '../../core/admin/qqDiagnostics';
 import { QQDiagnosticError, qqDiagnostic, qqFailure } from './QQDiagnostics';
 import { qqImageBufferFormat, validQQImageFormat } from '../../core/qqImageFormat';
 import { validateQQGif } from './QQImageAnimation';
+import { shanghaiDay } from '../bilibili/comment-replies/CommentPolicy';
 
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = QQ_IMAGE_NORMALIZED_BYTES;
 const MAX_DECODE_PIXELS = 50_000_000;
 const MAX_NORMALIZED_PIXELS = 25_000_000;
 const MAX_NORMALIZED_EDGE = 4096;
@@ -172,6 +175,7 @@ export interface QQImageSourceRead {
   httpStatus?: number;
   contentType?: 'image' | 'octet_stream' | 'text' | 'missing' | 'other';
   bytes?: number;
+  normalizedBytes?: number;
   declaredTooLarge?: boolean;
   failure?: QQDiagnostic;
 }
@@ -188,6 +192,14 @@ export class QQImageInputs {
     if (request.scope !== 'group') throw new Error('QQ image reply requires a group');
     const references = [...new Set([receipt.id, receipt.ext_info?.ref_idx].filter(qqImageReferenceId))];
     if (!references.length) throw new Error('QQ image reply receipt missing');
+    if (image.reference) {
+      // The QQ upload uses exact original bytes. Only later view/edit reads use a normalized PNG copy.
+      const png = await normalizeQQImage(await fs.readFile(image.file), new AbortController().signal);
+      const file = path.join(this.root, 'data/runtime/qqbot/records', this.appId, shanghaiDay(request.createdAt), `${request.key}.png`);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, png, { flag: 'wx', mode: 0o600 });
+      image = { ...image, file, sha256: qqDigest(png), format: undefined };
+    }
     // A later pickup uses a different request key/day from the original job.
     const relative = path.relative(path.join(this.root, 'data/runtime/qqbot/records', this.appId), image.file).replace(/\\/gu, '/');
     const stored = /^(\d{4}-\d{2}-\d{2})\/([a-f0-9]{64})\.(png|gif)$/u.exec(relative);
@@ -276,24 +288,40 @@ export class QQImageInputs {
       const url = qqImageAttachmentUrl(source);
       if (!url) throw qqFailure('image_prepare', 'image_unavailable');
       read.hostname = new URL(url).hostname;
-      read.step = 'download'; delete read.httpStatus; delete read.contentType; delete read.bytes; delete read.declaredTooLarge;
+      read.step = 'download'; delete read.httpStatus; delete read.contentType; delete read.bytes; delete read.normalizedBytes; delete read.declaredTooLarge;
       const response = await this.transport(url, { method: 'GET', redirect: 'error', signal: signal as any,
-        timeout: 15000, size: MAX_BYTES });
+        timeout: 15000, size: QQ_IMAGE_DOWNLOAD_BYTES });
+      const discard = () => { if (response.body instanceof Readable) response.body.destroy(); };
       read.step = 'headers'; read.httpStatus = response.status;
       const contentType = response.headers.get('content-type') || '';
       read.contentType = !contentType ? 'missing' : /^image\//iu.test(contentType) ? 'image' :
         /^application\/octet-stream(?:;|$)/iu.test(contentType) ? 'octet_stream' : /^text\//iu.test(contentType) ? 'text' : 'other';
-      read.declaredTooLarge = Number(response.headers.get('content-length')) > MAX_BYTES;
-      if (!response.ok || !/^image\//iu.test(response.headers.get('content-type') || '') ||
-        Number(response.headers.get('content-length')) > MAX_BYTES) throw qqFailure('image_prepare', 'image_unavailable');
+      const declaredBytes = Number(response.headers.get('content-length'));
+      read.declaredTooLarge = declaredBytes > QQ_IMAGE_DOWNLOAD_BYTES;
+      if (!response.ok || !/^image\//iu.test(contentType)) {
+        discard();
+        throw qqFailure('image_prepare', 'image_unavailable');
+      }
+      if (read.declaredTooLarge || totalBytes + declaredBytes > QQ_IMAGE_TOTAL_BYTES) {
+        discard();
+        throw qqFailure('image_prepare', read.declaredTooLarge ? 'image_download_size' : 'image_size');
+      }
       read.step = 'body';
-      const bytes = await response.buffer();
+      let bytes: Buffer;
+      try { bytes = await response.buffer(); }
+      catch (error) {
+        discard();
+        if ((error as { type?: string })?.type === 'max-size') throw qqFailure('image_prepare', 'image_download_size');
+        throw error;
+      }
       read.bytes = bytes.length;
-      if (bytes.length > MAX_BYTES) throw qqFailure('image_prepare', 'image_size');
+      if (bytes.length > QQ_IMAGE_DOWNLOAD_BYTES) throw qqFailure('image_prepare', 'image_download_size');
+      if (totalBytes + bytes.length > QQ_IMAGE_TOTAL_BYTES) throw qqFailure('image_prepare', 'image_size');
       read.step = 'decode';
       const normalized = await this.normalizeSource(request, images.length, bytes, signal);
+      read.normalizedBytes = normalized.length;
       totalBytes += Math.max(bytes.length, normalized.length);
-      if (totalBytes > 64 * 1024 * 1024) throw qqFailure('image_prepare', 'image_size');
+      if (totalBytes > QQ_IMAGE_TOTAL_BYTES) throw qqFailure('image_prepare', 'image_size');
       images.push(normalized);
     }
     signal.throwIfAborted();

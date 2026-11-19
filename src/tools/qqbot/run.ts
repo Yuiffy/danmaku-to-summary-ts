@@ -34,8 +34,10 @@ import type { QQRequest } from '../../services/qqbot/QQPolicy';
 import { QQVideoQueue, qqVideoProcess } from '../../services/qqbot/QQVideoQueue';
 import { QQVideoInputs } from '../../services/qqbot/QQVideoInputs';
 import { createQQVideoTools, mergeQQMediaTools } from '../../services/qqbot/QQVideoTools';
-import type { QQVideoResult } from '../../services/qqbot/QQVideoPolicy';
+import { qqVideoStandaloneEdit, type QQVideoResult } from '../../services/qqbot/QQVideoPolicy';
 import { qqReplyParts, sendQQProgress, waitQQReplySlot } from '../../services/qqbot/QQReplyDelivery';
+import { createQQReferenceLoader, withQQReferenceTools } from '../../services/qqbot/QQReferenceTools';
+import type { QQImageDelivery } from '../../services/qqbot/QQImagePolicy';
 
 type QQMode = 'check' | 'live' | 'status' | 'resume';
 
@@ -87,7 +89,7 @@ export async function sendQQRejectionNotice(bot: Pick<QQBot, 'send' | 'uploadMed
   const delay = Math.max(0, state.lastSendAt + QQ_LIMITS.sendIntervalMs - io.now());
   if (delay) await io.sleep(delay);
   if (io.stopping() || state.paused || io.now() - request.createdAt >= QQ_LIMITS.maxAgeMs) return 'expired';
-  const receipt = state.receipts[request.key];
+  const receipt = state.receipts[request.replyWindowKey || request.key];
   if (receipt && (receipt.replies || 0) >= 5) return 'expired';
   if (receipt) receipt.replies = (receipt.replies || 0) + 1;
   state.lastSendAt = io.now(); await io.save(state);
@@ -140,7 +142,7 @@ export async function runQQBot(args: string[]): Promise<void> {
   const knowledge = config.knowledge && runtime ? createQQKnowledge(runtime, config.knowledge,
     createPublicSearchFactory(runtime.questions.providerConfigPath, settings.proxy)) : undefined;
   const { QQBot } = await loadQQSdk();
-  const characters = config.images && (config.images.enabled || config.videos?.enabled) ? qqImageCharacters(root, config.images) : [];
+  const characters = config.images ? qqImageCharacters(root, config.images) : [];
   if (config.images?.enabled) validateQQImageConfig({ ...config.images, characters });
   if (options.mode === 'check') {
     console.info(JSON.stringify({ valid: true, appId, model: QQ_MODEL, keyName: provider.keyName, knowledge: !!knowledge,
@@ -211,8 +213,12 @@ export async function runQQBot(args: string[]): Promise<void> {
           event: 'qq_send_receipt', requestId: request.key, scope: request.scope, sendReceipt })),
         report: event => report({ event, requestId: request.key, scope: request.scope }) }),
       answer: async (request, signal, executeImage, imageTasks) => {
+        if (videoConfig?.enabled && qqVideoStandaloneEdit(request.text, !!request.videoInput)) {
+          return { ...await videoInputs.edit(request, signal), tokens: 1 };
+        }
         let tokens = QQ_LIMITS.reservation as number;
         let imageToolMessage: string | undefined;
+        let reference: QQImageDelivery | undefined;
         let videoMessage: string | undefined, video: QQVideoResult | undefined, videoReview = false;
         const imageTools = config.images && (config.images.enabled || videoConfig?.enabled) ? createQQImageTools(request, { ...config.images, characters },
           () => imageInputs.load(request, signal), executeImage || (async () => ({ status: 'blocked' as const, message: '图片功能未启用。' })),
@@ -222,23 +228,31 @@ export async function runQQBot(args: string[]): Promise<void> {
         const videoTools = videoQueue && videoConfig ? createQQVideoTools(request, videoConfig, videoQueue, signal, delivery => {
           videoMessage = delivery.message; video = delivery.video; videoReview = delivery.status === 'draft';
         }) : undefined;
+        const mediaTools = withQQReferenceTools(withQQImageTaskTools(mergeQQMediaTools(request, imageTools, videoTools), imageTasks),
+          request, characters, createQQReferenceLoader(root, appId, request, signal), delivery => { reference = delivery; });
         const answer = createQQAnswerer(settings, knowledge, undefined, async (question, agent) => {
           tokens = Math.min(QQ_LIMITS.reservation, Math.max(1, agent.inputTokens + agent.outputTokens));
           report({ event: 'qq_agent_trace', requestId: question.key, scope: question.scope, agent });
           await records.write(question, { status: 'generating', agent });
-        }, withQQImageTaskTools(mergeQQMediaTools(request, imageTools, videoTools), imageTasks), chatArchive, localKnowledge);
+        }, mediaTools, chatArchive, localKnowledge);
         let generatedAnswer: string;
         try { generatedAnswer = await answer(request, signal); }
         catch (error) {
-          if (!videoMessage || qqDiagnostic(error, 'agent_run', 'unexpected', signal).code === 'record_failed') throw error;
-          generatedAnswer = videoMessage;
+          if ((!videoMessage && !reference) || qqDiagnostic(error, 'agent_run', 'unexpected', signal).code === 'record_failed') throw error;
+          generatedAnswer = videoMessage || reference!.text;
         }
-        return { text: videoMessage || imageToolMessage || generatedAnswer, tokens, ...(video ? { video } : {}), ...(videoReview ? { videoReview: true } : {}) };
+        return { text: videoMessage || imageToolMessage || generatedAnswer, tokens, ...(video ? { video } : {}), ...(videoReview ? { videoReview: true } : {}), ...(reference ? { reference } : {}) };
       },
       image: generate,
       pendingImage: imageJobs ? request => imageJobs!.pending(request) : undefined,
-      readImageTask: imageJobs ? request => imageJobs!.status(request) : undefined,
-      collectImage: imageJobs ? request => imageJobs!.collect(request) : undefined,
+      readImageTask: imageJobs ? (request, position) => position === undefined ?
+        imageJobs!.activeTasks(request) : imageJobs!.status(request, position) : undefined,
+      collectImage: imageJobs ? (request, position) => imageJobs!.collect(request, position) : undefined,
+      imagePickup: imageJobs ? {
+        count: request => imageJobs!.countUnsent(request),
+        next: request => imageJobs!.ready(request, undefined, true),
+        release: request => imageJobs!.releaseUnsent(request)
+      } : undefined,
       imageAdmission: imageJobs ? request => imageJobs!.admission(request) : undefined,
       enqueueImage: imageJobs ? (request, command) => imageJobs!.enqueue(request, command) : undefined,
       waitImage: imageJobs ? (request, signal, waitMs) => imageJobs!.wait(request, signal, waitMs) : undefined,
@@ -248,11 +262,11 @@ export async function runQQBot(args: string[]): Promise<void> {
       send: async (request, answer, image, video) => {
         const result = await sendQQReply(bot!, request, answer, image, sendReceipt => report({
           event: 'qq_send_receipt', requestId: request.key, scope: request.scope, sendReceipt }),
-        image ? rejection => imageRejections.handle(request, image, rejection) : undefined, video, async () => {
+        image ? rejection => image.reference ? sendQQRejectionNotice(bot!, request, `参考原图已找到，但QQ拒绝发送（错误码${rejection.platformCode}）。请稍后再试。`, state, replyIO).then(() => {}) : imageRejections.handle(request, image, rejection) : undefined, video, async () => {
           if (!await waitQQReplySlot(request, state, replyIO)) throw new Error('QQ partial reply window expired');
         });
         if (!result?.id) throw new Error('QQ send receipt missing');
-        await imageJobs?.delivered(request);
+        if (!image?.reference) await imageJobs?.delivered(request);
         if (video) await videoQueue?.delivered(request, video, new AbortController().signal);
         if (image) {
           await imageInputs.remember(request, image, result);
@@ -263,7 +277,7 @@ export async function runQQBot(args: string[]): Promise<void> {
       if (typeof data?.user?.id === 'string') worker!.setBotId(data.user.id);
       report({ event: 'qq_ready', imageSourceDiagnosticsVersion: 1, attachmentDiagnosticsVersion: 1, videoSourceErrorsVersion: 1,
         videoReferencesVersion: 1,
-        mediaSourceAwarenessVersion: 1, imageCharacterAliasesVersion: 1, imageSourceModeVersion: 1,
+        mediaSourceAwarenessVersion: 1, imageCharacterAliasesVersion: 1, imageSourceModeVersion: 1, imageCompletionVersion: 1, imageLargeInputVersion: 1,
         mediaLimitsVersion: 1,
         imageQueueVersion: 1, automaticImageRepliesVersion: 1, deferredImageNoticeVersion: 1,
         sendReceiptDiagnosticsVersion: 1, sendRejectionIsolationVersion: 1,

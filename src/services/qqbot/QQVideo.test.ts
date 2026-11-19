@@ -3,7 +3,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { qqRequest, publishableQQAnswer, publishableQQVideoReview } from './QQPolicy';
 import type { QQImageCharacter } from './QQImagePolicy';
-import { qqVideoPlan, qqVideoRequested, QQVideoCommand, QQVideoConfig } from './QQVideoPolicy';
+import { qqVideoPlan, qqVideoRequested, qqVideoStandaloneEdit, QQVideoCommand, QQVideoConfig } from './QQVideoPolicy';
+import { qqVideoSelection, qqVideoSpans } from './QQVideoCutPolicy';
 import { QQVideoQueue, QQVideoQueueReply, qqCanvasAccount, qqVideoProcess } from './QQVideoQueue';
 import { createQQVideoTools, mergeQQMediaTools } from './QQVideoTools';
 import { createQQAnswerer } from './QQAgent';
@@ -26,6 +27,38 @@ test('video policy applies defaults, explicit model/ratio/duration and shared ou
     model: 'seedance2.0fast_vip', ratio: '9:16', duration: 15, references: [jk] });
   expect(qqVideoPlan('直接生成单马尾无外套JK的视频，mini 横屏16:9 10秒', command, [base, jk])).toMatchObject({ model: 'seedance2.0mini', ratio: '16:9', duration: 10, references: [jk] });
   for (const setting of ['seedance2.5', '1080P', '30秒', '2:1']) expect(() => qqVideoPlan(`生成岁己视频 ${setting}`, command, [base])).toThrow();
+});
+
+test('cut times are separate from generation settings and local edit does not authorize generation', () => {
+  const text = '截取00:18到00:26作为参考，再生成岁己散步的视频，横屏16:9，10秒';
+  expect(qqVideoStandaloneEdit(text, true)).toBe(false);
+  expect(qqVideoPlan(text, command, [base], true)).toMatchObject({ ratio: '16:9', duration: 10 });
+  expect(qqVideoPlan('截取5到12秒作为参考，生成岁己视频', command, [base], true)).toMatchObject({ duration: 15 });
+  expect(qqVideoSelection('用这段视频的第18秒到第24秒作参考，再生成岁己视频').selection)
+    .toEqual({ kind: 'keep', spans: [{ startMs: 18000, endMs: 24000 }] });
+  for (const edit of ['剪辑这个视频，保留前8秒', '保留00:02-00:06和00:18-00:24，拼起来发我', '删掉5-12秒']) {
+    expect(qqVideoStandaloneEdit(edit, true)).toBe(true);
+    expect(qqVideoRequested(edit)).toBe(false);
+  }
+  expect(qqVideoStandaloneEdit('怎么剪辑这个视频？', true)).toBe(false);
+  expect(qqVideoStandaloneEdit('别截取5到10秒', true)).toBe(false);
+  const removal = qqVideoSelection('删掉15-20秒和2-5秒').selection!;
+  expect(qqVideoSpans(removal, 23000)).toEqual([{ startMs: 0, endMs: 2000 },
+    { startMs: 5000, endMs: 15000 }, { startMs: 20000, endMs: 23000 }]);
+  expect(() => qqVideoSpans(removal, 18000)).toThrow('原视频长18秒');
+});
+
+test('draft binds the rendered clip and shows selected source ranges in a sendable review', async () => {
+  const { queue, io } = fixture();
+  const req = request('截取00:18到00:26作为参考，再生成岁己散步的视频，10秒');
+  req.videoInput = { urls: ['https://multimedia.nt.qq.com.cn/video'] };
+  const cut = { file: path.join(root, 'cut.mp4'), durationMs: 8000, cut: '18–26秒' };
+  io.loadVideos.mockResolvedValue([cut]);
+  const result = await queue.enqueue(req, command, signal());
+  expect(result.status).toBe('draft');
+  expect(result.message).toContain('取原片18–26秒');
+  expect(publishableQQVideoReview(result.message)).toBe(result.message);
+  expect(io.bridge.mock.calls.at(-1)![0]).toMatchObject({ videos: [cut.file], videoDurationsMs: [8000], duration: 10 });
 });
 
 test('video catalogue names and registered aliases resolve to the same reference without duplicates', () => {
